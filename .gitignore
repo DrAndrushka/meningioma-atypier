@@ -1,0 +1,23 @@
+# Python junk
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets
+.env
+.streamlit/secrets.toml
+
+# Patient/project data
+data/*
+!data/.gitkeep
+
+# Generated results
+outputs/*
+!outputs/.gitkeep
+
+# Editor / OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
