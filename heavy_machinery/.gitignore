@@ -1,18 +1,23 @@
+# heavy_machinery — ignore when committing from this folder (nested repo).
+# Parent repo also lists these paths in ../.gitignore
+
+# Cohort Excel beside meningioma.ipynb (PHI — never commit)
+*.xlsx
+*.xls
+
+# meningioma.ipynb pipeline
 output/
 outputs/
-**/output/
-**/outputs/
 
+# Scratch / exports
+dupes.csv
 *.tmp
-**/*.tmp
+*.log
 
-.ipynb_checkpoints/
-**/.ipynb_checkpoints/
-.DS_Store
-**/.DS_Store
-
+# Python & Jupyter
 __pycache__/
-**/__pycache__/
+.ipynb_checkpoints/
 
-Icon*
-*.xlsx
+# macOS
+.DS_Store
+Icon?
