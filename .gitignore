@@ -1,77 +1,29 @@
-# meningioma-atypier — ignore rules for repo root and heavy_machinery/
-
-# -----------------------------------------------------------------------------
 # Python
-# -----------------------------------------------------------------------------
 __pycache__/
-*.py[cod]
-*$py.class
-.Python
-
 .venv/
 venv/
-env/
 
-*.egg-info/
-.eggs/
-dist/
-build/
-
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# -----------------------------------------------------------------------------
-# Secrets & local config
-# -----------------------------------------------------------------------------
+# Secrets
 .env
-.env.*
-!.env.example
-
 .streamlit/secrets.toml
 
-# -----------------------------------------------------------------------------
-# Clinical / cohort data (PHI — keep local only)
-# -----------------------------------------------------------------------------
+# PHI & local inputs (*.xlsx anywhere, e.g. heavy_machinery/)
 *.xlsx
 *.xls
+data/
 
-data/                                    # meningioma_test_track.ipynb
-
-# heavy_machinery/ — meningioma.ipynb runs here (DATA_PATH = *.xlsx in cwd)
-heavy_machinery/*.xlsx
-heavy_machinery/*.xls
-heavy_machinery/output/
-
-# -----------------------------------------------------------------------------
-# Pipeline & notebook outputs (any directory)
-# -----------------------------------------------------------------------------
+# Generated (output/ anywhere, e.g. heavy_machinery/output/)
 output/
 outputs/
-
-*.tmp
-*.log
-
-# -----------------------------------------------------------------------------
-# Jupyter
-# -----------------------------------------------------------------------------
 .ipynb_checkpoints/
+dupes.csv
+*.tmp
 
-# -----------------------------------------------------------------------------
-# Editors & OS
-# -----------------------------------------------------------------------------
+# OS / editor
+.DS_Store
 .vscode/
 .idea/
-*.swp
-*~
-
-.DS_Store
-Thumbs.db
 Icon?
 
-# -----------------------------------------------------------------------------
-# Nested clone inside heavy_machinery (do not commit as part of this repo)
-# -----------------------------------------------------------------------------
+# Nested git clone — use only this repo
 heavy_machinery/.git/
