@@ -10,6 +10,7 @@ venv/
 # PHI & local inputs (*.xlsx anywhere, e.g. heavy_machinery/)
 *.xlsx
 *.xls
+*.csv
 data/
 
 # Generated (output/ anywhere, e.g. heavy_machinery/output/)
