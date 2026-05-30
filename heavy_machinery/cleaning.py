@@ -154,7 +154,6 @@ def format_table_for_csv(df: pd.DataFrame) -> pd.DataFrame:
         out[col] = out[col].map(lambda v, r=rule: _format_value(v, r))
     return out
 
-
 # ---------------------------------------------------------------------------
 # Schema application
 # ---------------------------------------------------------------------------
@@ -210,9 +209,11 @@ def apply_schema(
         elif spec.kind == "nominal":
             out[col] = pd.Categorical(s, ordered=False)
         elif spec.kind in ("continuous", "count"):
-            out[col] = pd.to_numeric(s, errors="coerce")
+            out[col] = pd.to_numeric(s.astype('string').str.replace(",", ".", regex=False), errors="coerce").astype('float64')
         elif spec.kind == "datetime":
-            out[col] = pd.to_datetime(s, errors="coerce")
+            out[col] = pd.to_datetime(
+                s.astype("string").str.strip(" .").str.replace(",", ".", regex=False),
+                format="mixed", errors="coerce")
         elif spec.kind == "text":
             out[col] = s.astype("string")
         elif spec.kind == "id":

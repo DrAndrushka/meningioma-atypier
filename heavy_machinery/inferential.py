@@ -23,7 +23,7 @@ Pipeline per target
 
 Outputs (per target) under output/inferential/
 ----------------------------------------------
-- tables/<target>__multivariable.csv : predictor, OR, 95% CI, p, n_models
+- tables/<target>__multivariable.csv : predictor, OR, 95% CI, p, n_models, intercept_coef, intercept_or
 - tables/<target>__vif.csv           : VIFs after pruning
 - figures/<target>__forest.svg       : forest plot of adjusted ORs
 
@@ -260,6 +260,8 @@ def fit_multivariable_logistic(
 
     coefs_by_col: dict[str, list[float]] = {c: [] for c in keep_cols}
     ses_by_col: dict[str, list[float]] = {c: [] for c in keep_cols}
+    intercept_thetas: list[float] = []
+    intercept_ses: list[float] = []
 
     for frame in imputed_frames:
         X, _ = _build_design(frame, schema, predictors)
@@ -280,6 +282,16 @@ def fit_multivariable_logistic(
             if c in model.params.index:
                 coefs_by_col[c].append(float(model.params[c]))
                 ses_by_col[c].append(float(model.bse[c]))
+        if "const" in model.params.index:
+            intercept_thetas.append(float(model.params["const"]))
+            intercept_ses.append(float(model.bse["const"]))
+
+    if intercept_thetas:
+        intercept_coef = float(_rubin_pool(
+            np.array(intercept_thetas), np.array(intercept_ses))["coef"])
+        intercept_or = float(np.exp(intercept_coef))
+    else:
+        intercept_coef = intercept_or = np.nan
 
     rows = []
     for c in keep_cols:
@@ -288,10 +300,12 @@ def fit_multivariable_logistic(
         if len(thetas) == 0:
             rows.append({"predictor_col": c, "coef": np.nan, "se": np.nan,
                          "or": np.nan, "or_ci_lo": np.nan, "or_ci_hi": np.nan,
-                         "p": np.nan, "n_models": 0})
+                         "p": np.nan, "n_models": 0,
+                         "intercept_coef": intercept_coef, "intercept_or": intercept_or})
             continue
         pooled = _rubin_pool(thetas, ses)
-        rows.append({"predictor_col": c, **pooled, "n_models": len(thetas)})
+        rows.append({"predictor_col": c, **pooled, "n_models": len(thetas),
+                     "intercept_coef": intercept_coef, "intercept_or": intercept_or})
     pooled_df = pd.DataFrame(rows)
     pooled_df["target"] = target
     return pooled_df, vif_df
@@ -329,6 +343,7 @@ def _forest_plot(pooled: pd.DataFrame, target: str, figs_dir: Path) -> None:
 _INFERENTIAL_COLS = [
     "target", "predictor_col", "or", "or_ci_lo", "or_ci_hi",
     "coef", "se", "p", "df", "n_models",
+    "intercept_coef", "intercept_or",
 ]
 
 
