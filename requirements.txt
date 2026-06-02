@@ -1,6 +1,7 @@
-# RPE clinical association pipeline — Python 3.11+
-# Tested on Python 3.12 with the pinned versions below.
+# meningioma-atypier — Python 3.11+
+# Tested on Python 3.12 with the pinned ranges below.
 
+# Core pipeline (cleaning, DDA, EDA, inferential, report)
 pandas>=2.2,<4
 numpy>=2.0,<3
 scipy>=1.11
@@ -9,6 +10,9 @@ scikit-learn>=1.4
 matplotlib>=3.8
 seaborn>=0.13
 openpyxl>=3.1
-pytest>=8.0
+
+# Streamlit calculator (app.py)
+streamlit>=1.28
 
 # Tests: cd meningioma-atypier && python -m pytest
+pytest>=8.0
