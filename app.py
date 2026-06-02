@@ -2,7 +2,7 @@
 #                            ⚙️ SETUP for Greatness ⚙️
 #🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧
 import streamlit as st
-
+import numpy as np
 
 
 #🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧🟧
@@ -46,7 +46,6 @@ st.write(starting_text)
 #🟦🟦🟦🟦🟦🟦🟦
 # High-grade calculator
 #🟦🟦🟦🟦🟦🟦🟦
-import numpy as np
 
 MODEL_PARAMS = {
     "intercept_coef": -0.41,
