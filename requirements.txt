@@ -9,6 +9,6 @@ scikit-learn>=1.4
 matplotlib>=3.8
 seaborn>=0.13
 openpyxl>=3.1
+pytest>=8.0
 
-# Optional: run unit tests (stdlib only, no extra deps)
-# python -m unittest test_pipeline_fixes.py
+# Tests: cd meningioma-atypier && python -m pytest

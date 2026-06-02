@@ -23,7 +23,7 @@ Pipeline per target
 
 Outputs (per target) under output/inferential/
 ----------------------------------------------
-- tables/<target>__multivariable.csv : predictor, OR, 95% CI, p, n_models, intercept_coef, intercept_or
+- tables/<target>__multivariable.csv : predictor, OR, 95% CI, p, n_models, intercept_coef, intercept_or, z_mu, z_sd
 - tables/<target>__vif.csv           : VIFs after pruning
 - figures/<target>__forest.svg       : forest plot of adjusted ORs
 
@@ -94,17 +94,19 @@ def _build_design(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
     predictors: Sequence[str],
-) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+) -> tuple[pd.DataFrame, dict[str, list[str]], dict[str, dict[str, float]]]:
     """
     Build X with:
       - continuous/count: z-scored numeric
       - ordinal:          numeric ordinal codes (kept as-is, NOT one-hot)
       - nominal:          one-hot, drop_first=True
       - binary:           0/1
-    Returns (X, mapping {original_predictor: [columns_in_X]}).
+    Returns (X, mapping {original_predictor: [columns_in_X]}, z_params).
+    z_params maps continuous/count predictor names to {mu, sd} from that frame.
     """
     pieces = []
     mapping: dict[str, list[str]] = {}
+    z_params: dict[str, dict[str, float]] = {}
     for p in predictors:
         spec = schema[p]
         s = df[p]
@@ -114,6 +116,7 @@ def _build_design(
             z.name = p
             pieces.append(z)
             mapping[p] = [p]
+            z_params[p] = {"mu": float(mu), "sd": float(sd)}
         elif spec.kind == "ordinal":
             cats = pd.Categorical(s,
                                   categories=spec.ordered_levels if spec.ordered_levels else None,
@@ -132,7 +135,7 @@ def _build_design(
             mapping[p] = list(dummies.columns)
         # other kinds skipped
     X = pd.concat(pieces, axis=1) if pieces else pd.DataFrame(index=df.index)
-    return X, mapping
+    return X, mapping, z_params
 
 
 def _prune_by_vif(X: pd.DataFrame, threshold: float = 5.0) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -254,17 +257,27 @@ def fit_multivariable_logistic(
     vif_df    : VIF table from the first imputation after pruning.
     """
     # 1. Build X for each imputation, using the SAME columns (use first imp to set design).
-    X0, mapping = _build_design(imputed_frames[0], schema, predictors)
+    X0, mapping, _ = _build_design(imputed_frames[0], schema, predictors)
     X0_pruned, vif_df = _prune_by_vif(X0, threshold=vif_threshold)
     keep_cols = list(X0_pruned.columns)
+    zscore_cols = {
+        c for c in keep_cols
+        if c in schema and schema[c].kind in ("continuous", "count")
+    }
 
     coefs_by_col: dict[str, list[float]] = {c: [] for c in keep_cols}
     ses_by_col: dict[str, list[float]] = {c: [] for c in keep_cols}
+    mus_by_col: dict[str, list[float]] = {c: [] for c in zscore_cols}
+    sds_by_col: dict[str, list[float]] = {c: [] for c in zscore_cols}
     intercept_thetas: list[float] = []
     intercept_ses: list[float] = []
 
     for frame in imputed_frames:
-        X, _ = _build_design(frame, schema, predictors)
+        X, _, z_params = _build_design(frame, schema, predictors)
+        for c in zscore_cols:
+            if c in z_params:
+                mus_by_col[c].append(z_params[c]["mu"])
+                sds_by_col[c].append(z_params[c]["sd"])
         X = X.reindex(columns=keep_cols, fill_value=0.0)
         y_enc, _ = _encode_target(frame[target], positive_class)
         sub = pd.concat([y_enc.rename("_y"), X], axis=1).dropna()
@@ -297,15 +310,19 @@ def fit_multivariable_logistic(
     for c in keep_cols:
         thetas = np.array(coefs_by_col[c])
         ses = np.array(ses_by_col[c])
+        z_mu = float(np.mean(mus_by_col[c])) if mus_by_col.get(c) else np.nan
+        z_sd = float(np.mean(sds_by_col[c])) if sds_by_col.get(c) else np.nan
         if len(thetas) == 0:
             rows.append({"predictor_col": c, "coef": np.nan, "se": np.nan,
                          "or": np.nan, "or_ci_lo": np.nan, "or_ci_hi": np.nan,
                          "p": np.nan, "n_models": 0,
-                         "intercept_coef": intercept_coef, "intercept_or": intercept_or})
+                         "intercept_coef": intercept_coef, "intercept_or": intercept_or,
+                         "z_mu": z_mu, "z_sd": z_sd})
             continue
         pooled = _rubin_pool(thetas, ses)
         rows.append({"predictor_col": c, **pooled, "n_models": len(thetas),
-                     "intercept_coef": intercept_coef, "intercept_or": intercept_or})
+                     "intercept_coef": intercept_coef, "intercept_or": intercept_or,
+                     "z_mu": z_mu, "z_sd": z_sd})
     pooled_df = pd.DataFrame(rows)
     pooled_df["target"] = target
     return pooled_df, vif_df
@@ -343,7 +360,7 @@ def _forest_plot(pooled: pd.DataFrame, target: str, figs_dir: Path) -> None:
 _INFERENTIAL_COLS = [
     "target", "predictor_col", "or", "or_ci_lo", "or_ci_hi",
     "coef", "se", "p", "df", "n_models",
-    "intercept_coef", "intercept_or",
+    "intercept_coef", "intercept_or", "z_mu", "z_sd",
 ]
 
 

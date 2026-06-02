@@ -1684,8 +1684,9 @@ def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
         if by_year is not None:
             yr = (cfg.year_column or "year").strip()
             body.append(
-                '<p class="figure-note">Top: cohort-wide counts. Bottom: category shares '
-                f"within each {yr} (row-normalised). Descriptive only — not adjusted for "
+                '<p class="figure-note">Top: cohort-wide counts. Bottom: stacked counts '
+                f"within each {yr} (total bar height = patients that year; "
+                "n on tick labels). Descriptive only — not adjusted for "
                 "confounding. Optional χ² p-value tests marginal association with calendar "
                 f"year when expected counts ≥ 5.</p>"
             )

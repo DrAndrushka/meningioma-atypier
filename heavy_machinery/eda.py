@@ -374,8 +374,8 @@ def _plot_binary_target_rates(
     )
     pad = 0.35 if n_lv <= 4 else 0.5
     ax.set_xlim(-pad, n_lv - 1 + pad)
-    ymax = min(1.0, float(np.nanmax(hi_a)) + 0.14)
-    ax.set_ylim(0, max(0.35, ymax))
+    ymax_ci = float(np.nanmax(hi_a)) if len(hi_a) else 0.0
+    ax.set_ylim(0, max(0.45, ymax_ci + 0.30))
     _annotate_above(ax, x, hi_a, [f"{p:.0%}\n(n={n})" for p, n in zip(props_a, ns)])
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -385,7 +385,7 @@ def _plot_binary_target_rates(
     )
     ax.set_xlabel(predictor)
     ax.set_ylabel(f"P({target}={pos_label})")
-    ax.set_title(f"{predictor} → P({target})")
+    ax.set_title(f"{predictor} → P({target})", pad=14)
 
 
 def _plot_pair(
@@ -494,7 +494,10 @@ def _plot_pair(
         plt.close(fig)
         return
 
-    fig.tight_layout()
+    title = ax.get_title()
+    if title:
+        ax.set_title(title, pad=14)
+    fig.tight_layout(pad=1.0)
     fig.savefig(figs_dir / f"{safe}.svg", format="svg", bbox_inches="tight")
     plt.close(fig)
 

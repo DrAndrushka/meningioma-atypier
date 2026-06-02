@@ -46,7 +46,6 @@ Plots per kind (seaborn)
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -263,6 +262,23 @@ def _plot_ordinal(
     return [p]
 
 
+def _coerce_calendar_year(val) -> int | str:
+    dt = pd.to_datetime(val, errors="coerce")
+    if pd.notna(dt):
+        return int(dt.year)
+    num = pd.to_numeric(val, errors="coerce")
+    if pd.notna(num):
+        return int(num)
+    return str(val).strip()
+
+
+def _year_category_order(s: pd.Series) -> list[str]:
+    if isinstance(s.dtype, pd.CategoricalDtype) and s.dtype.ordered:
+        obs = set(s.dropna().astype(str))
+        return [str(c) for c in s.cat.categories if str(c) in obs]
+    return sorted(s.dropna().astype(str).unique(), key=str)
+
+
 def plot_distribution_by_year(
     df: pd.DataFrame,
     variable: str,
@@ -283,29 +299,27 @@ def plot_distribution_by_year(
     if variable not in df.columns or year_col not in df.columns:
         return None
 
-    sub = df[[variable, year_col]].dropna()
+    sub = df[[variable, year_col]].dropna().copy()
     if sub.empty:
         return None
 
-    years = sorted(sub[year_col].astype(str).unique(), key=str)
+    sub[year_col] = sub[year_col].map(_coerce_calendar_year)
+    years = sorted(sub[year_col].unique(), key=lambda y: (0, y) if isinstance(y, int) else (1, str(y)))
     if len(years) < min_years:
         return None
 
-    vc = sub[variable].astype(str).value_counts()
-    if len(vc) > top_n:
-        keep = set(vc.head(top_n).index)
-        sub = sub.copy()
-        sub[variable] = sub[variable].astype(str).where(
-            sub[variable].astype(str).isin(keep), "(other)"
-        )
-        vc = sub[variable].value_counts()
-    cat_order = list(vc.index)
+    s = sub[variable]
+    if len(s.astype(str).value_counts()) > top_n:
+        keep = set(s.astype(str).value_counts().head(top_n).index)
+        sub[variable] = s.astype(str).where(s.astype(str).isin(keep), "(other)")
+
+    cat_order = _year_category_order(sub[variable])
 
     fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(7, 8),
+        2, 1, figsize=(max(7, 0.55 * len(years) + 2), 8),
         gridspec_kw={"height_ratios": [1, 1.15]},
     )
-    fig.subplots_adjust(hspace=0.42, top=0.96, bottom=0.11, right=0.78)
+    fig.subplots_adjust(hspace=0.42, top=0.96, bottom=0.14, right=0.78)
 
     sns.countplot(
         data=sub.assign(**{variable: sub[variable].astype(str)}),
@@ -318,34 +332,32 @@ def plot_distribution_by_year(
     ax1.set_xlabel("count")
     ax1.set_ylabel(variable)
 
-    plot_df = sub.assign(
-        **{
-            variable: sub[variable].astype(str),
-            year_col: sub[year_col].astype(str),
-        }
-    )
-    ct = pd.crosstab(plot_df[year_col], plot_df[variable], normalize="index")
-    ct = ct.reindex(index=[str(y) for y in years], columns=cat_order, fill_value=0.0)
+    plot_df = sub.assign(**{variable: sub[variable].astype(str)})
+    raw_ct = pd.crosstab(plot_df[year_col], plot_df[variable])
+    raw_ct = raw_ct.reindex(index=years, columns=cat_order, fill_value=0)
+    year_n = raw_ct.sum(axis=1).astype(int)
     colors = sns.color_palette("husl", n_colors=len(cat_order))
-    x = np.arange(len(ct))
-    bottom = np.zeros(len(ct))
-    for i, cat in enumerate(ct.columns):
-        heights = ct[cat].to_numpy()
-        ax2.bar(x, heights, bottom=bottom, label=cat, color=colors[i], width=0.65)
-        bottom += heights
+    x = np.arange(len(raw_ct))
+    bottom = np.zeros(len(raw_ct))
+    for i, cat in enumerate(cat_order):
+        counts = raw_ct[cat].to_numpy()
+        ax2.bar(x, counts, bottom=bottom, label=cat, color=colors[i], width=0.7)
+        bottom += counts
     ax2.set_xticks(x)
-    ax2.set_xticklabels(ct.index)
-    ax2.set_ylim(0, 1)
-    ax2.set_title(f"Share within each {year_col} (row-normalised)")
+    ax2.set_xticklabels(
+        [f"{y}\n(n={year_n.loc[y]})" for y in raw_ct.index],
+        rotation=45 if len(raw_ct) > 5 else 0,
+        ha="right",
+    )
+    ax2.set_title(f"Counts within each {year_col} (stack height = patients/year)")
     ax2.set_xlabel(year_col)
-    ax2.set_ylabel("proportion")
+    ax2.set_ylabel("count")
     ax2.legend(title=variable, bbox_to_anchor=(1.02, 1), loc="upper left")
 
     chi2_note: str | None = None
     try:
         from scipy.stats import chi2_contingency
 
-        raw_ct = pd.crosstab(plot_df[year_col], plot_df[variable])
         if raw_ct.size > 0 and raw_ct.values.sum() > 0:
             _, p, _, expected = chi2_contingency(raw_ct)
             if (expected >= 5).all():
@@ -430,7 +442,6 @@ def run_dda(
     schema: dict[str, ColSpec],
     *,
     output_root: Path | str = "output",
-    skip_cols: Iterable[str] = (),
 ) -> dict[str, pd.DataFrame]:
     """
     Run DDA on every kept column in the schema.
@@ -441,12 +452,11 @@ def run_dda(
     """
     output_root = Path(output_root)
     figs_dir, tabs_dir = _ensure_dirs(output_root)
-    skip = set(skip_cols)
 
     rows_cont, rows_cat, rows_bin, rows_dt, rows_id = [], [], [], [], []
 
     for col, spec in schema.items():
-        if col not in df.columns or col in skip or not spec.keep or spec.kind == "skip":
+        if col not in df.columns or not spec.keep or spec.kind == "skip":
             continue
 
         s = df[col]

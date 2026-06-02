@@ -221,6 +221,8 @@ def apply_schema(
         actions.append(f"coerce_{spec.kind}")
 
         if log is not None and spec.kind != "skip":
+            if not spec.keep:
+                actions.append("excluded_keep_false")
             log.append({
                 "step": "apply_schema",
                 "column": col,
@@ -410,6 +412,12 @@ def _build_cleaning_summary(
     dupes: pd.DataFrame | None,
 ) -> pd.DataFrame:
     n_skip = sum(1 for sp in schema.values() if sp.kind == "skip")
+    n_excluded = sum(1 for sp in schema.values() if not sp.keep and sp.kind != "skip")
+    apply_detail = "coerced dtypes"
+    if n_skip:
+        apply_detail += f"; dropped {n_skip} skip column(s)"
+    if n_excluded:
+        apply_detail += f"; excluded {n_excluded} keep=False column(s) from cleaned.csv"
     rows: list[dict[str, Any]] = [
         {
             "step": "raw_data",
@@ -419,7 +427,7 @@ def _build_cleaning_summary(
         },
         {
             "step": "apply_schema",
-            "detail": f"coerced dtypes; dropped {n_skip} skip column(s)",
+            "detail": apply_detail,
             "n_rows": n_rows_after_schema,
             "n_dropped": n_rows_raw - n_rows_after_schema,
         },
@@ -472,9 +480,39 @@ def _build_cleaning_log(
     return pd.concat(parts, ignore_index=True, sort=False)
 
 
+def columns_for_cleaned_export(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+) -> list[str]:
+    """Columns written to ``cleaned.csv``: schema keep=True (non-skip), plus unlisted cols."""
+    out: list[str] = []
+    for col in df.columns:
+        spec = schema.get(col)
+        if spec is None:
+            out.append(col)
+        elif spec.keep and spec.kind != "skip":
+            out.append(col)
+    return out
+
+
+def write_cleaned_csv(
+    output_root: Path | str,
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+) -> Path:
+    """Rewrite ``cleaned.csv`` after derived columns are added to ``df``."""
+    out_dir = Path(output_root) / "cleaning"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "cleaned.csv"
+    export_cols = columns_for_cleaned_export(df, schema)
+    df.loc[:, export_cols].to_csv(path, index=False)
+    return path
+
+
 def export_cleaning_artifacts(
     output_root: Path | str,
     *,
+    df: pd.DataFrame,
     n_rows_raw: int,
     n_rows_after_schema: int,
     n_rows_final: int,
@@ -483,9 +521,13 @@ def export_cleaning_artifacts(
     dupes: pd.DataFrame | None = None,
     schema_log: list[dict[str, Any]] | None = None,
 ) -> dict[str, Path]:
-    """Write ``output/cleaning/cleaning_summary.csv`` and ``cleaning_log.csv``."""
+    """Write ``output/cleaning/cleaned.csv``, ``cleaning_summary.csv``, and ``cleaning_log.csv``."""
     out_dir = Path(output_root) / "cleaning"
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    export_cols = columns_for_cleaned_export(df, schema)
+    cleaned_path = out_dir / "cleaned.csv"
+    df.loc[:, export_cols].to_csv(cleaned_path, index=False)
 
     summary = _build_cleaning_summary(
         n_rows_raw=n_rows_raw,
@@ -500,7 +542,7 @@ def export_cleaning_artifacts(
     summary_path = out_dir / "cleaning_summary.csv"
     format_table_for_csv(summary).to_csv(summary_path, index=False)
 
-    paths = {"summary": summary_path}
+    paths = {"summary": summary_path, "cleaned": cleaned_path}
     if not log.empty:
         log_path = out_dir / "cleaning_log.csv"
         log.to_csv(log_path, index=False)
