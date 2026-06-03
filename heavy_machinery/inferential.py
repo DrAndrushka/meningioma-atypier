@@ -28,11 +28,13 @@ Outputs (per target) under output/inferential/
 - figures/<target>__forest.svg       : forest plot of adjusted ORs
 
 Also writes tables/inferential_summary.csv combining all targets.
+- tables/multivariable_cases.csv    : complete-case counts and EPV per target
 """
 
 from __future__ import annotations
 
 import warnings
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -140,11 +142,18 @@ def _build_design(
 
 def _prune_by_vif(X: pd.DataFrame, threshold: float = 5.0) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Iteratively drop the column with the highest VIF until all <= threshold."""
-    Xc = sm.add_constant(X, has_constant="add")
     cols = list(X.columns)
-    log = []
+    if not cols:
+        return X, pd.DataFrame(columns=["predictor", "vif"])
+
+    # VIF requires a complete numeric design (same rows as logistic .dropna()).
+    X_fit = X.dropna()
+    if len(X_fit) < max(3, len(cols) + 1):
+        return X, pd.DataFrame({"predictor": cols, "vif": np.nan})
+
+    vif_df = pd.DataFrame({"predictor": cols, "vif": np.nan})
     while cols:
-        Xc = sm.add_constant(X[cols], has_constant="add")
+        Xc = sm.add_constant(X_fit[cols], has_constant="add")
         vifs = []
         for i, c in enumerate(Xc.columns):
             if c == "const":
@@ -157,12 +166,9 @@ def _prune_by_vif(X: pd.DataFrame, threshold: float = 5.0) -> tuple[pd.DataFrame
         vif_df = pd.DataFrame(vifs, columns=["predictor", "vif"])
         worst = vif_df.loc[vif_df["vif"].idxmax()] if vif_df["vif"].notna().any() else None
         if worst is None or worst["vif"] <= threshold or pd.isna(worst["vif"]):
-            log.append(vif_df.assign(action="kept"))
             break
-        log.append(vif_df.assign(action=lambda d: np.where(d["predictor"] == worst["predictor"], "dropped", "kept")))
         cols.remove(worst["predictor"])
-    final_vif = vif_df.copy() if cols else pd.DataFrame(columns=["predictor", "vif"])
-    return X[cols], final_vif
+    return X[cols], vif_df
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +374,120 @@ def _empty_inferential_df() -> pd.DataFrame:
     return pd.DataFrame(columns=_INFERENTIAL_COLS)
 
 
+def summarize_multivariable_cases(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    targets: Sequence[str],
+    predictors: Sequence[str],
+    *,
+    positive_class: dict | None = None,
+    vif_threshold: float = 5.0,
+) -> pd.DataFrame:
+    """Complete-case counts for multivariable logistic (design + VIF prune + dropna)."""
+    positive_class = positive_class or {}
+    rows: list[dict] = []
+    n_total = len(df)
+
+    for target in targets:
+        if target not in df.columns:
+            continue
+        if not _target_is_binary(df[target], schema.get(target)):
+            continue
+        X, _, _ = _build_design(df, schema, predictors)
+        Xp, _ = _prune_by_vif(X, threshold=vif_threshold)
+        y_enc, _ = _encode_target(df[target], positive_class.get(target))
+        sub = pd.concat([y_enc.rename("_y"), Xp], axis=1).dropna()
+        n_used = len(sub)
+        n_events = int(sub["_y"].sum()) if n_used else 0
+        n_params = len(Xp.columns)
+        rows.append({
+            "target": target,
+            "n_rows_total": n_total,
+            "n_complete_cases": n_used,
+            "n_rows_dropped": n_total - n_used,
+            "n_outcome_events": n_events,
+            "n_design_columns": n_params,
+            "epv": round(n_events / n_params, 1) if n_params else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+def export_calculator_meta(
+    imputed_frames: list[pd.DataFrame],
+    schema: dict[str, ColSpec],
+    predictors: Sequence[str],
+    pooled_df: pd.DataFrame,
+    *,
+    vif_threshold: float = 5.0,
+) -> dict[str, Any]:
+    """Structured model spec for the Streamlit calculator (reference levels + z-params)."""
+    X, mapping, z_params = _build_design(imputed_frames[0], schema, predictors)
+    Xp, _ = _prune_by_vif(X, threshold=vif_threshold)
+    keep = set(Xp.columns)
+    coef_by_col = {
+        str(row["predictor_col"]): float(row["coef"])
+        for _, row in pooled_df.iterrows()
+        if pd.notna(row.get("coef"))
+    }
+    intercept = float(pooled_df["intercept_coef"].iloc[0])
+
+    terms: list[dict[str, Any]] = []
+    for pred in predictors:
+        spec = schema.get(pred)
+        if spec is None:
+            continue
+        cols = [c for c in mapping.get(pred, []) if c in keep]
+        if not cols and pred in keep:
+            cols = [pred]
+        if not cols:
+            continue
+
+        if spec.kind in ("continuous", "count"):
+            if pred not in coef_by_col:
+                continue
+            terms.append({
+                "name": pred,
+                "kind": "continuous",
+                "coef": coef_by_col[pred],
+                "z_mu": z_params[pred]["mu"],
+                "z_sd": z_params[pred]["sd"],
+            })
+        elif spec.kind == "binary":
+            if pred not in coef_by_col:
+                continue
+            terms.append({
+                "name": pred,
+                "kind": "binary",
+                "coef": coef_by_col[pred],
+            })
+        elif spec.kind == "nominal":
+            dummy_cols = [c for c in cols if c in coef_by_col]
+            if not dummy_cols:
+                continue
+            s = imputed_frames[0][pred].dropna().astype(str)
+            full_dummies = pd.get_dummies(s, prefix=pred, drop_first=False, dtype=float)
+            ref_col = sorted(full_dummies.columns)[0]
+            reference = ref_col[len(pred) + 1:]
+            levels = sorted(set(s.unique()) | {reference}, key=str)
+            dummies = {
+                col[len(pred) + 1:]: coef_by_col[col]
+                for col in dummy_cols
+            }
+            terms.append({
+                "name": pred,
+                "kind": "categorical",
+                "reference": reference,
+                "levels": levels,
+                "dummies": dummies,
+            })
+
+    return {
+        "target": str(pooled_df["target"].iloc[0]),
+        "intercept": intercept,
+        "terms": terms,
+    }
+
+
 def run_inferential(
     imputed_frames: list[pd.DataFrame],
     schema: dict[str, ColSpec],
@@ -408,6 +528,13 @@ def run_inferential(
         _format_inferential_table(pooled_df).to_csv(
             tabs_dir / f"{target}__multivariable.csv", index=False)
         _format_table_for_csv(vif_df).to_csv(tabs_dir / f"{target}__vif.csv", index=False)
+        meta = export_calculator_meta(
+            imputed_frames, schema, predictors, pooled_df,
+            vif_threshold=vif_threshold,
+        )
+        (tabs_dir / f"{target}__calculator.json").write_text(
+            json.dumps(meta, indent=2), encoding="utf-8",
+        )
         _forest_plot(pooled_df, target, figs_dir)
         all_rows.append(pooled_df)
 
@@ -416,6 +543,17 @@ def run_inferential(
         _format_inferential_table(empty).to_csv(
             tabs_dir / "inferential_summary.csv", index=False)
         return empty
+
+    cases_df = summarize_multivariable_cases(
+        imputed_frames[0], schema,
+        targets=targets,
+        predictors=predictors,
+        positive_class=positive_class,
+        vif_threshold=vif_threshold,
+    )
+    _format_table_for_csv(cases_df).to_csv(
+        tabs_dir / "multivariable_cases.csv", index=False)
+
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]
     _format_inferential_table(combined).to_csv(

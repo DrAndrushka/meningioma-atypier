@@ -39,9 +39,10 @@ def test_infer_schema(tiny_df):
     assert schema["event"].kind == "binary"
 
 
-def test_print_schema_template(tiny_df):
+def test_print_schema_template(tiny_df, capsys):
     schema = infer_schema(tiny_df)
-    text = print_schema_template(schema)
+    print_schema_template(schema)
+    text = capsys.readouterr().out
     assert "ColSpec" in text
     assert "schema_overrides" in text
 
@@ -49,7 +50,28 @@ def test_print_schema_template(tiny_df):
 def test_schema_summary(tiny_df):
     schema = infer_schema(tiny_df)
     tbl = schema_summary(schema)
-    assert list(tbl.columns) == ["column", "kind", "keep", "ordered_levels", "nulls", "note"]
+    assert list(tbl.columns) == ["column", "kind", "keep", "datetime_bin", "levels", "nulls", "note"]
+    grade = tbl.loc[tbl["column"] == "grade", "levels"].iloc[0]
+    assert grade == [1, 2]
+
+
+def test_schema_summary_nominal_levels_from_replace():
+    schema = {
+        "episode": ColSpec(
+            "episode", "nominal",
+            replace={"0": "primary", "1": "recurrent"},
+        ),
+    }
+    tbl = schema_summary(schema)
+    assert tbl.loc[0, "levels"] == ["primary", "recurrent"]
+
+
+def test_print_column_uniques(tiny_df, capsys):
+    schema = infer_schema(tiny_df)
+    si.print_column_uniques(tiny_df, schema)
+    text = capsys.readouterr().out
+    assert "Column uniques" in text
+    assert "event" in text
 
 
 def test_export_schema_summary(tiny_df, tmp_output):

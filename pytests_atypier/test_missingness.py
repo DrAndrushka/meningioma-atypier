@@ -10,6 +10,7 @@ from missingness_resolution import (
     add_missing_flags,
     analyze_missingness,
     drop_rows,
+    imputation_audit,
     mark_structural_missing,
     mice_impute,
     simple_impute,
@@ -85,3 +86,29 @@ def test_mice_impute(tiny_df, tiny_schema, tmp_output):
 def test_simple_impute(tiny_df, tiny_schema):
     out = simple_impute(tiny_df, tiny_schema)
     assert out["age"].isna().sum() == 0
+
+
+def test_simple_impute_binary_left_nan_by_default(tiny_df, tiny_schema):
+    df = tiny_df.copy()
+    df["event"] = df["event"].astype(object)
+    df.loc[0, "event"] = np.nan
+    out = simple_impute(df, tiny_schema)
+    assert out["event"].isna().sum() == 1
+
+
+def test_simple_impute_binary_mode_when_requested(tiny_df, tiny_schema):
+    df = tiny_df.copy()
+    df["event"] = df["event"].astype(object)
+    df.loc[0, "event"] = np.nan
+    out = simple_impute(df, tiny_schema, impute_binary=True)
+    assert out["event"].isna().sum() == 0
+
+
+def test_imputation_audit(tiny_df, tiny_schema):
+    df = tiny_df.copy()
+    df["event"] = df["event"].astype(object)
+    df.loc[0, "event"] = np.nan
+    out = simple_impute(df, tiny_schema)
+    audit = imputation_audit(df, out, tiny_schema, ["age", "event"])
+    assert audit.loc[audit["predictor"] == "event", "missing_after"].iloc[0] == 1
+    assert "left NaN" in audit.loc[audit["predictor"] == "event", "imputation_method"].iloc[0]

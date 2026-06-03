@@ -18,9 +18,9 @@ Stages
       handled separately; categoricals are ordinal-encoded for imputation and
       decoded back.
 
-4. simple_impute(df)
+4. simple_impute(df, impute_binary=False)
    -> single-frame imputation for fast screening (median for numeric, mode for
-      categorical). Use only for exploratory work, not for final inference.
+      categorical). Binary columns are left as NaN by default (unknown ≠ absent).
 
 Outputs saved under output/missingness/{figures,tables}.
 """
@@ -254,6 +254,7 @@ def drop_rows(
         log.append({
             'reason': reason,
             'criterion': where if where is not None else 'mask',
+            'n_before': n_before,
             'n_dropped': n_before - n_after,
             'n_remaining': n_after,
         })
@@ -359,8 +360,19 @@ def mice_impute(
 # 4. Simple imputation (fallback / screening)
 # ---------------------------------------------------------------------------
 
-def simple_impute(df: pd.DataFrame, schema: dict[str, ColSpec]) -> pd.DataFrame:
-    """Median for numeric/ordinal/count, mode for nominal/binary. One frame."""
+def simple_impute(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    *,
+    impute_binary: bool = False,
+) -> pd.DataFrame:
+    """Single-frame imputation for screening runs.
+
+    - continuous/count → median
+    - ordinal → mode of the declared category level
+    - nominal → mode
+    - binary → left as NaN unless ``impute_binary=True`` (then mode; legacy)
+    """
     out = df.copy()
     for col, spec in schema.items():
         if col not in out.columns or out[col].isna().sum() == 0:
@@ -368,14 +380,60 @@ def simple_impute(df: pd.DataFrame, schema: dict[str, ColSpec]) -> pd.DataFrame:
         if spec.kind in ("continuous", "count"):
             out[col] = out[col].fillna(out[col].median())
         elif spec.kind == "ordinal":
-            # use mode of the underlying codes
             cats = pd.Categorical(out[col])
             mode_code = pd.Series(cats.codes).replace(-1, np.nan).mode()
             if len(mode_code):
                 fill = cats.categories[int(mode_code.iloc[0])]
                 out[col] = out[col].fillna(fill)
-        elif spec.kind in ("nominal", "binary"):
+        elif spec.kind == "nominal":
             mode = out[col].mode(dropna=True)
             if len(mode):
                 out[col] = out[col].fillna(mode.iloc[0])
+        elif spec.kind == "binary":
+            if impute_binary:
+                mode = out[col].mode(dropna=True)
+                if len(mode):
+                    out[col] = out[col].fillna(mode.iloc[0])
     return out
+
+
+def imputation_audit(
+    df_before: pd.DataFrame,
+    df_after: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    columns: Sequence[str],
+    *,
+    impute_binary: bool = False,
+) -> pd.DataFrame:
+    """Per-column missingness summary before/after ``simple_impute``."""
+    rows: list[dict] = []
+    n = len(df_before)
+    for col in columns:
+        if col not in df_before.columns:
+            continue
+        spec = schema.get(col)
+        kind = spec.kind if spec else "unknown"
+        n_miss = int(df_before[col].isna().sum())
+        pct = round(100 * n_miss / n, 1) if n else 0.0
+        if n_miss == 0:
+            method = "none (complete)"
+        elif kind in ("continuous", "count"):
+            method = "median"
+        elif kind == "ordinal":
+            method = "mode (ordinal level)"
+        elif kind == "nominal":
+            method = "mode"
+        elif kind == "binary":
+            method = "mode" if impute_binary else "none (left NaN)"
+        else:
+            method = "none"
+        n_remain = int(df_after[col].isna().sum()) if col in df_after.columns else n_miss
+        rows.append({
+            "predictor": col,
+            "kind": kind,
+            "n_missing": n_miss,
+            "pct_missing": pct,
+            "imputation_method": method,
+            "missing_after": n_remain,
+        })
+    return pd.DataFrame(rows)

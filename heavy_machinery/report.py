@@ -37,10 +37,16 @@ If ``--schema`` is omitted the report falls back to ``output/schema/schema_summa
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import html as _html
+import importlib
 import json
 import math
+import os
+import platform
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -701,6 +707,7 @@ class Artifacts:
 
     # Inferential
     inferential_summary: pd.DataFrame | None = None
+    inferential_cases: pd.DataFrame | None = None
     inferential_multivariable: dict[str, pd.DataFrame] = field(default_factory=dict)
     inferential_vif: dict[str, pd.DataFrame] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
@@ -781,6 +788,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     # Inferential
     inf_tab = root / "inferential" / "tables"
     art.inferential_summary = _maybe_read_csv(inf_tab / "inferential_summary.csv", art.warnings)
+    art.inferential_cases = _maybe_read_csv(inf_tab / "multivariable_cases.csv", art.warnings)
     if inf_tab.exists():
         for f in sorted(inf_tab.glob("*__multivariable.csv")):
             target = f.stem.replace("__multivariable", "")
@@ -816,6 +824,32 @@ def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
 # ---------------------------------------------------------------------------
 # Section renderers
 # ---------------------------------------------------------------------------
+
+def _inferential_target_meta(art: Artifacts, target: str) -> str:
+    """One-line EPV / sample-size summary for a multivariable target."""
+    if art.inferential_cases is None or art.inferential_cases.empty:
+        return ""
+    if "target" not in art.inferential_cases.columns:
+        return ""
+    sub = art.inferential_cases[art.inferential_cases["target"] == target]
+    if sub.empty:
+        return ""
+    row = sub.iloc[0]
+    epv = _coerce_float(row.get("epv"))
+    if epv is None:
+        return ""
+    events = _to_int_or_none(row.get("n_outcome_events"))
+    params = _to_int_or_none(row.get("n_design_columns"))
+    n = _to_int_or_none(row.get("n_complete_cases"))
+    detail = []
+    if events is not None and params is not None:
+        detail.append(f"{events} events / {params} parameters")
+    if n is not None:
+        detail.append(f"N = {n} complete cases")
+    suffix = f" ({', '.join(detail)})" if detail else ""
+    epv_disp = int(epv) if epv == int(epv) else round(epv, 1)
+    return f'<p class="inferential-meta">EPV = {epv_disp}{suffix}</p>'
+
 
 def render_header(cfg: ReportConfig, art: Artifacts) -> str:
     """🧾 Top-of-report dashboard with headline counts."""
@@ -999,7 +1033,10 @@ def _dda_glossary() -> str:
         ("missing_pct", "Percentage of missing values for this variable."),
         ("first_mode", "Most common value."),
         ("first_mode_pct", "How dominant the most common value is."),
+        ("mode", "Most common value (binary table)."),
+        ("mode_pct", "Share of the most common value (binary table)."),
         ("rarest", "Least common value."),
+        ("rarest_pct", "Share of the least common value."),
         ("max_class_imbalance", "first_mode_count / rarest_count. Higher = more imbalanced."),
         ("balance", "Normalized Shannon entropy (0–1). Closer to 1 = more evenly distributed."),
         ("entropy_bin", "Raw Shannon entropy in bits."),
@@ -1019,7 +1056,9 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
         '<h2>🕳️ Missingness story</h2>',
         '<p>Missingness was assessed per variable and globally. Variables with '
         'high missingness should be interpreted cautiously, especially if used '
-        'in association screening or models.</p>',
+        'in association screening or models. Binary imaging variables were not '
+        'imputed because missing values represented unrecorded/unknown findings '
+        'rather than confirmed absence.</p>',
     ]
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
@@ -1162,6 +1201,10 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
         'continuous/count variables were standardized, nominal variables '
         'were one-hot encoded, and high-VIF predictors were pruned. '
         'Multiple imputation was pooled with Rubin\u2019s rules.</p>'
+        '<p>Binary imaging variables were not imputed because missing values '
+        'represented unrecorded/unknown findings rather than confirmed absence. '
+        'Models using these variables were therefore fitted on complete cases '
+        'for those predictors.</p>'
     )
 
     targets = list(art.inferential_multivariable.keys())
@@ -1172,6 +1215,9 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
     for target in targets:
         tbl = art.inferential_multivariable[target].copy()
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
+        meta = _inferential_target_meta(art, target)
+        if meta:
+            body.append(meta)
 
         # Forest plot
         forest = [p for p in art.inferential_figures
@@ -1489,7 +1535,7 @@ def _infer_focus_reference(
     if cfg_ref:
         return cfg_ref
     if dda_row is not None:
-        for key in ("first_mode", "second_mode"):
+        for key in ("first_mode", "second_mode", "mode", "rarest"):
             lv = dda_row.get(key)
             if lv is not None and not pd.isna(lv) and str(lv) != modeled_level:
                 return str(lv)
@@ -1499,7 +1545,11 @@ def _infer_focus_reference(
 def _render_focus_dda_routes(dda_row: pd.Series, highlight: str | None) -> str:
     """Cohort mix for a binary/categorical focus predictor (two rows, one highlighted)."""
     rows: list[tuple[str, Any]] = []
-    for lk, pk in (("first_mode", "first_mode_pct"), ("second_mode", "second_mode_pct")):
+    if "mode" in dda_row.index:
+        pairs = (("mode", "mode_pct"), ("rarest", "rarest_pct"))
+    else:
+        pairs = (("first_mode", "first_mode_pct"), ("second_mode", "second_mode_pct"))
+    for lk, pk in pairs:
         if lk not in dda_row.index:
             continue
         lv = dda_row.get(lk)
@@ -1585,10 +1635,14 @@ def _focus_stat_cards(row: pd.Series, kind: str = "") -> str:
         ("N", "n"),
         ("Missing %", "missing_pct"),
         ("Unique levels", "n_unique"),
+        ("Dominant value", "mode"),
+        ("Dominant %", "mode_pct"),
         ("Dominant value", "first_mode"),
         ("Dominant %", "first_mode_pct"),
         ("Second value", "second_mode"),
         ("Second %", "second_mode_pct"),
+        ("Rarest", "rarest"),
+        ("Rarest %", "rarest_pct"),
         ("Median", "median"),
         ("Mean", "mean"),
         ("IQR", "iqr"),
@@ -1614,6 +1668,92 @@ def _focus_stat_cards(row: pd.Series, kind: str = "") -> str:
         return ""
     kind_badge = f' <span class="badge kind">{_esc(kind)}</span>' if kind else ""
     return f'<div class="focus-stat-grid">{"".join(cards)}</div>{kind_badge}'
+
+
+def _parse_mapping_value(val: Any) -> dict | None:
+    """Parse a dict-like cell (list/dict literal string or mapping)."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    if isinstance(val, dict):
+        return val
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", ""):
+        return None
+    try:
+        parsed = ast.literal_eval(s)
+    except (ValueError, SyntaxError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_levels_value(val: Any) -> list | None:
+    """Parse a levels cell (list literal string or sequence)."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    if isinstance(val, (list, tuple)):
+        return list(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", ""):
+        return None
+    try:
+        parsed = ast.literal_eval(s)
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(parsed, (list, tuple)):
+        return list(parsed)
+    return None
+
+
+def _levels_from_replace(val: Any) -> list | None:
+    """Nominal category labels from a schema replace mapping."""
+    mapping = _parse_mapping_value(val)
+    if not mapping:
+        return None
+    seen: list[Any] = []
+    for v in mapping.values():
+        if v not in seen:
+            seen.append(v)
+    return seen or None
+
+
+def _normalize_kind_label(kind: Any) -> str:
+    s = str(kind or "").strip().lower()
+    for k in (
+        "ordinal", "nominal", "binary", "continuous", "count",
+        "datetime", "id", "text", "skip",
+    ):
+        if k in s:
+            return k
+    return s
+
+
+def _format_levels_display(kind: str, levels: list) -> str:
+    texts = [str(x) for x in levels]
+    if kind == "ordinal":
+        return " < ".join(texts)
+    if kind == "nominal":
+        return ", ".join(texts)
+    return ", ".join(texts)
+
+
+def _focus_schema_display_row(hit: pd.Series) -> pd.DataFrame:
+    """Schema snippet for Variable of interest (levels formatted by kind)."""
+    row: dict[str, Any] = {}
+    for c in ("kind", "keep", "note"):
+        if c in hit.index and not (c != "keep" and pd.isna(hit.get(c))):
+            row[c] = hit[c]
+    kind = _normalize_kind_label(hit.get("kind"))
+    levels = _parse_levels_value(hit.get("levels"))
+    if levels is None:
+        levels = _parse_levels_value(hit.get("ordered_levels"))
+    if levels is None and kind == "nominal":
+        levels = _levels_from_replace(hit.get("replace"))
+    if levels and kind in ("ordinal", "nominal"):
+        row["levels"] = _format_levels_display(kind, levels)
+    display_cols = [c for c in ("kind", "keep", "levels", "note") if c in row]
+    if not display_cols:
+        return pd.DataFrame()
+    return pd.DataFrame([{c: row[c] for c in display_cols}])
 
 
 def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1647,10 +1787,10 @@ def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
         if name_col:
             hit = sc[sc[name_col].astype(str) == col]
             if not hit.empty:
-                show = [c for c in ("kind", "keep", "ordered_levels", "note") if c in hit.columns]
-                if show:
+                show_df = _focus_schema_display_row(hit.iloc[0])
+                if not show_df.empty:
                     body.append("<h4>Schema</h4>")
-                    body.append(table_to_html(hit[show].head(1)))
+                    body.append(table_to_html(show_df))
 
     dda_row, dda_label = _dda_row_for_column(art, col)
     kind = str(dda_row.get("kind", "")).strip() if dda_row is not None else ""
@@ -1895,6 +2035,307 @@ def render_final_conclusion(cfg: ReportConfig, art: Artifacts) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Appendix — runtime environment
+# ---------------------------------------------------------------------------
+
+_REPORT_PACKAGES: tuple[tuple[str, str], ...] = (
+    ("pandas", "pandas"),
+    ("numpy", "numpy"),
+    ("scipy", "scipy"),
+    ("statsmodels", "statsmodels"),
+    ("scikit-learn", "sklearn"),
+    ("matplotlib", "matplotlib"),
+    ("seaborn", "seaborn"),
+    ("openpyxl", "openpyxl"),
+)
+
+
+def _total_memory_gb() -> float | None:
+    """Best-effort total RAM (GiB); stdlib only, no extra dependencies."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(stat)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return stat.ullTotalPhys / (1024 ** 3)
+        except Exception:
+            return None
+    if sys.platform == "darwin":
+        try:
+            import subprocess
+
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
+            return int(out.strip()) / (1024 ** 3)
+        except Exception:
+            return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open("/proc/meminfo", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) / (1024 ** 2)
+        except Exception:
+            return None
+    return None
+
+
+def _run_command(args: Sequence[str], *, timeout: float = 6.0) -> str | None:
+    """Run a command and return stripped stdout, or None on failure."""
+    try:
+        out = subprocess.check_output(
+            list(args),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
+        )
+        text = out.strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _win_processor_description() -> str | None:
+    ps = (
+        "$p = Get-CimInstance Win32_Processor | Select-Object -First 1; "
+        "if (-not $p) { exit 1 }; "
+        "$name = ($p.Name -replace '\\s+', ' ').Trim(); "
+        "$cores = $p.NumberOfCores; $threads = $p.NumberOfLogicalProcessors; "
+        "Write-Output ($name + ' — ' + $cores + ' cores, ' + $threads + ' threads')"
+    )
+    return _run_command(["powershell", "-NoProfile", "-Command", ps])
+
+
+def _win_graphics_descriptions() -> list[str]:
+    ps = (
+        "Get-CimInstance Win32_VideoController | "
+        "Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic' } | "
+        "ForEach-Object { "
+        "  $n = ($_.Name -replace '\\s+', ' ').Trim(); "
+        "  $parts = @($n); "
+        "  if ($_.AdapterRAM -and [uint64]$_.AdapterRAM -gt 0) { "
+        "    $gb = [math]::Round([uint64]$_.AdapterRAM / 1GB, 1); "
+        "    $parts += ($gb.ToString() + ' GB VRAM'); "
+        "  }; "
+        "  if ($_.DriverVersion) { $parts += ('driver ' + $_.DriverVersion); }; "
+        "  Write-Output ($parts -join ', ') "
+        "}"
+    )
+    raw = _run_command(["powershell", "-NoProfile", "-Command", ps])
+    if not raw:
+        return []
+    return [ln.strip() for ln in raw.splitlines() if ln.strip()]
+
+
+def _linux_processor_description() -> str | None:
+    try:
+        model: str | None = None
+        logical_ids: set[str] = set()
+        physical_ids: set[tuple[str, str]] = set()
+        with open("/proc/cpuinfo", encoding="utf-8") as fh:
+            core_id = socket_id = None
+            for line in fh:
+                if line.startswith("model name"):
+                    model = line.split(":", 1)[1].strip()
+                elif line.startswith("processor"):
+                    logical_ids.add(line.split(":", 1)[1].strip())
+                elif line.startswith("core id"):
+                    core_id = line.split(":", 1)[1].strip()
+                elif line.startswith("physical id"):
+                    socket_id = line.split(":", 1)[1].strip()
+                    if core_id is not None:
+                        physical_ids.add((socket_id, core_id))
+                        core_id = None
+        if not model:
+            return None
+        threads = len(logical_ids) or os.cpu_count()
+        cores = len(physical_ids) if physical_ids else None
+        if cores and threads:
+            return f"{model} — {cores} cores, {threads} threads"
+        if threads:
+            return f"{model} — {threads} threads"
+        return model
+    except Exception:
+        return None
+
+
+def _linux_graphics_descriptions() -> list[str]:
+    raw = _run_command(["lspci"], timeout=4.0)
+    if not raw:
+        return []
+    gpus: list[str] = []
+    for line in raw.splitlines():
+        if any(tag in line for tag in ("VGA compatible controller", "3D controller", "Display controller")):
+            name = line.split(":", 2)[-1].strip()
+            if name and name not in gpus:
+                gpus.append(name)
+    return gpus
+
+
+def _mac_processor_description() -> str | None:
+    brand = _run_command(["sysctl", "-n", "machdep.cpu.brand_string"])
+    if not brand:
+        return None
+    cores = os.cpu_count()
+    if cores:
+        return f"{brand} — {cores} logical cores"
+    return brand
+
+
+def _mac_graphics_descriptions() -> list[str]:
+    raw = _run_command(["system_profiler", "SPDisplaysDataType"], timeout=12.0)
+    if not raw:
+        return []
+    gpus: list[str] = []
+    current: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Chipset Model:"):
+            if current:
+                gpus.append(", ".join(current))
+            current = [stripped.split(":", 1)[1].strip()]
+        elif stripped.startswith("VRAM (") and current:
+            current.append(stripped.split(":", 1)[1].strip() + " VRAM")
+        elif stripped == "" and current:
+            gpus.append(", ".join(current))
+            current = []
+    if current:
+        gpus.append(", ".join(current))
+    return gpus
+
+
+def _nvidia_smi_descriptions() -> list[str]:
+    raw = _run_command([
+        "nvidia-smi",
+        "--query-gpu=name,memory.total,driver_version",
+        "--format=csv,noheader,nounits",
+    ])
+    if not raw:
+        return []
+    gpus: list[str] = []
+    for line in raw.splitlines():
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if not parts or not parts[0]:
+            continue
+        name = parts[0]
+        extras: list[str] = []
+        if len(parts) > 1 and parts[1]:
+            try:
+                mib = float(parts[1])
+                extras.append(f"{mib / 1024:.1f} GB VRAM")
+            except ValueError:
+                extras.append(f"{parts[1]} MB VRAM")
+        if len(parts) > 2 and parts[2]:
+            extras.append(f"driver {parts[2]}")
+        gpus.append(f"{name}, {', '.join(extras)}" if extras else name)
+    return gpus
+
+
+def _processor_description() -> str:
+    desc: str | None = None
+    if sys.platform == "win32":
+        desc = _win_processor_description()
+    elif sys.platform == "darwin":
+        desc = _mac_processor_description()
+    elif sys.platform.startswith("linux"):
+        desc = _linux_processor_description()
+    if desc:
+        return desc
+    proc = platform.processor()
+    cores = os.cpu_count()
+    if proc and cores:
+        return f"{proc} — {cores} logical cores"
+    return proc or (f"{cores} logical cores" if cores else "—")
+
+
+def _graphics_descriptions() -> list[str]:
+    gpus = _nvidia_smi_descriptions()
+    if gpus:
+        return gpus
+    if sys.platform == "win32":
+        gpus = _win_graphics_descriptions()
+    elif sys.platform == "darwin":
+        gpus = _mac_graphics_descriptions()
+    elif sys.platform.startswith("linux"):
+        gpus = _linux_graphics_descriptions()
+    else:
+        gpus = []
+    return [g for g in gpus if g]
+
+
+def _package_version(import_name: str) -> str:
+    try:
+        mod = importlib.import_module(import_name)
+    except ImportError:
+        return "not installed"
+    ver = getattr(mod, "__version__", None)
+    return str(ver) if ver else "unknown"
+
+
+def _system_specs_rows() -> list[dict[str, str]]:
+    rows = [
+        {
+            "item": "Python",
+            "value": (
+                f"{sys.version_info.major}.{sys.version_info.minor}."
+                f"{sys.version_info.micro} ({platform.python_implementation()})"
+            ),
+        },
+        {"item": "Operating system", "value": platform.platform()},
+        {"item": "Architecture", "value": platform.machine()},
+        {"item": "Processor", "value": _processor_description()},
+    ]
+    gpus = _graphics_descriptions()
+    if gpus:
+        rows.append({
+            "item": "Graphics" if len(gpus) == 1 else "Graphics (GPUs)",
+            "value": "; ".join(gpus),
+        })
+    mem_gb = _total_memory_gb()
+    if mem_gb is not None:
+        rows.append({"item": "RAM", "value": f"{mem_gb:.1f} GB"})
+    rows.append({"item": "Report generated", "value": platform.node() or "—"})
+    return rows
+
+
+def _package_version_rows() -> list[dict[str, str]]:
+    return [
+        {"package": label, "version": _package_version(import_name)}
+        for label, import_name in _REPORT_PACKAGES
+    ]
+
+
+def _render_environment_appendix() -> str:
+    """Computer specs and Python package versions for reproducibility."""
+    return (
+        "<p>Environment at the time this report was built (not read from "
+        "saved artifacts).</p>"
+        "<h4>Computer / runtime</h4>"
+        f"{table_to_html(pd.DataFrame(_system_specs_rows()))}"
+        "<h4>Package versions</h4>"
+        "<p>Core libraries used by the analysis pipeline "
+        "(cleaning, DDA, EDA, inferential, report).</p>"
+        f"{table_to_html(pd.DataFrame(_package_version_rows()))}"
+    )
+
+
 def render_appendix(cfg: ReportConfig, art: Artifacts) -> str:
     """📎 Appendix — warnings, artifact paths, anything not embedded earlier."""
     body = ['<h2>📎 Appendix</h2>']
@@ -1924,6 +2365,11 @@ def render_appendix(cfg: ReportConfig, art: Artifacts) -> str:
         lst = "".join(f"<li><code>{_esc(p)}</code></li>" for p in paths)
         body.append(details_block(
             f"📂 Artifact files used ({len(paths)})", f"<ul>{lst}</ul>"))
+
+    body.append(details_block(
+        "🖥️ Environment & package versions",
+        _render_environment_appendix(),
+    ))
 
     return f'<section class="report-section">{"".join(body)}</section>'
 

@@ -13,6 +13,7 @@ Everything here is universal — no project-specific column names.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Sequence, Any, Iterable
 
@@ -20,6 +21,12 @@ import numpy as np
 import pandas as pd
 
 from schema_infer import ColSpec
+
+_DATETIME_BINS = ("year", "month", "day", "hour", "full")
+_TIME_RE = re.compile(
+    r"(?:T|\s)\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +161,11 @@ def format_table_for_csv(df: pd.DataFrame) -> pd.DataFrame:
         out[col] = out[col].map(lambda v, r=rule: _format_value(v, r))
     return out
 
+
+def format_table_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Notebook display copy: apply CSV-style number formatting, blank out missing."""
+    return format_table_for_csv(df).fillna("")
+
 # ---------------------------------------------------------------------------
 # Schema application
 # ---------------------------------------------------------------------------
@@ -211,9 +223,56 @@ def apply_schema(
         elif spec.kind in ("continuous", "count"):
             out[col] = pd.to_numeric(s.astype('string').str.replace(",", ".", regex=False), errors="coerce").astype('float64')
         elif spec.kind == "datetime":
+            if spec.datetime_bin and spec.datetime_bin not in _DATETIME_BINS:
+                raise ValueError(
+                    f"Column '{col}': datetime_bin must be one of "
+                    f"{', '.join(repr(u) for u in _DATETIME_BINS)} "
+                    f"(got {spec.datetime_bin!r})"
+                )
             out[col] = pd.to_datetime(
                 s.astype("string").str.strip(" .").str.replace(",", ".", regex=False),
                 format="mixed", errors="coerce")
+            if spec.datetime_bin and spec.datetime_bin != "full":
+                binned = bin_datetime(out[col], unit=spec.datetime_bin)
+                levels = _datetime_bin_levels(spec.datetime_bin, binned)
+                out[col] = pd.Categorical(
+                    binned,
+                    categories=levels,
+                    ordered=True,
+                )
+                schema[col] = ColSpec(
+                    name=spec.name,
+                    kind="ordinal",
+                    ordered_levels=levels,
+                    nulls=spec.nulls,
+                    replace=spec.replace,
+                    keep=spec.keep,
+                    datetime_bin=spec.datetime_bin,
+                    note=spec.note,
+                )
+                actions.append(f"datetime_bin_{spec.datetime_bin}")
+            elif spec.datetime_bin == "full":
+                if _datetime_has_time(s, out[col]):
+                    actions.append("datetime_bin_full")
+                else:
+                    binned = bin_datetime(out[col], unit="day")
+                    levels = _datetime_bin_levels("day", binned)
+                    out[col] = pd.Categorical(
+                        binned,
+                        categories=levels,
+                        ordered=True,
+                    )
+                    schema[col] = ColSpec(
+                        name=spec.name,
+                        kind="ordinal",
+                        ordered_levels=levels,
+                        nulls=spec.nulls,
+                        replace=spec.replace,
+                        keep=spec.keep,
+                        datetime_bin=spec.datetime_bin,
+                        note=spec.note,
+                    )
+                    actions.append("datetime_bin_full_day")
         elif spec.kind == "text":
             out[col] = s.astype("string")
         elif spec.kind == "id":
@@ -227,7 +286,7 @@ def apply_schema(
                 "step": "apply_schema",
                 "column": col,
                 "action": ",".join(actions),
-                "kind": spec.kind,
+                "kind": schema[col].kind,
             })
 
     drop_cols = [c for c, sp in schema.items() if sp.kind == "skip" and c in out.columns]
@@ -341,22 +400,55 @@ def bin_datetime(
 ) -> pd.Series:
     """
     Extract a coarse calendar unit from a datetime column.
-    unit ∈ {"year", "quarter", "month", "week", "weekday", "hour"}
+    unit ∈ {"year", "month", "day", "hour", "full", "quarter", "week", "weekday"}
+
+    ``full`` returns the series unchanged; ``apply_schema`` uses it only when the
+    source column actually contains time (see ``_datetime_has_time``).
     """
     s = pd.to_datetime(s, errors="coerce")
+    if unit == "full":
+        return s
     if unit == "year":
         return s.dt.year
-    if unit == "quarter":
-        return s.dt.to_period("Q").astype("string")
     if unit == "month":
         return s.dt.month
+    if unit == "day":
+        return s.dt.strftime("%Y-%m-%d")
+    if unit == "hour":
+        return s.dt.hour
+    if unit == "quarter":
+        return s.dt.to_period("Q").astype("string")
     if unit == "week":
         return s.dt.isocalendar().week.astype("Int64")
     if unit == "weekday":
         return s.dt.day_name()
-    if unit == "hour":
-        return s.dt.hour
     raise ValueError(f"unknown unit: {unit}")
+
+
+def _datetime_has_time(raw: pd.Series, parsed: pd.Series) -> bool:
+    """True when any non-null value carries hours/minutes/seconds (not date-only)."""
+    nn = parsed.dropna()
+    if not nn.empty:
+        t = nn.dt
+        if ((t.hour != 0) | (t.minute != 0) | (t.second != 0) | (t.microsecond != 0)).any():
+            return True
+
+    if pd.api.types.is_datetime64_any_dtype(raw):
+        return False
+
+    raw_str = raw.astype("string").str.strip()
+    mask = raw_str.notna() & ~raw_str.isin(["<NA>", "nan", "NaT", ""])
+    if not mask.any():
+        return False
+    return bool(raw_str[mask].str.contains(_TIME_RE, regex=True).any())
+
+
+def _datetime_bin_levels(unit: str, s: pd.Series) -> list[Any]:
+    if unit == "month":
+        return list(range(1, 13))
+    if unit == "hour":
+        return list(range(24))
+    return sorted(s.dropna().unique().tolist())
 
 
 def make_missing_flag(s: pd.Series, suffix: str = "_missing") -> pd.Series:
@@ -447,6 +539,7 @@ def _build_cleaning_summary(
             "step": "drop_rows",
             "detail": entry.get("reason", ""),
             "criterion": entry.get("criterion", ""),
+            "n_rows_before": entry.get("n_before"),
             "n_rows": entry.get("n_remaining"),
             "n_dropped": entry.get("n_dropped", 0),
         })

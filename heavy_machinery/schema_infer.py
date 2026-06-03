@@ -20,12 +20,17 @@ Usage
 -----
     from schema_infer import infer_schema, print_schema_template
     schema = infer_schema(df)
-    print_schema_template(schema)          # prints a dict you can paste back
+    print_schema_template(schema)          # prints a paste-back dict (no Out[] echo)
+    print_column_uniques(df, schema)       # value lists for nulls= / replace=
     # ...edit it in the notebook, then pass into cleaning.apply_schema(df, schema)
+    #
+    # Datetime binning on kind='datetime' (in place): datetime_bin='year' | 'month' | 'day' | 'hour' | 'full'
+    # ``full`` keeps h/m/s only when the source column has time data; otherwise bins to day.
 """
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -39,6 +44,8 @@ Kind = Literal[
     "id", "binary", "ordinal", "nominal",
     "continuous", "count", "datetime", "text", "skip",
 ]
+
+DatetimeBin = Literal["year", "month", "day", "hour", "full"]
 
 
 @dataclass
@@ -54,6 +61,8 @@ class ColSpec:
     replace: dict[Any, Any] = field(default_factory=dict)
     # Keep in analysis output (False = computed but hidden, e.g. raw IDs).
     keep: bool = True
+    # For kind='datetime': bin in place. ``full`` = h/m/s when present, else day-only.
+    datetime_bin: Optional[DatetimeBin] = None
     # Free-text note for the schema printout.
     note: str = ""
 
@@ -152,8 +161,8 @@ def infer_schema(
     return out
 
 
-def print_schema_template(schema: dict[str, ColSpec]) -> str:
-    """Print and return a paste-back-able Python dict literal of the schema."""
+def print_schema_template(schema: dict[str, ColSpec]) -> None:
+    """Print a paste-back-able Python dict literal of the schema."""
     lines = ["schema_overrides = {"]
     for col, spec in schema.items():
         extras = []
@@ -165,12 +174,98 @@ def print_schema_template(schema: dict[str, ColSpec]) -> str:
             extras.append(f"replace={spec.replace!r}")
         if not spec.keep:
             extras.append("keep=False")
+        if spec.datetime_bin:
+            extras.append(f"datetime_bin={spec.datetime_bin!r}")
         extras_str = (", " + ", ".join(extras)) if extras else ""
         lines.append(f'    {col!r}: ColSpec(name={col!r}, kind={spec.kind!r}{extras_str}),')
     lines.append("}")
-    out = "\n".join(lines)
-    print(out)
-    return out
+    print("\n".join(lines))
+
+
+def _fmt_val(v: Any) -> str:
+    if pd.isna(v):
+        return "∅"
+    return repr(v)
+
+
+def _sort_vals(vals) -> list:
+    def key(v):
+        if pd.isna(v):
+            return (1, "")
+        return (0, str(v))
+    return sorted(vals, key=key)
+
+
+def print_column_uniques(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    *,
+    max_levels: int = 25,
+) -> None:
+    """Print per-column unique values to help fill nulls= and replace= in schema_overrides."""
+    print("📋 Column uniques — for nulls=() and replace={} in schema_overrides below\n")
+
+    for col in df.columns:
+        spec = schema.get(col)
+        kind = spec.kind if spec else "?"
+        s = df[col]
+        n_miss = int(s.isna().sum())
+
+        print(f"▸ {col} · {kind}")
+
+        if kind == "continuous":
+            nn = s.dropna()
+            if nn.empty:
+                print("  · (all missing)\n")
+                continue
+            print(f"  · {nn.nunique()} unique · {nn.min()} … {nn.max()}")
+            if n_miss:
+                print(f"  · ∅ → {n_miss}")
+            print()
+            continue
+
+        if kind in ("id", "text", "datetime"):
+            nu = s.nunique(dropna=True)
+            print(f"  · {nu} unique", end="")
+            if n_miss:
+                print(f" · ∅ → {n_miss}", end="")
+            print()
+            top_n = min(8, nu + (1 if n_miss else 0))
+            for val, cnt in s.value_counts(dropna=False).head(top_n).items():
+                print(f"  · {_fmt_val(val)} → {int(cnt)}")
+            if nu > 8:
+                print(f"  · … {nu - 8} more values")
+            print()
+            continue
+
+        vals = _sort_vals(s.unique())
+        if len(vals) > max_levels:
+            head, tail = vals[:max_levels], vals[max_levels:]
+            for val in head:
+                cnt = int(s.isna().sum()) if pd.isna(val) else int((s == val).sum())
+                print(f"  · {_fmt_val(val)} → {cnt}")
+            print(f"  · … {len(tail)} more levels")
+        else:
+            for val in vals:
+                cnt = int(s.isna().sum()) if pd.isna(val) else int((s == val).sum())
+                print(f"  · {_fmt_val(val)} → {cnt}")
+        print()
+
+
+def _levels_for_spec(spec: ColSpec) -> list[Any] | None:
+    """Levels for schema summary / report (ordinal order or nominal categories)."""
+    if spec.kind == "ordinal":
+        return list(spec.ordered_levels) if spec.ordered_levels else None
+    if spec.kind == "nominal":
+        if spec.ordered_levels:
+            return list(spec.ordered_levels)
+        if spec.replace:
+            seen: list[Any] = []
+            for val in spec.replace.values():
+                if val not in seen:
+                    seen.append(val)
+            return seen or None
+    return None
 
 
 def schema_summary(schema: dict[str, ColSpec]) -> pd.DataFrame:
@@ -181,7 +276,8 @@ def schema_summary(schema: dict[str, ColSpec]) -> pd.DataFrame:
             "column": col,
             "kind": spec.kind,
             "keep": spec.keep,
-            "ordered_levels": spec.ordered_levels,
+            "datetime_bin": spec.datetime_bin,
+            "levels": _levels_for_spec(spec),
             "nulls": list(spec.nulls) if spec.nulls else None,
             "note": spec.note,
         })

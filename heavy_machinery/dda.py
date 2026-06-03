@@ -14,10 +14,14 @@ Stats per kind
 - continuous / count :
     n, n_unique, missing_pct, min, p_5th, median, mean, trimmed_mean,
     p_95th, max, mode, std, cv, iqr, skewness, kurtosis
-- ordinal / nominal / binary :
+- ordinal / nominal :
     n, n_unique, missing_pct, ordered, first_mode, first_mode_pct,
-    second_mode, second_mode_pct, rarest, max_class_imbalance,
-    median_category (ordinal only), balance, entropy_bin
+    second_mode, second_mode_pct, rarest, rarest_pct, max_class_imbalance,
+    median_category (ordinal only; empty for nominal),
+    balance, entropy_bin
+- binary :
+    n, n_unique, missing_pct, ordered, mode, mode_pct,
+    rarest, rarest_pct, max_class_imbalance, balance, entropy_bin
 - datetime : n, missing_pct, min, max, span_days
 - id/text  : n, missing_pct, n_unique
 
@@ -74,10 +78,7 @@ def _save_fig(fig: plt.Figure, path: Path) -> None:
     plt.close(fig)
 
 
-# Display formatting comes from cleaning.format_table_for_csv (shared helper).
-# CSV save only — in-memory DataFrames keep raw floats for downstream stages.
-from cleaning import format_table_for_csv as _format_table_for_csv
-
+# CSV tables are saved raw (NaN preserved). Use cleaning.format_table_for_display in the notebook.
 
 # ---------------------------------------------------------------------------
 # Per-column stats
@@ -121,8 +122,8 @@ def _stats_continuous(s: pd.Series) -> dict:
 def _stats_categorical(s: pd.Series, ordered: bool) -> dict:
     """Shared stats for ordinal, nominal, and binary columns.
 
-    median_category is filled only when `ordered=True`; for nominal/binary it
-    is NaN by definition (a median on an unordered set has no meaning).
+    median_category is the middle level when ``ordered=True``; empty for nominal.
+    second_mode / second_mode_pct are filled only when there are 3+ distinct values.
     """
     nn = s.dropna()
     n = int(nn.size)
@@ -133,7 +134,7 @@ def _stats_categorical(s: pd.Series, ordered: bool) -> dict:
         "ordered": ordered,
         "first_mode": np.nan, "first_mode_pct": np.nan,
         "second_mode": np.nan, "second_mode_pct": np.nan,
-        "rarest": np.nan, "max_class_imbalance": np.nan,
+        "rarest": np.nan, "rarest_pct": np.nan, "max_class_imbalance": np.nan,
         "median_category": np.nan,
         "balance": np.nan, "entropy_bin": np.nan,
     }
@@ -143,11 +144,15 @@ def _stats_categorical(s: pd.Series, ordered: bool) -> dict:
     vc = nn.value_counts()  # sorted descending
     base["first_mode"] = vc.index[0]
     base["first_mode_pct"] = round(float(vc.iloc[0] / n * 100), 2)
-    if len(vc) >= 2:
+    if len(vc) > 2:
         base["second_mode"] = vc.index[1]
         base["second_mode_pct"] = round(float(vc.iloc[1] / n * 100), 2)
+    else:
+        base["second_mode"] = np.nan
+        base["second_mode_pct"] = np.nan
     base["rarest"] = vc.index[-1]
     rarest_count = int(vc.iloc[-1])
+    base["rarest_pct"] = round(float(rarest_count / n * 100), 2)
     base["max_class_imbalance"] = (round(float(vc.iloc[0] / rarest_count), 2)
                                    if rarest_count > 0 else np.nan)
 
@@ -178,13 +183,40 @@ def _stats_categorical(s: pd.Series, ordered: bool) -> dict:
 
 
 def _stats_binary(s: pd.Series) -> dict:
-    """Mirror of the categorical schema (ordered=False) for binary columns.
+    """Stats for binary columns (mode/rarest; no second_mode or median_category)."""
+    nn = s.dropna()
+    n = int(nn.size)
+    base = {
+        "n": n,
+        "n_unique": int(nn.nunique()),
+        "missing_pct": round(s.isna().mean() * 100, 2),
+        "ordered": False,
+        "mode": np.nan, "mode_pct": np.nan,
+        "rarest": np.nan, "rarest_pct": np.nan,
+        "max_class_imbalance": np.nan,
+        "balance": np.nan, "entropy_bin": np.nan,
+    }
+    if n == 0:
+        return base
 
-    Binary is treated as a 2-class nominal: same column set as the categorical
-    table. p_true / n_true / n_false are derivable from first_mode + counts,
-    so they're intentionally omitted to keep the schema uniform.
-    """
-    return _stats_categorical(s, ordered=False)
+    vc = nn.value_counts()
+    mode_count = int(vc.iloc[0])
+    rarest_count = int(vc.iloc[-1])
+    base["mode"] = vc.index[0]
+    base["mode_pct"] = round(float(mode_count / n * 100), 2)
+    base["rarest"] = vc.index[-1]
+    base["rarest_pct"] = round(float(rarest_count / n * 100), 2)
+    base["max_class_imbalance"] = (
+        round(float(mode_count / rarest_count), 2) if rarest_count > 0 else np.nan
+    )
+
+    p = vc.values / n
+    p = p[p > 0]
+    H_bits = float(-(p * np.log2(p)).sum())
+    base["entropy_bin"] = round(H_bits, 4)
+    k = int((vc > 0).sum())
+    base["balance"] = round(H_bits / np.log2(k), 4) if k > 1 else np.nan
+    return base
 
 
 def _stats_datetime(s: pd.Series) -> dict:
@@ -496,8 +528,11 @@ def run_dda(
     CAT_ORDER = ["column", "kind", "ordered", "n", "n_unique", "missing_pct",
                  "first_mode", "first_mode_pct",
                  "second_mode", "second_mode_pct",
-                 "rarest", "max_class_imbalance",
+                 "rarest", "rarest_pct", "max_class_imbalance",
                  "median_category", "balance", "entropy_bin"]
+    BIN_ORDER = ["column", "kind", "ordered", "n", "n_unique", "missing_pct",
+                 "mode", "mode_pct", "rarest", "rarest_pct",
+                 "max_class_imbalance", "balance", "entropy_bin"]
 
     def _reorder(df_tbl, order):
         if df_tbl.empty:
@@ -509,15 +544,13 @@ def run_dda(
     tables = {
         "continuous": _reorder(pd.DataFrame(rows_cont), CONT_ORDER),
         "categorical": _reorder(pd.DataFrame(rows_cat), CAT_ORDER),
-        "binary": _reorder(pd.DataFrame(rows_bin), CAT_ORDER),
+        "binary": _reorder(pd.DataFrame(rows_bin), BIN_ORDER),
         "datetime": pd.DataFrame(rows_dt),
         "id_text": pd.DataFrame(rows_id),
     }
     for name, tbl in tables.items():
         if not tbl.empty:
-            # Format-on-save: integers stay int, fractions -> 3 sig figs.
-            # In-memory `tbl` is untouched so downstream code keeps full precision.
-            _format_table_for_csv(tbl).to_csv(tabs_dir / f"dda_{name}.csv", index=False)  # display-only rounding
+            tbl.to_csv(tabs_dir / f"dda_{name}.csv", index=False)
 
     # Overall dataset overview
     analysed_tables = (
@@ -534,6 +567,6 @@ def run_dda(
         "n_cols_analysed": n_cols_analysed,
         "missing_cells_pct": round(df.isna().mean().mean() * 100, 2),
     }])
-    _format_table_for_csv(overall).to_csv(tabs_dir / "dda_overall.csv", index=False)
+    overall.to_csv(tabs_dir / "dda_overall.csv", index=False)
     tables["overall"] = overall
     return tables

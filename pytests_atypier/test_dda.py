@@ -36,12 +36,37 @@ def test_stats_categorical():
     s = pd.Series(["a", "a", "b"])
     stats = dda._stats_categorical(s, ordered=False)
     assert stats["first_mode"] == "a"
+    assert pd.isna(stats["median_category"])
+    assert pd.isna(stats["second_mode"])
+    assert pd.isna(stats["second_mode_pct"])
+    assert stats["rarest_pct"] == round(100 / 3, 2)
+
+
+def test_stats_categorical_three_levels():
+    s = pd.Series(["a", "a", "a", "b", "c"])
+    stats = dda._stats_categorical(s, ordered=False)
+    assert stats["second_mode"] == "b"
+    assert stats["second_mode_pct"] == 20.0
+    assert stats["rarest_pct"] == 20.0
+
+
+def test_stats_categorical_ordinal():
+    s = pd.Series(pd.Categorical(["a", "b", "a"], categories=["a", "b"], ordered=True))
+    stats = dda._stats_categorical(s, ordered=True)
+    assert stats["median_category"] == "a"
 
 
 def test_stats_binary():
     s = pd.Series([True, False, True], dtype="boolean")
     stats = dda._stats_binary(s)
     assert stats["n"] == 3
+    assert stats["mode"] is True
+    assert stats["mode_pct"] == round(200 / 3, 2)
+    assert stats["rarest"] is False
+    assert stats["rarest_pct"] == round(100 / 3, 2)
+    assert "median_category" not in stats
+    assert "second_mode" not in stats
+    assert "first_mode" not in stats
 
 
 def test_stats_datetime():

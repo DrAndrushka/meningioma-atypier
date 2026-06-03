@@ -50,6 +50,18 @@ def test_prune_by_vif(tiny_df, tiny_schema):
     pruned, vif_df = inf._prune_by_vif(X, threshold=5.0)
     assert list(pruned.columns) == list(X.columns)
     assert "vif" in vif_df.columns
+    assert vif_df["vif"].notna().all()
+
+
+def test_prune_by_vif_with_nan_rows(tiny_schema):
+    """VIF must use complete cases when design matrix has NaN (e.g. unimputed binary)."""
+    X = pd.DataFrame({
+        "a": [1.0, 2.0, 3.0, np.nan],
+        "b": [1.0, 0.0, 1.0, 1.0],
+    })
+    _, vif_df = inf._prune_by_vif(X, threshold=5.0)
+    assert vif_df["vif"].notna().all()
+    assert (vif_df["vif"] >= 1.0).all()
 
 
 def test_rubin_pool():
@@ -109,6 +121,16 @@ def test_empty_inferential_df():
     assert list(df.columns)
 
 
+def test_summarize_multivariable_cases(tiny_df, tiny_schema):
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    summary = inf.summarize_multivariable_cases(
+        frames[0], schema, targets=["event"], predictors=["age"],
+        positive_class={"event": True},
+    )
+    assert summary.iloc[0]["n_complete_cases"] == len(frames[0])
+    assert summary.iloc[0]["n_outcome_events"] >= 1
+
+
 def test_run_inferential(tiny_df, tiny_schema, tmp_output):
     frames, schema = _make_imputed(tiny_df, tiny_schema)
     out = run_inferential(
@@ -118,3 +140,9 @@ def test_run_inferential(tiny_df, tiny_schema, tmp_output):
         output_root=tmp_output,
     )
     assert "target" in out.columns
+    cases_path = tmp_output / "inferential" / "tables" / "multivariable_cases.csv"
+    assert cases_path.exists()
+    cases = pd.read_csv(cases_path)
+    assert "epv" in cases.columns
+    meta_path = tmp_output / "inferential" / "tables" / "event__calculator.json"
+    assert meta_path.exists()

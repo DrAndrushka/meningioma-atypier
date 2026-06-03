@@ -40,6 +40,13 @@ def test_format_number():
     assert format_number(1.23456, "default") == 1.235
 
 
+def test_format_table_for_display():
+    df = pd.DataFrame({"a": [1.0, np.nan], "b": ["x", None]})
+    out = cl.format_table_for_display(df)
+    assert out.loc[1, "a"] == ""
+    assert out.loc[1, "b"] == ""
+
+
 def test_format_table_for_csv():
     df = pd.DataFrame({"p": [0.0001, 0.05], "n": [10.0, 20.0]})
     out = format_table_for_csv(df)
@@ -78,6 +85,39 @@ def test_bin_numeric():
 def test_bin_datetime():
     s = pd.Series(pd.to_datetime(["2018-03-01", "2019-07-15"]))
     assert bin_datetime(s, unit="year").tolist() == [2018, 2019]
+    assert bin_datetime(s, unit="day").tolist() == ["2018-03-01", "2019-07-15"]
+
+
+def test_apply_schema_datetime_bin(tiny_df):
+    schema = {
+        "entry_year": ColSpec("entry_year", "datetime", keep=False, datetime_bin="year"),
+    }
+    out = apply_schema(tiny_df[["entry_year"]].copy(), schema)
+    assert list(out.columns) == ["entry_year"]
+    assert out["entry_year"].tolist() == [2018, 2019, 2020, 2021]
+    assert schema["entry_year"].kind == "ordinal"
+    assert schema["entry_year"].ordered_levels == [2018, 2019, 2020, 2021]
+
+
+def test_apply_schema_datetime_bin_full(tiny_df):
+    schema = {
+        "entry_year": ColSpec("entry_year", "datetime", datetime_bin="full"),
+    }
+    out = apply_schema(tiny_df[["entry_year"]].copy(), schema)
+    assert list(out.columns) == ["entry_year"]
+    assert schema["entry_year"].kind == "ordinal"
+    assert out["entry_year"].tolist() == [
+        "2018-01-01", "2019-06-01", "2020-03-01", "2021-01-01",
+    ]
+
+
+def test_apply_schema_datetime_bin_full_with_time():
+    df = pd.DataFrame({"mri_date": ["2018-03-01 14:30:00", "2019-07-15 09:00:00"]})
+    schema = {"mri_date": ColSpec("mri_date", "datetime", datetime_bin="full")}
+    out = apply_schema(df, schema)
+    assert pd.api.types.is_datetime64_any_dtype(out["mri_date"])
+    assert schema["mri_date"].kind == "datetime"
+    assert out["mri_date"].dt.hour.tolist() == [14, 9]
 
 
 def test_make_missing_flag():
@@ -105,10 +145,13 @@ def test_build_cleaning_summary(tiny_schema):
         n_rows_after_schema=10,
         n_rows_final=9,
         schema=tiny_schema,
-        drop_log=[{"reason": "test", "criterion": "x", "n_remaining": 9, "n_dropped": 1}],
+        drop_log=[{"reason": "test", "criterion": "x", "n_before": 10, "n_remaining": 9, "n_dropped": 1}],
         dupes=None,
     )
     assert tbl.iloc[-1]["step"] == "final"
+    drop_row = tbl.loc[tbl["step"] == "drop_rows"].iloc[0]
+    assert drop_row["n_rows_before"] == 10
+    assert drop_row["n_rows"] == 9
 
 
 def test_build_cleaning_log():

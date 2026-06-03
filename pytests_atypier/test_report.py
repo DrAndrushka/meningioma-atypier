@@ -206,7 +206,22 @@ def test_render_eda(report_cfg, report_art):
 
 
 def test_render_inferential(report_cfg, report_art):
-    assert "<section" in render_inferential(report_cfg, report_art)
+    report_art.inferential_multivariable = {
+        "event": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+    }
+    report_art.inferential_cases = pd.DataFrame([{
+        "target": "event",
+        "n_complete_cases": 40,
+        "n_outcome_events": 12,
+        "n_design_columns": 3,
+        "epv": 4.0,
+    }])
+    html = render_inferential(report_cfg, report_art)
+    assert "<section" in html
+    assert "EPV = 4" in html
 
 
 def test_to_int_or_none():
@@ -300,10 +315,29 @@ def test_focus_stat_cards():
 
 
 def test_render_focus_predictor(report_cfg, report_art):
-    report_cfg.focus_predictor = "age"
+    report_cfg.focus_predictor = "grade"
+    report_art.schema_summary = pd.DataFrame([{
+        "column": "grade",
+        "kind": "ordinal",
+        "keep": True,
+        "levels": [1, 2, 3],
+        "note": "",
+    }])
     report_art.dda_continuous = pd.DataFrame([{"column": "age", "mean": 55.0}])
     html = render_focus_predictor(report_cfg, report_art)
     assert isinstance(html, str)
+    assert "1 &lt; 2 &lt; 3" in html
+
+
+def test_focus_schema_display_row():
+    ordinal = rp._focus_schema_display_row(pd.Series({
+        "kind": "ordinal", "keep": True, "levels": ["low", "mid", "high"],
+    }))
+    assert ordinal.loc[0, "levels"] == "low < mid < high"
+    nominal = rp._focus_schema_display_row(pd.Series({
+        "kind": "nominal", "keep": True, "levels": ["primary", "recurrent"],
+    }))
+    assert nominal.loc[0, "levels"] == "primary, recurrent"
 
 
 def test_render_final_conclusion(report_cfg, report_art):
@@ -311,7 +345,36 @@ def test_render_final_conclusion(report_cfg, report_art):
 
 
 def test_render_appendix(report_cfg, report_art):
-    assert isinstance(render_appendix(report_cfg, report_art), str)
+    html = render_appendix(report_cfg, report_art)
+    assert isinstance(html, str)
+    assert "Environment &amp; package versions" in html or "Environment & package versions" in html
+    assert "<details" in html
+    assert "pandas" in html
+    assert "Python" in html
+
+
+def test_render_environment_appendix():
+    html = rp._render_environment_appendix()
+    assert "Computer / runtime" in html
+    assert "Package versions" in html
+    assert "pandas" in html
+    assert "numpy" in html
+
+
+def test_system_specs_processor_and_graphics(monkeypatch):
+    monkeypatch.setattr(
+        rp, "_processor_description",
+        lambda: "Intel(R) Core(TM) i7-12700K — 12 cores, 20 threads",
+    )
+    monkeypatch.setattr(
+        rp, "_graphics_descriptions",
+        lambda: ["NVIDIA GeForce RTX 3080, 10 GB VRAM, driver 31.0.15.4614"],
+    )
+    monkeypatch.setattr(rp, "_total_memory_gb", lambda: 32.0)
+    rows = {r["item"]: r["value"] for r in rp._system_specs_rows()}
+    assert "12 cores" in rows["Processor"]
+    assert "NVIDIA GeForce RTX 3080" in rows["Graphics"]
+    assert rows["RAM"] == "32.0 GB"
 
 
 def test_wrap_html():
