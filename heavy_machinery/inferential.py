@@ -554,6 +554,10 @@ def run_inferential(
     _format_table_for_csv(cases_df).to_csv(
         tabs_dir / "multivariable_cases.csv", index=False)
 
+    from model_calculator import write_streamlit_artifacts
+
+    write_streamlit_artifacts(output_root, cases_df=cases_df)
+
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]
     _format_inferential_table(combined).to_csv(

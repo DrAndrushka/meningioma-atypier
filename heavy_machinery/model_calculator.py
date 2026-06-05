@@ -78,14 +78,21 @@ def risk_category(probability: float) -> str:
     return "High estimated probability"
 
 
-def _apply_continuous_transform(value: Any, transform: str, feature_name: str) -> float:
+def _apply_continuous_transform(
+    value: Any,
+    transform: str,
+    feature: dict[str, Any],
+) -> float:
+    name = feature["name"]
     if transform == "raw":
         return float(value)
     if transform == "standardize":
-        raise NotImplementedError(
-            f"Transform 'standardize' is not implemented yet for {feature_name!r}"
-        )
-    raise ValueError(f"Unknown transform {transform!r} for feature {feature_name!r}")
+        mu = float(feature["z_mu"])
+        sd = float(feature.get("z_sd") or 1.0)
+        if sd == 0:
+            sd = 1.0
+        return (float(value) - mu) / sd
+    raise ValueError(f"Unknown transform {transform!r} for feature {name!r}")
 
 
 def encode_feature_value(feature: dict[str, Any], raw_value: Any) -> dict[str, float]:
@@ -95,7 +102,7 @@ def encode_feature_value(feature: dict[str, Any], raw_value: Any) -> dict[str, f
 
     if ftype == "continuous":
         transform = feature.get("transform", "raw")
-        encoded_val = _apply_continuous_transform(raw_value, transform, name)
+        encoded_val = _apply_continuous_transform(raw_value, transform, feature)
         return {name: encoded_val}
 
     if ftype == "binary":
@@ -466,12 +473,179 @@ def render_validation_expander(artifact: dict[str, Any]) -> None:
         st.info(artifact["clinical_note"])
 
 
-def render_model_calculator(artifact_path: str) -> None:
+_FIELD_LABELS: dict[str, str] = {
+    "side": "Tumor side",
+    "tumor_location": "Tumor location",
+    "tumor_volume": "Tumor volume (cm³)",
+    "tumor_episode": "Tumor episode",
+    "edema_volume_cm3": "Perifocal edema volume (cm³)",
+    "perifocal_edema": "Perifocal edema present",
+    "cystic_component": "Cystic component",
+    "adc_value": "ADC value",
+    "max_diameter_cm": "Maximum tumor diameter (cm)",
+    "age_bins": "Age group",
+    "cortical_destruction": "Cortical destruction",
+    "hyperostosis": "Hyperostosis present",
+}
+
+
+def _feature_label(name: str) -> str:
+    return _FIELD_LABELS.get(name, name.replace("_", " ").capitalize())
+
+
+def calculator_meta_to_streamlit_artifact(
+    meta: dict[str, Any],
+    *,
+    n: int | None = None,
+    events: int | None = None,
+) -> dict[str, Any]:
+    """Convert inferential ``*__calculator.json`` meta to Streamlit artifact schema."""
+    target = str(meta["target"])
+    coefficients: dict[str, float] = {"const": float(meta["intercept"])}
+    features: list[dict[str, Any]] = []
+
+    for term in meta.get("terms", []):
+        name = str(term["name"])
+        kind = str(term["kind"])
+        label = _feature_label(name)
+
+        if kind == "continuous":
+            z_mu = float(term["z_mu"])
+            z_sd = max(float(term["z_sd"]), 1.0)
+            coefficients[name] = float(term["coef"])
+            features.append({
+                "name": name,
+                "label": label,
+                "type": "continuous",
+                "input_widget": "number_input",
+                "unit": "cm³" if "volume" in name else None,
+                "min_value": round(max(0.0, z_mu - 3 * z_sd), 2),
+                "max_value": round(z_mu + 3 * z_sd, 2),
+                "default": round(z_mu, 2),
+                "step": 0.1 if z_sd < 5 else 1.0,
+                "transform": "standardize",
+                "z_mu": z_mu,
+                "z_sd": float(term["z_sd"]),
+            })
+        elif kind == "binary":
+            coefficients[name] = float(term["coef"])
+            features.append({
+                "name": name,
+                "label": label,
+                "type": "binary",
+                "input_widget": "checkbox",
+                "encoding": {name: {"true": 1, "false": 0}},
+            })
+        elif kind == "categorical":
+            reference = str(term["reference"])
+            levels = [str(x) for x in term["levels"]]
+            encoding: dict[str, dict[str, int]] = {}
+            for level, coef in term["dummies"].items():
+                col = f"{name}_{level}"
+                coefficients[col] = float(coef)
+                encoding[col] = {
+                    lv: (1 if lv == str(level) else 0) for lv in levels
+                }
+            features.append({
+                "name": name,
+                "label": label,
+                "type": "categorical",
+                "input_widget": "selectbox",
+                "choices": levels,
+                "encoding": encoding,
+            })
+
+    # Drop None-valued optional keys so JSON stays clean.
+    clean_features = [
+        {k: v for k, v in feat.items() if v is not None}
+        for feat in features
+    ]
+
+    title_target = target.replace("_", " ")
+    artifact: dict[str, Any] = {
+        "model_name": f"{title_target.title()} risk calculator",
+        "target": target,
+        "model_type": "logistic_regression",
+        "created_from": "pooled multivariable logistic regression (Rubin rules)",
+        "coefficients": coefficients,
+        "features": clean_features,
+        "clinical_note": (
+            "Exploratory research calculator fitted on the development cohort. "
+            "Not for standalone clinical decision-making without external validation."
+        ),
+    }
+    if n is not None:
+        artifact["n"] = int(n)
+    if events is not None:
+        artifact["events"] = int(events)
+    return artifact
+
+
+def _default_streamlit_artifact_dir(output_root: Path) -> Path:
+    """``heavy_machinery/output`` → repo-root ``model_artifacts/``."""
+    return output_root.resolve().parent.parent / "model_artifacts"
+
+
+def write_streamlit_artifacts(
+    output_root: Path | str,
+    *,
+    cases_df: pd.DataFrame | None = None,
+    artifact_dir: Path | str | None = None,
+) -> list[Path]:
+    """Write ``model_artifacts/<target>_model.json`` from inferential calculator meta."""
+    output_root = Path(output_root)
+    tabs_dir = output_root / "inferential" / "tables"
+    out_dir = Path(artifact_dir) if artifact_dir is not None else _default_streamlit_artifact_dir(output_root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written: list[Path] = []
+    for meta_path in sorted(tabs_dir.glob("*__calculator.json")):
+        target = meta_path.stem.replace("__calculator", "")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        n = events = None
+        if cases_df is not None and not cases_df.empty and "target" in cases_df.columns:
+            hit = cases_df.loc[cases_df["target"] == target]
+            if not hit.empty:
+                row = hit.iloc[0]
+                if pd.notna(row.get("n_complete_cases")):
+                    n = int(row["n_complete_cases"])
+                if pd.notna(row.get("n_outcome_events")):
+                    events = int(row["n_outcome_events"])
+        artifact = calculator_meta_to_streamlit_artifact(meta, n=n, events=events)
+        out_path = out_dir / f"{target}_model.json"
+        out_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
+        written.append(out_path)
+    return written
+
+
+def resolve_streamlit_artifact_path(
+    artifact_path: str | Path | None = None,
+    *,
+    project_root: Path | str | None = None,
+) -> Path:
+    """Resolve explicit path or newest ``model_artifacts/*_model.json``."""
+    if artifact_path is not None:
+        return _resolve_artifact_path(artifact_path)
+    root = Path(project_root) if project_root is not None else _PROJECT_ROOT
+    art_dir = root / "model_artifacts"
+    candidates = sorted(art_dir.glob("*_model.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        raise FileNotFoundError(
+            f"No Streamlit model artifacts found in {art_dir}. "
+            "Run §11 inferential in the notebook first."
+        )
+    preferred = art_dir / "high_grade_model.json"
+    if preferred.is_file():
+        return preferred.resolve()
+    return candidates[0].resolve()
+
+
+def render_model_calculator(artifact_path: str | Path | None = None) -> None:
     """Load artifact, render inputs, show predicted risk, and methodology expander."""
     import streamlit as st
 
     try:
-        artifact = load_model_artifact(artifact_path)
+        artifact = load_model_artifact(resolve_streamlit_artifact_path(artifact_path))
     except (FileNotFoundError, ValueError) as exc:
         st.error(str(exc))
         st.stop()

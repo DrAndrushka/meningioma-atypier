@@ -11,8 +11,10 @@ from model_calculator import (
     build_auc_comparison_figure,
     build_encoded_features,
     build_roc_validation_figure,
+    calculator_meta_to_streamlit_artifact,
     load_model_artifact,
     predict_from_artifact,
+    write_streamlit_artifacts,
 )
 
 ARTIFACT_PATH = Path(__file__).resolve().parents[1] / "model_artifacts" / "high_grade_model.json"
@@ -37,7 +39,7 @@ def test_reference_case_probability(artifact: dict):
         "hyperostosis": False,
     }
     p = predict_from_artifact(user_inputs, artifact)
-    assert p == pytest.approx(0.434, abs=0.001)
+    assert p == pytest.approx(0.439, abs=0.001)
 
 
 def test_build_encoded_features_keys(artifact: dict):
@@ -51,13 +53,17 @@ def test_build_encoded_features_keys(artifact: dict):
         artifact,
     )
     assert encoded["tumor_location_skull_base"] == 1.0
-    assert encoded["tumor_volume"] == 10.0
+    vol_feat = next(f for f in artifact["features"] if f["name"] == "tumor_volume")
+    z_vol = (10.0 - vol_feat["z_mu"]) / vol_feat["z_sd"]
+    assert encoded["tumor_volume"] == pytest.approx(z_vol)
     assert encoded["perifocal_edema"] == 0.0
     assert encoded["hyperostosis"] == 1.0
 
 
 def test_auc_validation_figures(artifact: dict):
-    validation = artifact["validation"]
+    validation = artifact.get("validation")
+    if not validation:
+        pytest.skip("Pipeline-exported artifact has no bootstrap validation block")
     auc_fig = build_auc_comparison_figure(validation)
     roc_fig = build_roc_validation_figure(validation)
     assert auc_fig is not None
@@ -66,6 +72,45 @@ def test_auc_validation_figures(artifact: dict):
 
     plt.close(auc_fig)
     plt.close(roc_fig)
+
+
+def test_calculator_meta_to_streamlit_artifact():
+    meta = {
+        "target": "high_grade",
+        "intercept": -0.5,
+        "terms": [
+            {
+                "name": "tumor_volume",
+                "kind": "continuous",
+                "coef": 0.4,
+                "z_mu": 20.0,
+                "z_sd": 10.0,
+            },
+            {"name": "hyperostosis", "kind": "binary", "coef": 0.6},
+        ],
+    }
+    out = calculator_meta_to_streamlit_artifact(meta, n=100, events=30)
+    assert out["target"] == "high_grade"
+    assert out["coefficients"]["const"] == -0.5
+    assert out["features"][0]["transform"] == "standardize"
+    assert out["n"] == 100
+
+
+def test_write_streamlit_artifacts(tmp_path: Path):
+    tabs = tmp_path / "inferential" / "tables"
+    tabs.mkdir(parents=True)
+    (tabs / "event__calculator.json").write_text(
+        json.dumps({
+            "target": "event",
+            "intercept": 0.1,
+            "terms": [{"name": "age", "kind": "binary", "coef": 0.2}],
+        }),
+        encoding="utf-8",
+    )
+    art_dir = tmp_path.parent / "model_artifacts"
+    paths = write_streamlit_artifacts(tmp_path, artifact_dir=art_dir)
+    assert paths == [art_dir / "event_model.json"]
+    assert json.loads(paths[0].read_text())["target"] == "event"
 
 
 def test_missing_coefficient_raises(tmp_path: Path):

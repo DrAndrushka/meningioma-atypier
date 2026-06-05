@@ -39,4 +39,4 @@ st.write(
     "using a multivariable logistic model defined in a portable JSON artifact."
 )
 
-render_model_calculator("model_artifacts/high_grade_model.json")
+render_model_calculator()

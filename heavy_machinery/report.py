@@ -55,6 +55,8 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from cleaning import format_number, format_table_for_display
+
 
 # ---------------------------------------------------------------------------
 # Thresholds & constants (Cohen-style defaults, configurable via dataclass)
@@ -970,6 +972,17 @@ def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
     return f'<section class="report-section">{"".join(body)}</section>'
 
 
+def _dda_continuous_for_report(df: pd.DataFrame) -> pd.DataFrame:
+    """Display copy of continuous DDA stats (max 2 decimal places)."""
+    out = format_table_for_display(df)
+    # ``mode`` is numeric here but classified as ``default`` (3 dp) in cleaning.
+    if "mode" in df.columns and pd.api.types.is_numeric_dtype(df["mode"]):
+        out["mode"] = df["mode"].map(
+            lambda v: format_number(v, "central") if pd.notna(v) else ""
+        )
+    return out
+
+
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
     """📊 DDA story with per-kind subsections."""
     body = [
@@ -1017,7 +1030,12 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         if tbl is None or tbl.empty:
             body.append('<p class="muted"><em>(no variables of this kind)</em></p>')
         else:
-            body.append(table_to_html(tbl, row_class_fn=row_fn))
+            display_tbl = (
+                _dda_continuous_for_report(tbl)
+                if tbl is art.dda_continuous
+                else tbl
+            )
+            body.append(table_to_html(display_tbl, row_class_fn=row_fn))
 
     # Figures (collapsed by default; usually many)
     if art.dda_figures:
@@ -1657,7 +1675,14 @@ def _focus_stat_cards(row: pd.Series, kind: str = "") -> str:
             continue
         if pd.isna(val):
             continue
-        disp = f"{float(val):.3g}" if isinstance(val, (int, float, np.floating)) else str(val)
+        if isinstance(val, (int, float, np.floating)):
+            rule = "central" if key in {
+                "median", "mean", "trimmed_mean", "min", "max", "std", "cv",
+                "iqr", "p_5th", "p_95th", "skewness", "kurtosis", "mode",
+            } else "default"
+            disp = str(format_number(val, rule))
+        else:
+            disp = str(val)
         cards.append(
             '<div class="focus-stat-card">'
             f'<div class="label">{_esc(label)}</div>'
@@ -1803,7 +1828,10 @@ def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
         routes_html = _render_focus_dda_routes(dda_row, ref_level)
         if routes_html:
             body.append(routes_html)
-        body.append(table_to_html(pd.DataFrame([dda_row])))
+        row_df = pd.DataFrame([dda_row])
+        if kind in ("continuous", "count"):
+            row_df = _dda_continuous_for_report(row_df)
+        body.append(table_to_html(row_df))
 
     # DDA figure: first SVG from output/dda/figures/ matching focus_predictor
     # (stem == col or col__*, e.g. biopsy_type__bar.svg from dda.py). Display

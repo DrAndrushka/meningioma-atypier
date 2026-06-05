@@ -193,6 +193,39 @@ def test_render_dda(report_cfg, report_art):
     assert "<section" in render_dda(report_cfg, report_art)
 
 
+def test_dda_continuous_for_report_rounds_to_two_decimals():
+    df = pd.DataFrame([{
+        "column": "age",
+        "kind": "continuous",
+        "n": 365,
+        "n_unique": 61,
+        "missing_pct": 0.0,
+        "mean": 62.9972602739726,
+        "std": 12.764454988545294,
+        "mode": 1.0,
+    }])
+    out = rp._dda_continuous_for_report(df)
+    assert out.loc[0, "mean"] == 63
+    assert out.loc[0, "std"] == 12.76
+    assert out.loc[0, "n"] == 365
+
+
+def test_render_dda_continuous_table_in_report(report_cfg, report_art):
+    report_art.dda_continuous = pd.DataFrame([{
+        "column": "age",
+        "kind": "continuous",
+        "n": 365,
+        "n_unique": 61,
+        "missing_pct": 0.0,
+        "mean": 62.9972602739726,
+        "median": 64.0,
+    }])
+    html = render_dda(report_cfg, report_art)
+    assert "Continuous / count variables" in html
+    assert "62.9972602739726" not in html
+    assert ">63<" in html or ">63.0<" in html
+
+
 def test_dda_glossary():
     assert "missing_pct" in rp._dda_glossary()
 
