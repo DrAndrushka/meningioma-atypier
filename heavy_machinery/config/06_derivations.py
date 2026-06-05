@@ -1,7 +1,7 @@
 """§06 — declarative derivations (notebook-driven)."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -64,6 +64,19 @@ class Apply:
     name: str
     source: str
     fn: Callable[[pd.Series], pd.Series]
+    kind: str = "continuous"
+    active: bool = True
+    overwrite: bool = False
+    reason: str = ""
+    ordered_levels: list | None = None
+
+@dataclass
+class Compute:
+    """Custom derivation that needs several columns: ``fn`` receives the whole frame."""
+
+    name: str
+    fn: Callable[[pd.DataFrame], pd.Series]
+    sources: list[str] = field(default_factory=list)
     kind: str = "continuous"
     active: bool = True
     overwrite: bool = False
@@ -272,6 +285,68 @@ def _apply_apply(
     return df
 
 
+def _apply_compute(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    spec: Compute,
+    log: list[dict],
+) -> pd.DataFrame:
+    type_name = "Compute"
+    base = {
+        "derivation": spec.name,
+        "type": type_name,
+        "active": spec.active,
+        "source": ", ".join(spec.sources),
+        "created": spec.name,
+        "kind": spec.kind,
+        "reason": spec.reason,
+    }
+
+    if not spec.active:
+        log.append(_log_entry(**base, schema_action="skipped (inactive)"))
+        return df
+
+    missing = [c for c in spec.sources if c not in df.columns]
+    if missing:
+        log.append(_log_entry(
+            **base,
+            schema_action="skipped (source missing)",
+            warning=f"Source column(s) {missing!r} not in df.",
+        ))
+        return df
+
+    if spec.name in df.columns and not spec.overwrite:
+        log.append(_log_entry(
+            **base,
+            schema_action="skipped (already exists)",
+            warning=f"Column {spec.name!r} exists; set overwrite=True to replace.",
+        ))
+        return df
+
+    result = spec.fn(df)
+    if spec.kind == "ordinal" and spec.ordered_levels is not None:
+        result = pd.Categorical(result, categories=spec.ordered_levels, ordered=True)
+
+    df[spec.name] = result
+
+    rows_total, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
+    schema_action = _set_schema_col(
+        schema,
+        spec.name,
+        spec.kind,
+        ordered_levels=spec.ordered_levels if spec.kind == "ordinal" else None,
+        reason=spec.reason,
+    )
+    log.append(_log_entry(
+        **base,
+        rows_total=rows_total,
+        rows_nonmissing=rows_nonmissing,
+        rows_missing=rows_missing,
+        schema_action=schema_action,
+    ))
+    return df
+
+
 def apply_derivations(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
@@ -292,6 +367,8 @@ def apply_derivations(
             out = _apply_bin_numeric(out, out_schema, spec, log)
         elif isinstance(spec, IsIn):
             out = _apply_is_in(out, out_schema, spec, log)
+        elif isinstance(spec, Compute):
+            out = _apply_compute(out, out_schema, spec, log)
         elif isinstance(spec, Apply):
             out = _apply_apply(out, out_schema, spec, log)
         else:
