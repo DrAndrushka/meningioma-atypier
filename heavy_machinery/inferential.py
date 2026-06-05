@@ -556,7 +556,14 @@ def run_inferential(
 
     from model_calculator import write_streamlit_artifacts
 
-    write_streamlit_artifacts(output_root, cases_df=cases_df)
+    write_streamlit_artifacts(
+        output_root,
+        cases_df=cases_df,
+        cohort_df=imputed_frames[0],
+        schema=schema,
+        predictors=predictors,
+        vif_threshold=vif_threshold,
+    )
 
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -591,8 +591,15 @@ def write_streamlit_artifacts(
     *,
     cases_df: pd.DataFrame | None = None,
     artifact_dir: Path | str | None = None,
+    cohort_df: pd.DataFrame | None = None,
+    schema: dict | None = None,
+    predictors: Sequence[str] | None = None,
+    vif_threshold: float = 5.0,
+    n_bootstrap: int = 1000,
 ) -> list[Path]:
     """Write ``model_artifacts/<target>_model.json`` from inferential calculator meta."""
+    from model_validation import build_complete_case_frame, enrich_streamlit_artifact
+
     output_root = Path(output_root)
     tabs_dir = output_root / "inferential" / "tables"
     out_dir = Path(artifact_dir) if artifact_dir is not None else _default_streamlit_artifact_dir(output_root)
@@ -612,6 +619,32 @@ def write_streamlit_artifacts(
                 if pd.notna(row.get("n_outcome_events")):
                     events = int(row["n_outcome_events"])
         artifact = calculator_meta_to_streamlit_artifact(meta, n=n, events=events)
+
+        term_predictors = [str(t["name"]) for t in meta.get("terms", [])]
+        use_predictors = list(predictors) if predictors is not None else term_predictors
+        if (
+            cohort_df is not None
+            and schema is not None
+            and use_predictors
+            and target in cohort_df.columns
+        ):
+            try:
+                model_df, design_cols = build_complete_case_frame(
+                    cohort_df,
+                    schema,
+                    use_predictors,
+                    target,
+                    vif_threshold=vif_threshold,
+                )
+                artifact = enrich_streamlit_artifact(
+                    artifact,
+                    model_df,
+                    design_cols,
+                    n_bootstrap=n_bootstrap,
+                )
+            except (ValueError, RuntimeError):
+                pass
+
         out_path = out_dir / f"{target}_model.json"
         out_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
         written.append(out_path)
