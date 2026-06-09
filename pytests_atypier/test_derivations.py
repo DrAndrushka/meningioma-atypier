@@ -10,7 +10,7 @@ from config import load
 _c06 = load("06_derivations")
 
 
-def test_apply_derivations_bin_and_is_in():
+def test_apply_derivations_bin_and_flag():
     df = pd.DataFrame({"age": [45, 55, 65], "who_grade": ["1", "2", "3"]})
     schema = {
         "age": ColSpec("age", "continuous"),
@@ -24,10 +24,11 @@ def test_apply_derivations_bin_and_is_in():
             labels=["<50", "50-59", "60+"],
             reason="test bins",
         ),
-        _c06.IsIn(
+        _c06.Apply(
             name="high_grade",
             source="who_grade",
-            values=["2", "3"],
+            fn=lambda s: s.isin(["2", "3"]).astype("boolean"),
+            kind="binary",
             reason="test flag",
         ),
     ]
@@ -38,7 +39,6 @@ def test_apply_derivations_bin_and_is_in():
     assert out["high_grade"].tolist() == [False, True, True]
     assert out["high_grade"].dtype == "boolean"
     assert out_schema["high_grade"].kind == "binary"
-    assert log.iloc[1]["matched_n"] == 2
     assert "derivation" in log.columns
 
 
@@ -62,10 +62,37 @@ def test_apply_derivations_custom_apply():
 def test_skipped_missing_source():
     df = pd.DataFrame({"a": [1]})
     schema = {"a": ColSpec("a", "continuous")}
-    derivations = [_c06.IsIn(name="flag", source="missing", values=[1])]
+    derivations = [_c06.Apply(name="flag", source="missing", fn=lambda s: s)]
     out, _, log = _c06.apply_derivations(df, schema, derivations, preview=False)
     assert "flag" not in out.columns
     assert "source missing" in log.iloc[0]["schema_action"]
+
+
+def test_apply_derivations_writes_derived_summary_row(tmp_path):
+    cleaning_dir = tmp_path / "cleaning"
+    cleaning_dir.mkdir()
+    pd.DataFrame([
+        {"step": "raw_data", "detail": "rows", "n_rows": 3, "n_dropped": 0},
+        {"step": "final", "detail": "final", "n_rows": 3, "n_dropped": 0},
+    ]).to_csv(cleaning_dir / "cleaning_summary.csv", index=False)
+
+    df = pd.DataFrame({"x": [1, 2, 3]})
+    schema = {"x": ColSpec("x", "continuous")}
+    derivations = [
+        _c06.Apply(name="x2", source="x", fn=lambda s: s * 2, kind="continuous"),
+    ]
+    # Run twice to confirm the derived row is replaced, not duplicated.
+    for _ in range(2):
+        _c06.apply_derivations(
+            df, schema, derivations,
+            output_root=tmp_path, write_csv=True, preview=False,
+        )
+    summary = pd.read_csv(cleaning_dir / "cleaning_summary.csv")
+    derived = summary[summary["step"] == "derived"]
+    assert len(derived) == 1
+    assert "x2" in derived.iloc[0]["detail"]
+    steps = summary["step"].tolist()
+    assert steps.index("derived") < steps.index("final")
 
 
 def test_skipped_inactive():
@@ -93,12 +120,3 @@ def test_skipped_already_exists():
     out, _, log = _c06.apply_derivations(df, schema, derivations, preview=False)
     assert out["y"].iloc[0] == 9
     assert "already exists" in log.iloc[0]["schema_action"]
-
-
-def test_is_in_zero_match_warning():
-    df = pd.DataFrame({"g": ["1", "1"]})
-    schema = {"g": ColSpec("g", "ordinal")}
-    derivations = [_c06.IsIn(name="flag", source="g", values=[99])]
-    _, _, log = _c06.apply_derivations(df, schema, derivations, preview=False)
-    assert log.iloc[0]["matched_n"] == 0
-    assert "check dtype" in log.iloc[0]["warning"]

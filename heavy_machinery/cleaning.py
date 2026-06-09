@@ -229,9 +229,15 @@ def apply_schema(
                     f"{', '.join(repr(u) for u in _DATETIME_BINS)} "
                     f"(got {spec.datetime_bin!r})"
                 )
-            out[col] = pd.to_datetime(
-                s.astype("string").str.strip(" .").str.replace(",", ".", regex=False),
-                format="mixed", errors="coerce")
+            if pd.api.types.is_datetime64_any_dtype(s):
+                # Already parsed upstream — don't re-stringify (that would force
+                # an ISO round-trip and mis-apply dayfirst).
+                out[col] = pd.to_datetime(s, errors="coerce")
+            else:
+                # Raw source strings are day-first (e.g. 27.06.2025).
+                out[col] = pd.to_datetime(
+                    s.astype("string").str.strip(" .").str.replace(",", ".", regex=False),
+                    format="mixed", dayfirst=True, errors="coerce")
             if spec.datetime_bin and spec.datetime_bin != "full":
                 binned = bin_datetime(out[col], unit=spec.datetime_bin)
                 levels = _datetime_bin_levels(spec.datetime_bin, binned)
@@ -255,17 +261,14 @@ def apply_schema(
                 if _datetime_has_time(s, out[col]):
                     actions.append("datetime_bin_full")
                 else:
-                    binned = bin_datetime(out[col], unit="day")
-                    levels = _datetime_bin_levels("day", binned)
-                    out[col] = pd.Categorical(
-                        binned,
-                        categories=levels,
-                        ordered=True,
-                    )
+                    # Dates only: drop the (empty) time-of-day but keep a true
+                    # datetime dtype so it is analysed as a datetime
+                    # (min/max/span) rather than as hundreds of ordinal
+                    # date categories.
+                    out[col] = out[col].dt.normalize()
                     schema[col] = ColSpec(
                         name=spec.name,
-                        kind="ordinal",
-                        ordered_levels=levels,
+                        kind="datetime",
                         nulls=spec.nulls,
                         replace=spec.replace,
                         keep=spec.keep,

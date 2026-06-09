@@ -16,12 +16,9 @@ _LOG_COLUMNS = [
     "type",
     "active",
     "source",
-    "created",
     "kind",
-    "rows_total",
     "rows_nonmissing",
     "rows_missing",
-    "matched_n",
     "schema_action",
     "warning",
     "reason",
@@ -42,19 +39,6 @@ class BinNumeric:
     reason: str = ""
     right: bool = False
     ordered_levels: list | None = None
-
-
-@dataclass
-class IsIn:
-    """Boolean flag: True when source value is in ``values``, else False."""
-
-    name: str
-    source: str
-    values: list
-    kind: str = "binary"
-    active: bool = True
-    overwrite: bool = False
-    reason: str = ""
 
 
 @dataclass
@@ -128,7 +112,6 @@ def _base_log(spec, type_name: str) -> dict:
         "type": type_name,
         "active": spec.active,
         "source": spec.source,
-        "created": spec.name,
         "kind": spec.kind,
         "reason": spec.reason,
     }
@@ -139,7 +122,7 @@ def _should_apply(
     df: pd.DataFrame,
     log: list[dict],
     type_name: str,
-) -> bool:
+    ) -> bool:
     base = _base_log(spec, type_name)
 
     if not spec.active:
@@ -173,7 +156,7 @@ def _apply_bin_numeric(
     schema: dict[str, ColSpec],
     spec: BinNumeric,
     log: list[dict],
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     type_name = "BinNumeric"
     if not _should_apply(spec, df, log, type_name):
         return df
@@ -196,7 +179,7 @@ def _apply_bin_numeric(
     )
     df[spec.name] = pd.Categorical(cut, categories=levels, ordered=True)
 
-    rows_total, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
+    _, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
     schema_action = _set_schema_col(
         schema,
         spec.name,
@@ -206,47 +189,9 @@ def _apply_bin_numeric(
     )
     log.append(_log_entry(
         **_base_log(spec, type_name),
-        rows_total=rows_total,
         rows_nonmissing=rows_nonmissing,
         rows_missing=rows_missing,
         schema_action=schema_action,
-    ))
-    return df
-
-
-def _apply_is_in(
-    df: pd.DataFrame,
-    schema: dict[str, ColSpec],
-    spec: IsIn,
-    log: list[dict],
-) -> pd.DataFrame:
-    type_name = "IsIn"
-    if not _should_apply(spec, df, log, type_name):
-        return df
-
-    matched = df[spec.source].isin(spec.values)
-    matched_n = int(matched.sum())
-    df[spec.name] = matched.astype("boolean")
-
-    warning = ""
-    if matched_n == 0:
-        warning = "No rows matched values; check dtype or values."
-
-    rows_total, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
-    schema_action = _set_schema_col(
-        schema,
-        spec.name,
-        spec.kind,
-        reason=spec.reason,
-    )
-    log.append(_log_entry(
-        **_base_log(spec, type_name),
-        rows_total=rows_total,
-        rows_nonmissing=rows_nonmissing,
-        rows_missing=rows_missing,
-        matched_n=matched_n,
-        schema_action=schema_action,
-        warning=warning,
     ))
     return df
 
@@ -256,7 +201,7 @@ def _apply_apply(
     schema: dict[str, ColSpec],
     spec: Apply,
     log: list[dict],
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     type_name = "Apply"
     if not _should_apply(spec, df, log, type_name):
         return df
@@ -267,7 +212,7 @@ def _apply_apply(
 
     df[spec.name] = result
 
-    rows_total, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
+    _, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
     schema_action = _set_schema_col(
         schema,
         spec.name,
@@ -277,7 +222,6 @@ def _apply_apply(
     )
     log.append(_log_entry(
         **_base_log(spec, type_name),
-        rows_total=rows_total,
         rows_nonmissing=rows_nonmissing,
         rows_missing=rows_missing,
         schema_action=schema_action,
@@ -290,14 +234,13 @@ def _apply_compute(
     schema: dict[str, ColSpec],
     spec: Compute,
     log: list[dict],
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     type_name = "Compute"
     base = {
         "derivation": spec.name,
         "type": type_name,
         "active": spec.active,
         "source": ", ".join(spec.sources),
-        "created": spec.name,
         "kind": spec.kind,
         "reason": spec.reason,
     }
@@ -329,7 +272,7 @@ def _apply_compute(
 
     df[spec.name] = result
 
-    rows_total, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
+    _, rows_nonmissing, rows_missing = _row_stats(df[spec.name])
     schema_action = _set_schema_col(
         schema,
         spec.name,
@@ -339,7 +282,6 @@ def _apply_compute(
     )
     log.append(_log_entry(
         **base,
-        rows_total=rows_total,
         rows_nonmissing=rows_nonmissing,
         rows_missing=rows_missing,
         schema_action=schema_action,
@@ -355,7 +297,7 @@ def apply_derivations(
     output_root: Path | str | None = None,
     write_csv: bool = False,
     preview: bool = True,
-) -> tuple[pd.DataFrame, dict[str, ColSpec], pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, dict[str, ColSpec], pd.DataFrame]:
     """Apply notebook-declared derivations; return updated df, schema, and audit log."""
     out = df.copy()
     out_schema = _copy_schema(schema)
@@ -365,8 +307,6 @@ def apply_derivations(
     for spec in derivations:
         if isinstance(spec, BinNumeric):
             out = _apply_bin_numeric(out, out_schema, spec, log)
-        elif isinstance(spec, IsIn):
-            out = _apply_is_in(out, out_schema, spec, log)
         elif isinstance(spec, Compute):
             out = _apply_compute(out, out_schema, spec, log)
         elif isinstance(spec, Apply):
@@ -378,12 +318,93 @@ def apply_derivations(
     if preview and new_cols:
         display(out[new_cols].head())
 
-    if write_csv and output_root is not None:
-        write_cleaned_csv(output_root, out, out_schema)
-
     derivation_log = (
         pd.DataFrame(log, columns=_LOG_COLUMNS)
         if log
         else pd.DataFrame(columns=_LOG_COLUMNS)
     )
+
+    if write_csv and output_root is not None:
+        write_cleaned_csv(output_root, out, out_schema)
+        out_dir = Path(output_root) / "cleaning"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        derivation_log.to_csv(out_dir / "derivation_log.csv", index=False)
+        _update_cleaning_summary_derived(output_root, new_cols, len(out))
+        # Append derived columns to the schema summary so they appear in the
+        # report's Schema story. Append-only: we must NOT re-export the whole
+        # post-cleaning schema, because cleaning rewrites binned datetime
+        # columns to kind='ordinal' in place — that would clobber the
+        # originally-declared 'datetime' kind written at schema-definition time.
+        _append_derived_to_schema_summary(output_root, out_schema, new_cols)
+
     return out, out_schema, derivation_log
+
+
+def _append_derived_to_schema_summary(
+    output_root: Path | str,
+    out_schema: dict[str, ColSpec],
+    created_cols: list[str],
+) -> None:
+    """Add derived columns to schema_summary.csv without touching existing rows.
+
+    Idempotent: existing rows for the derived columns are replaced.
+    """
+    if not created_cols:
+        return
+    from schema_infer import export_schema_summary, schema_summary
+
+    summary_path = Path(output_root) / "schema" / "schema_summary.csv"
+    if not summary_path.exists():
+        export_schema_summary(out_schema, output_root)
+        return
+
+    from cleaning import format_table_for_csv
+
+    existing = pd.read_csv(summary_path)
+    derived_schema = {c: out_schema[c] for c in created_cols if c in out_schema}
+    derived_rows = format_table_for_csv(schema_summary(derived_schema))
+    derived_rows = derived_rows.reindex(columns=existing.columns)
+    if "column" in existing.columns:
+        existing = existing[~existing["column"].isin(created_cols)]
+    combined = pd.concat([existing, derived_rows], ignore_index=True)
+    combined.to_csv(summary_path, index=False)
+
+
+def _update_cleaning_summary_derived(
+    output_root: Path | str,
+    created_cols: list[str],
+    n_rows: int,
+) -> None:
+    """Insert a ``derived`` row into cleaning_summary.csv naming the new columns.
+
+    Idempotent: any existing ``derived`` row is replaced, so re-running the
+    derivations cell does not stack duplicate rows.
+    """
+    summary_path = Path(output_root) / "cleaning" / "cleaning_summary.csv"
+    if not summary_path.exists() or not created_cols:
+        return
+
+    summary = pd.read_csv(summary_path)
+    if "step" not in summary.columns:
+        return
+
+    summary = summary[summary["step"] != "derived"].copy()
+    row = {c: "" for c in summary.columns}
+    row["step"] = "derived"
+    if "detail" in row:
+        row["detail"] = (
+            f"added {len(created_cols)} column(s): " + ", ".join(created_cols))
+    if "n_rows" in row:
+        row["n_rows"] = n_rows
+    if "n_dropped" in row:
+        row["n_dropped"] = 0
+
+    new_df = pd.DataFrame([row], columns=summary.columns)
+    if (summary["step"] == "final").any():
+        pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
+        summary = pd.concat(
+            [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
+    else:
+        summary = pd.concat([summary, new_df], ignore_index=True)
+
+    summary.to_csv(summary_path, index=False)

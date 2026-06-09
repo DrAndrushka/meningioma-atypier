@@ -162,8 +162,9 @@ code { background: var(--grey-bg); padding: 1px 5px; border-radius: 4px;
 .card .value { font-size: 22px; font-weight: 600; margin-top: 3px; }
 
 /* Tables */
+.table-wrap { width: 100%; overflow-x: auto; margin: 8px 0 14px; }
 table.report { border-collapse: collapse; width: 100%; font-size: 13.5px;
-               margin: 8px 0 14px; }
+               margin: 0; }
 table.report th, table.report td { padding: 7px 10px; text-align: left;
                                    border-bottom: 1px solid var(--border);
                                    vertical-align: top; }
@@ -182,6 +183,7 @@ tr.missing-low      { background: var(--green-bg) !important; }
 tr.missing-medium   { background: var(--yellow-bg) !important; }
 tr.missing-high     { background: var(--orange-bg) !important; }
 tr.missing-severe   { background: var(--red-bg) !important; }
+tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 
 /* Badges */
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px;
@@ -192,6 +194,28 @@ tr.missing-severe   { background: var(--red-bg) !important; }
 .badge.effect-none     { background: var(--grey-bg);   color: var(--muted); }
 .badge.kind            { background: var(--grey-bg);   color: var(--fg); }
 .badge.target          { background: var(--blue-bg);   color: var(--blue); }
+
+/* EPV stability gauge */
+.epv-card { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+            border: 1px solid var(--border); border-radius: 10px;
+            padding: 12px 16px; margin: 10px 0 18px; background: var(--card); }
+.epv-card .epv-value { font-size: 26px; font-weight: 700; line-height: 1; }
+.epv-card .epv-key   { font-size: 11px; color: var(--muted); text-transform: uppercase;
+                       letter-spacing: 0.05em; margin-top: 2px; }
+.epv-gauge { position: relative; flex: 1 1 240px; min-width: 200px; height: 14px;
+             border-radius: 999px; background: var(--grey-bg); }
+.epv-gauge .epv-fill { position: absolute; left: 0; top: 0; bottom: 0;
+                       border-radius: 999px; }
+.epv-gauge .epv-thr  { position: absolute; top: -6px; bottom: -6px; width: 2px;
+                       background: var(--fg); }
+.epv-gauge .epv-thr-label { position: absolute; top: 17px; transform: translateX(-50%);
+                       font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.epv-pill { display: inline-block; padding: 3px 11px; border-radius: 999px;
+            font-size: 12px; font-weight: 600; white-space: nowrap; }
+.epv-pill.stable     { background: var(--green-bg);  color: var(--green); }
+.epv-pill.borderline { background: var(--yellow-bg); color: var(--yellow); }
+.epv-pill.unstable   { background: var(--red-bg);    color: var(--red); }
+.epv-detail { width: 100%; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
 
 /* Warning / info boxes */
 .warning-box, .info-box {
@@ -622,8 +646,9 @@ def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
             cells = f"<td><strong>{_esc(idx)}</strong></td>" + cells
         body_rows.append(f"<tr{cls_attr}>{cells}</tr>")
     body = "".join(body_rows)
-    return (f'<table class="report"><thead><tr>{head}</tr></thead>'
-            f'<tbody>{body}</tbody></table>')
+    return (f'<div class="table-wrap"><table class="report">'
+            f'<thead><tr>{head}</tr></thead>'
+            f'<tbody>{body}</tbody></table></div>')
 
 
 def svg_grid(svg_paths: Iterable[Path], max_n: int | None = None) -> str:
@@ -687,6 +712,7 @@ class Artifacts:
     # Cleaning / schema
     cleaning_summary: pd.DataFrame | None = None
     cleaning_log: pd.DataFrame | None = None
+    derivation_log: pd.DataFrame | None = None
     schema_summary: pd.DataFrame | None = None
 
     # DDA
@@ -746,6 +772,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     cleaning_dir = root / "cleaning"
     art.cleaning_summary = _maybe_read_csv(cleaning_dir / "cleaning_summary.csv", art.warnings)
     art.cleaning_log     = _maybe_read_csv(cleaning_dir / "cleaning_log.csv", art.warnings)
+    art.derivation_log   = _maybe_read_csv(cleaning_dir / "derivation_log.csv", art.warnings)
 
     # Schema
     if cfg.schema_path and cfg.schema_path.exists():
@@ -843,14 +870,55 @@ def _inferential_target_meta(art: Artifacts, target: str) -> str:
     events = _to_int_or_none(row.get("n_outcome_events"))
     params = _to_int_or_none(row.get("n_design_columns"))
     n = _to_int_or_none(row.get("n_complete_cases"))
+    return _epv_gauge_html(epv, events, params, n)
+
+
+# Events-per-variable interpretation thresholds.
+_EPV_STABLE = 10.0      # >= 10: adequately powered (Peduzzi 1996 rule of thumb)
+_EPV_BORDERLINE = 5.0   # 5-10: usable but interpret with caution
+
+
+def _epv_gauge_html(
+    epv: float,
+    events: int | None,
+    params: int | None,
+    n: int | None,
+) -> str:
+    """Visual EPV stability gauge with a fixed threshold marker at EPV = 10."""
+    if epv >= _EPV_STABLE:
+        pill_cls, pill_txt, color = "stable", "Stable model", "var(--green)"
+    elif epv >= _EPV_BORDERLINE:
+        pill_cls, pill_txt, color = "borderline", "Borderline power", "var(--yellow)"
+    else:
+        pill_cls, pill_txt, color = "unstable", "Underpowered", "var(--red)"
+
+    # Scale so the EPV = 10 threshold and the actual value both stay on-bar.
+    scale = max(20.0, epv * 1.15)
+    fill_pct = max(0.0, min(epv / scale, 1.0)) * 100
+    thr_pct = _EPV_STABLE / scale * 100
+    epv_disp = int(epv) if epv == int(epv) else round(epv, 1)
+
     detail = []
     if events is not None and params is not None:
-        detail.append(f"{events} events / {params} parameters")
+        detail.append(f"{events} outcome events / {params} model parameters")
     if n is not None:
         detail.append(f"N = {n} complete cases")
-    suffix = f" ({', '.join(detail)})" if detail else ""
-    epv_disp = int(epv) if epv == int(epv) else round(epv, 1)
-    return f'<p class="inferential-meta">EPV = {epv_disp}{suffix}</p>'
+    detail.append("threshold for a stable model: EPV \u2265 10")
+    detail_html = " &middot; ".join(_esc(d) for d in detail)
+
+    return (
+        '<div class="epv-card">'
+        f'<div><div class="epv-value" style="color:{color}">{epv_disp}</div>'
+        '<div class="epv-key">Events / variable</div></div>'
+        '<div class="epv-gauge">'
+        f'<div class="epv-fill" style="width:{fill_pct:.1f}%;background:{color}"></div>'
+        f'<div class="epv-thr" style="left:{thr_pct:.1f}%"></div>'
+        f'<div class="epv-thr-label" style="left:{thr_pct:.1f}%">EPV 10</div>'
+        '</div>'
+        f'<span class="epv-pill {pill_cls}">{pill_txt}</span>'
+        f'<div class="epv-detail">{detail_html}</div>'
+        '</div>'
+    )
 
 
 def render_header(cfg: ReportConfig, art: Artifacts) -> str:
@@ -914,6 +982,106 @@ def render_header(cfg: ReportConfig, art: Artifacts) -> str:
     )
 
 
+def _fmt_count(v: Any) -> Any:
+    """Show whole-number counts as ints (397.0 -> 397); leave blanks/text alone."""
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return ""
+    f = _coerce_float(v)
+    if f is None:
+        return v
+    return int(f) if f == int(f) else f
+
+
+def _format_count_cols(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
+    df = df.copy()
+    for c in cols:
+        if c in df.columns:
+            df[c] = df[c].map(_fmt_count)
+    return df
+
+
+# Per-operation column layout for the cleaning log. Each `step` is rendered as
+# its own table showing only the columns relevant to that operation.
+_CLEANING_LOG_GROUPS = [
+    ("apply_schema", "Schema coercions",
+     ["column", "action", "kind", "reason"]),
+    ("drop_rows", "Dropped rows",
+     ["reason", "criterion", "n_before", "n_dropped", "n_remaining"]),
+]
+
+
+def _render_cleaning_log_tables(log: pd.DataFrame) -> str:
+    """Split the cleaning log by `step` into separate per-operation tables."""
+    if "step" not in log.columns:
+        return table_to_html(log, max_rows=200)
+
+    def _drop_blank_cols(df: pd.DataFrame) -> pd.DataFrame:
+        keep = [c for c in df.columns
+                if not df[c].isna().all()
+                and not (df[c].astype(str).str.strip() == "").all()]
+        return df[keep]
+
+    parts: list[str] = []
+    handled: set[str] = set()
+    for step_val, label, cols in _CLEANING_LOG_GROUPS:
+        sub = log[log["step"] == step_val]
+        if sub.empty:
+            continue
+        handled.add(step_val)
+        sub = _drop_blank_cols(sub[[c for c in cols if c in sub.columns]])
+        sub = _format_count_cols(sub, ["n_before", "n_dropped", "n_remaining"])
+        parts.append(f"<h4>{_esc(label)}</h4>")
+        parts.append(table_to_html(sub, max_rows=200))
+
+    others = log[~log["step"].isin(handled)]
+    if not others.empty:
+        parts.append("<h4>Other steps</h4>")
+        parts.append(table_to_html(_drop_blank_cols(others), max_rows=200))
+
+    return "".join(parts) if parts else table_to_html(log, max_rows=200)
+
+
+def _summary_with_derived_step(
+    summary: pd.DataFrame,
+    derivation_log: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Insert a ``derived`` row into the cleaning summary naming the new columns."""
+    if (derivation_log is None or derivation_log.empty
+            or "derivation" not in derivation_log.columns):
+        return summary
+    # Source pipeline may already bake in the 'derived' row — don't duplicate it.
+    if "step" in summary.columns and (summary["step"] == "derived").any():
+        return summary
+
+    created = derivation_log
+    if "schema_action" in created.columns:
+        mask = created["schema_action"].astype(str).str.startswith("added ColSpec")
+        created = created[mask]
+    cols = [str(c) for c in created["derivation"].tolist() if str(c).strip()]
+    if not cols:
+        return summary
+
+    new_row = {c: "" for c in summary.columns}
+    if "step" in new_row:
+        new_row["step"] = "derived"
+    if "detail" in new_row:
+        new_row["detail"] = f"added {len(cols)} column(s): " + ", ".join(cols)
+    if "n_rows" in new_row and "step" in summary.columns:
+        fin = summary[summary["step"] == "final"]
+        if not fin.empty:
+            new_row["n_rows"] = fin.iloc[0]["n_rows"]
+    if "n_dropped" in new_row:
+        new_row["n_dropped"] = 0
+
+    new_df = pd.DataFrame([new_row], columns=summary.columns)
+    # Place 'derived' just before the 'final' row when present.
+    if "step" in summary.columns and (summary["step"] == "final").any():
+        pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
+        return pd.concat(
+            [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
+    return pd.concat([summary, new_df], ignore_index=True)
+
+
 def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
     """🧹 Cleaning story."""
     blurb = ("The dataset was cleaned using a schema-driven process: declared "
@@ -922,7 +1090,8 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
              "appropriate.")
     body = [f'<h2>🧹 Cleaning story</h2><p>{blurb}</p>']
 
-    if art.cleaning_summary is None and art.cleaning_log is None:
+    if (art.cleaning_summary is None and art.cleaning_log is None
+            and art.derivation_log is None):
         body.append(warning_box(
             "No saved cleaning summary was found. Cleaning may have been "
             "performed, but no cleaning audit table was exported."))
@@ -930,10 +1099,24 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
 
     if art.cleaning_summary is not None and not art.cleaning_summary.empty:
         body.append("<h3>Summary</h3>")
-        body.append(table_to_html(art.cleaning_summary))
-    if art.cleaning_log is not None and not art.cleaning_log.empty:
-        body.append(details_block("📜 Full cleaning log",
-                                  table_to_html(art.cleaning_log, max_rows=200)))
+        summary = _summary_with_derived_step(
+            art.cleaning_summary, art.derivation_log)
+        summary = _format_count_cols(
+            summary, ["n_rows", "n_dropped", "n_rows_before"])
+        body.append(table_to_html(summary))
+
+    has_log = art.cleaning_log is not None and not art.cleaning_log.empty
+    has_deriv = art.derivation_log is not None and not art.derivation_log.empty
+    if has_log or has_deriv:
+        log_html = (_render_cleaning_log_tables(art.cleaning_log) if has_log else "")
+        if has_deriv:
+            log_html += (
+                "<h4>Derived variables</h4>"
+                "<p>New columns computed from existing ones "
+                "(binning, custom transforms).</p>"
+                + table_to_html(art.derivation_log, max_rows=200)
+            )
+        body.append(details_block("📜 Full cleaning log", log_html))
     return f'<section class="report-section">{"".join(body)}</section>'
 
 
@@ -968,8 +1151,38 @@ def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
     if "kind" in sch.columns:
         sch["kind"] = sch["kind"].map(lambda k: kind_emoji.get(str(k), str(k)))
 
-    body.append(table_to_html(sch, max_rows=400))
+    # Collapse long level lists (> 10 values) behind a small expander.
+    if "levels" in sch.columns:
+        sch["levels"] = sch["levels"].map(_format_levels_cell)
+
+    def _schema_row_cls(r) -> str:
+        return "schema-skip" if str(r.get("keep")).strip().lower() in (
+            "false", "0") else ""
+
+    body.append(table_to_html(
+        sch, max_rows=400, row_class_fn=_schema_row_cls,
+        safe_html_cols=["levels"]))
     return f'<section class="report-section">{"".join(body)}</section>'
+
+
+def _format_levels_cell(v: Any) -> str:
+    """Comma-join level lists; collapse behind an expander when > 10 values."""
+    if v is None or (isinstance(v, float) and math.isnan(v)) or str(v).strip() == "":
+        return ""
+    levels = v
+    if isinstance(v, str):
+        try:
+            levels = ast.literal_eval(v)
+        except (ValueError, SyntaxError):
+            return _esc(v)
+    if not isinstance(levels, (list, tuple)):
+        return _esc(str(v))
+    text = ", ".join(str(x) for x in levels)
+    if len(levels) > 10:
+        preview = ", ".join(str(x) for x in levels[:3])
+        return (f'<details class="collapsible"><summary>{_esc(preview)} … '
+                f'({len(levels)} values)</summary>{_esc(text)}</details>')
+    return _esc(text)
 
 
 def _dda_continuous_for_report(df: pd.DataFrame) -> pd.DataFrame:
@@ -991,9 +1204,6 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         'association testing. Tables describe distribution shape and balance; '
         'figures show the same information visually.</p>',
     ]
-
-    # Glossary so a clinician knows what each column means
-    body.append(details_block("📖 What do these metrics mean?", _dda_glossary()))
 
     # Dataset overview
     if art.dda_overall is not None and not art.dda_overall.empty:
@@ -1043,29 +1253,81 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         body.append(details_block(f"🖼️ DDA figures ({len(art.dda_figures)})",
                                   grid_html))
 
+    # Glossary at the end so a clinician can look up any column they just saw.
+    body.append(details_block("📖 What do these metrics mean?", _dda_glossary()))
+
     return f'<section class="report-section">{"".join(body)}</section>'
 
 
-def _dda_glossary() -> str:
-    items = [
+# Every metric emitted across the DDA tables, grouped by where it appears.
+_DDA_GLOSSARY_GROUPS = [
+    ("Shared across tables", [
+        ("column", "Variable name."),
+        ("kind", "Variable type (continuous, count, ordinal, nominal, binary, "
+                 "datetime, id, text)."),
+        ("ordered", "Whether the categories have a meaningful order "
+                    "(ordinal = yes, nominal = no)."),
+        ("n", "Number of non-missing observations."),
+        ("n_unique", "Number of distinct values."),
         ("missing_pct", "Percentage of missing values for this variable."),
-        ("first_mode", "Most common value."),
-        ("first_mode_pct", "How dominant the most common value is."),
-        ("mode", "Most common value (binary table)."),
-        ("mode_pct", "Share of the most common value (binary table)."),
-        ("rarest", "Least common value."),
-        ("rarest_pct", "Share of the least common value."),
-        ("max_class_imbalance", "first_mode_count / rarest_count. Higher = more imbalanced."),
-        ("balance", "Normalized Shannon entropy (0–1). Closer to 1 = more evenly distributed."),
-        ("entropy_bin", "Raw Shannon entropy in bits."),
-        ("skewness", "Asymmetry of a numeric distribution. 0 = symmetric."),
+    ]),
+    ("Dataset overview", [
+        ("n_rows", "Total rows (patients) in the dataset."),
+        ("n_cols", "Total number of columns."),
+        ("n_cols_analysed", "Columns included in statistical screening."),
+        ("missing_cells_pct", "Percentage of all cells in the dataset that "
+                              "are missing."),
+    ]),
+    ("Continuous / count variables", [
+        ("min", "Smallest observed value."),
+        ("max", "Largest observed value."),
+        ("p_5th", "5th percentile — 5% of values fall below this."),
+        ("p_95th", "95th percentile — 5% of values fall above this."),
+        ("median", "Middle value (50th percentile); robust to outliers."),
+        ("mean", "Arithmetic average."),
+        ("trimmed_mean", "Mean after dropping extreme tails; robust to outliers."),
+        ("mode", "Most frequent value."),
+        ("std", "Standard deviation — spread around the mean."),
+        ("cv", "Coefficient of variation (std / |mean|); relative spread."),
+        ("iqr", "Interquartile range (Q3 − Q1); middle-50% spread."),
+        ("skewness", "Distribution asymmetry. 0 = symmetric."),
         ("kurtosis", "Tail heaviness / outlier tendency. 0 = normal-like."),
-        ("cv", "Relative spread (std / |mean|)."),
-        ("iqr", "Middle 50% spread (Q3 − Q1)."),
-    ]
-    dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
-                 for k, v in items)
-    return f'<dl class="stat-decoder">{dt}</dl>'
+    ]),
+    ("Categorical / ordinal variables", [
+        ("first_mode", "Most common category."),
+        ("first_mode_pct", "Share of the most common category."),
+        ("second_mode", "Second most common category."),
+        ("second_mode_pct", "Share of the second most common category."),
+        ("rarest", "Least common category."),
+        ("rarest_pct", "Share of the least common category."),
+        ("max_class_imbalance",
+         "first_mode_count / rarest_count. Higher = more imbalanced."),
+        ("median_category", "Middle category by rank order (ordinal only)."),
+        ("balance", "Normalized Shannon entropy (0–1). Closer to 1 = more "
+                    "evenly distributed."),
+        ("entropy_bin", "Raw Shannon entropy in bits."),
+    ]),
+    ("Binary variables", [
+        ("mode", "More common of the two values."),
+        ("mode_pct", "Share of the more common value."),
+        ("rarest", "Less common of the two values."),
+        ("rarest_pct", "Share of the less common value."),
+    ]),
+    ("Datetime variables", [
+        ("min", "Earliest timestamp."),
+        ("max", "Latest timestamp."),
+        ("span_days", "Number of days between the earliest and latest value."),
+    ]),
+]
+
+
+def _dda_glossary() -> str:
+    parts: list[str] = []
+    for title, items in _DDA_GLOSSARY_GROUPS:
+        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
+                     for k, v in items)
+        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
+    return "".join(parts)
 
 
 def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1336,7 +1598,8 @@ def _render_inferential_interpretation(target: str, tbl: pd.DataFrame,
                          f"(OR={o:.2f}, 95% CI {lo:.2f}–{hi:.2f}; CI crosses 1).</li>")
     if not lines:
         return ""
-    return "<h4>Interpretation</h4><ul>" + "".join(lines) + "</ul>"
+    return details_block(
+        "💡 Interpretation", "<ul>" + "".join(lines) + "</ul>")
 
 
 def _eda_direction_phrase(r: pd.Series, target: str) -> str:
@@ -1403,7 +1666,8 @@ def _render_eda_interpretation(target: str, sub: pd.DataFrame,
         "predictors. Use the multivariable section to judge independent "
         "associations.</em></li>"
     )
-    return "<h4>Interpretation</h4><ul>" + "".join(lines) + caveat + "</ul>"
+    return details_block(
+        "💡 Interpretation", "<ul>" + "".join(lines) + caveat + "</ul>")
 
 
 def render_stats_decoder() -> str:
@@ -1415,9 +1679,13 @@ def render_stats_decoder() -> str:
          "the no-association assumption. It does <strong>not</strong> measure "
          "clinical importance."),
         ("FDR p-value",
-         "p-value corrected for multiple testing. Use this for EDA "
-         "conclusions when many predictors were screened — prefer FDR p over "
-         "raw p."),
+         "p-value corrected for multiple testing. Testing many variables at "
+         "α = 0.05 means each test has a 5% chance of a false positive on its "
+         "own, so screening dozens of predictors will flag several "
+         "&ldquo;significant&rdquo; associations by chance alone. The "
+         "Benjamini–Hochberg FDR adjustment rescales the p-values to control "
+         "the expected share of <em>false discoveries</em> among the hits. "
+         "Prefer FDR p over raw p whenever many predictors were screened."),
         ("Effect size",
          "How <em>large</em> the association is. Separate from p-value: a "
          "tiny effect can have a tiny p in a huge sample, and a huge effect "

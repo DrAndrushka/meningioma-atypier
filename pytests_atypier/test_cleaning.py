@@ -105,10 +105,14 @@ def test_apply_schema_datetime_bin_full(tiny_df):
     }
     out = apply_schema(tiny_df[["entry_year"]].copy(), schema)
     assert list(out.columns) == ["entry_year"]
-    assert schema["entry_year"].kind == "ordinal"
-    assert out["entry_year"].tolist() == [
+    # Dates-only 'full' keeps a true datetime dtype (analysed as datetime,
+    # not demoted to ordinal date categories); time-of-day is stripped.
+    assert schema["entry_year"].kind == "datetime"
+    assert pd.api.types.is_datetime64_any_dtype(out["entry_year"])
+    assert out["entry_year"].dt.strftime("%Y-%m-%d").tolist() == [
         "2018-01-01", "2019-06-01", "2020-03-01", "2021-01-01",
     ]
+    assert (out["entry_year"].dt.normalize() == out["entry_year"]).all()
 
 
 def test_apply_schema_datetime_bin_full_with_time():

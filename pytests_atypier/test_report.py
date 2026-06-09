@@ -254,7 +254,11 @@ def test_render_inferential(report_cfg, report_art):
     }])
     html = render_inferential(report_cfg, report_art)
     assert "<section" in html
-    assert "EPV = 4" in html
+    # EPV = 4 → below the stability threshold of 10, rendered as the gauge.
+    assert 'class="epv-card"' in html
+    assert 'class="epv-value"' in html
+    assert "Underpowered" in html
+    assert "EPV \u2265 10" in html
 
 
 def test_to_int_or_none():
