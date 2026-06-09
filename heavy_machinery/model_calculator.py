@@ -121,15 +121,15 @@ def encode_feature_value(feature: dict[str, Any], raw_value: Any) -> dict[str, f
             result[var_name] = float(level_map[level_key])
         return result
 
-    if ftype == "categorical":
+    if ftype in ("categorical", "ordinal"):
         encoding = feature.get("encoding")
         if not isinstance(encoding, dict):
-            raise ValueError(f"Categorical feature {name!r} is missing encoding")
+            raise ValueError(f"{ftype.title()} feature {name!r} is missing encoding")
         choice = str(raw_value)
         result = {}
         for var_name, level_map in encoding.items():
             if not isinstance(level_map, dict):
-                raise ValueError(f"Invalid encoding for categorical feature {name!r}")
+                raise ValueError(f"Invalid encoding for {ftype} feature {name!r}")
             if choice not in level_map:
                 raise ValueError(
                     f"Unknown level {choice!r} for {name!r}. "
@@ -535,6 +535,17 @@ def calculator_meta_to_streamlit_artifact(
                 "type": "binary",
                 "input_widget": "checkbox",
                 "encoding": {name: {"true": 1, "false": 0}},
+            })
+        elif kind == "ordinal":
+            coefficients[name] = float(term["coef"])
+            levels = [str(x) for x in term["levels"]]
+            features.append({
+                "name": name,
+                "label": label,
+                "type": "ordinal",
+                "input_widget": "selectbox",
+                "choices": levels,
+                "encoding": {name: {lv: float(i) for i, lv in enumerate(levels)}},
             })
         elif kind == "categorical":
             reference = str(term["reference"])

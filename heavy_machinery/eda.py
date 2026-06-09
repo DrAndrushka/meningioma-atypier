@@ -24,7 +24,7 @@ All p-values per target are corrected with Benjamini–Hochberg (FDR).
 Outputs (under output/eda/)
 ---------------------------
 - tables/associations.csv  : long-format (target, predictor, test, stat, p,
-                             p_fdr, effect, effect_size, n_used)
+                             p_fdr, effect, effect_size, n_used, auc_univariate)
 - figures/<target>__<predictor>.svg : the appropriate seaborn plot
 """
 
@@ -41,6 +41,7 @@ import seaborn as sns
 from scipy.stats import (
     mannwhitneyu, spearmanr, chi2_contingency, fisher_exact, kruskal,
 )
+from sklearn.metrics import roc_auc_score
 from statsmodels.stats.proportion import proportion_confint
 
 from schema_infer import ColSpec
@@ -94,6 +95,67 @@ def _encode_binary_target(y: pd.Series, positive_class) -> pd.Series:
         positive_class = True if True in nn else 1 if 1 in nn else sorted(nn, key=str)[-1]
     out = pd.Series(np.where(y.isna(), np.nan, (y == positive_class).astype(float)), index=y.index)
     return out, positive_class
+
+
+_BINARY_PRESENT = {True, 1, 1.0, "True", "true", "1", "yes", "Yes", "Y", "y"}
+
+
+def _binary_predictor_scores(x: pd.Series) -> pd.Series:
+    """Map a binary predictor to numeric scores (1 = present, 0 = absent)."""
+    if pd.api.types.is_bool_dtype(x):
+        return x.astype(float)
+    return x.isin(_BINARY_PRESENT).astype(float)
+
+
+def compute_univariate_auc(
+    df: pd.DataFrame,
+    target: str,
+    predictor: str,
+    predictor_kind: str,
+    *,
+    positive_class=None,
+    target_kind: str = "binary",
+) -> float:
+    """
+    ROC AUC for one predictor against a binary target (complete-case rows only).
+
+    Computed for ``binary``, ``continuous``, and ``count`` predictors only.
+    When raw ROC AUC is below 0.5 (reversed predictor direction), returns
+    ``1 - AUC`` so the value reflects discrimination strength regardless of sign.
+    Returns ``NaN`` for other predictor kinds, non-binary targets, or when the
+    calculation is undefined.
+    """
+    if target_kind != "binary":
+        return np.nan
+    if predictor_kind not in ("binary", "continuous", "count"):
+        return np.nan
+    if target not in df.columns or predictor not in df.columns:
+        return np.nan
+
+    try:
+        y_enc, _ = _encode_binary_target(df[target], positive_class)
+        pair = pd.concat([y_enc.rename("_y"), df[predictor].rename("_x")], axis=1).dropna()
+        if len(pair) < 2:
+            return np.nan
+
+        y = pair["_y"].astype(int).values
+        if len(np.unique(y)) < 2:
+            return np.nan
+
+        if predictor_kind == "binary":
+            scores = _binary_predictor_scores(pair["_x"]).values
+        else:
+            scores = pd.to_numeric(pair["_x"], errors="coerce").values.astype(float)
+
+        if len(np.unique(scores)) < 2:
+            return np.nan
+
+        auc = float(roc_auc_score(y, scores))
+        if auc < 0.5:
+            auc = 1.0 - auc
+        return auc
+    except (ValueError, TypeError):
+        return np.nan
 
 
 def _cramers_v(table: np.ndarray) -> float:
@@ -575,6 +637,11 @@ def screen_associations(
                 df[pred].rename(pred),
             ], axis=1).dropna()
             n_used = len(pair)
+            auc_uni = compute_univariate_auc(
+                df, target, pred, spec.kind,
+                positive_class=pos_used,
+                target_kind=target_mode,
+            )
             if n_used < 5:
                 rows.append({
                     "target": target, "target_kind": target_mode,
@@ -582,6 +649,7 @@ def screen_associations(
                     "test": "skip", "stat": np.nan, "p": np.nan,
                     "effect": np.nan, "effect_label": "",
                     "n_used": n_used, "positive_class": pos_used,
+                    "auc_univariate": auc_uni,
                 })
                 continue
 
@@ -590,6 +658,7 @@ def screen_associations(
                 "target": target, "target_kind": target_mode,
                 "predictor": pred, "kind": spec.kind,
                 "n_used": n_used, "positive_class": pos_used,
+                "auc_univariate": auc_uni,
             })
             rows.append(row)
 
@@ -614,6 +683,7 @@ def screen_associations(
         out = pd.DataFrame(columns=[
             "target", "target_kind", "predictor", "kind", "test", "stat", "p", "p_fdr",
             "fdr_significant", "effect", "effect_label", "n_used", "positive_class",
+            "auc_univariate",
         ])
         _format_table_for_csv(out).to_csv(tabs_dir / "associations.csv", index=False)
         return out
@@ -625,9 +695,12 @@ def screen_associations(
         out.loc[mask, "p_fdr"] = benjamini_hochberg(out.loc[mask, "p"]).values
     out["fdr_significant"] = out["p_fdr"] < fdr_alpha
 
+    if "auc_univariate" not in out.columns:
+        out["auc_univariate"] = np.nan
+
     cols = ["target", "target_kind", "predictor", "kind", "test", "stat", "p", "p_fdr",
             "fdr_significant", "effect", "effect_label",
-            "n_used", "positive_class"]
+            "n_used", "auc_univariate", "positive_class"]
     out["_eff_abs"] = out["effect"].abs()
     out = (out[cols + ["_eff_abs"]]
            .sort_values(["target", "p_fdr", "_eff_abs"],

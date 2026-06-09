@@ -171,6 +171,12 @@ table.report th, table.report td { padding: 7px 10px; text-align: left;
 table.report thead th { background: var(--grey-bg); position: sticky; top: 0;
                         font-weight: 600; }
 table.report tbody tr:hover { background: #fafafa; }
+table.report.diagnostic-accuracy th:not(:first-child),
+table.report.diagnostic-accuracy td:not(:first-child) {
+    text-align: right;
+    white-space: nowrap;
+}
+table.report.diagnostic-accuracy td:first-child { font-weight: 500; }
 
 /* Row color coding */
 tr.sig-fdr      { background: var(--green-bg) !important; }
@@ -731,6 +737,7 @@ class Artifacts:
 
     # EDA
     associations: pd.DataFrame | None = None
+    diagnostic_accuracy: pd.DataFrame | None = None
     eda_figures: list[Path] = field(default_factory=list)
 
     # Inferential
@@ -810,6 +817,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
 
     # EDA
     art.associations = _maybe_read_csv(root / "eda" / "tables" / "associations.csv", art.warnings)
+    art.diagnostic_accuracy = _maybe_read_csv(
+        root / "eda" / "tables" / "diagnostic_accuracy.csv", art.warnings,
+    )
     eda_fig = root / "eda" / "figures"
     if eda_fig.exists():
         art.eda_figures = sorted(eda_fig.glob("*.svg"))
@@ -1380,12 +1390,16 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         'test matched to both outcome and predictor types (binary, continuous, '
         'ordinal, or nominal). '
         'p-values are corrected per target using Benjamini–Hochberg FDR.</p>'
+        '<p class="muted"><small><code>auc_univariate</code> (binary and continuous '
+        'predictors only): univariate ROC AUC vs the target. If the raw AUC is '
+        'below 0.5, we report <em>1 − AUC</em> so the value reflects '
+        'discrimination strength regardless of predictor direction.</small></p>'
     )
 
     df = art.associations.copy()
     # Ensure expected columns exist
     for col in ["target", "predictor", "kind", "test", "effect_label",
-                "effect", "p", "p_fdr", "n_used"]:
+                "effect", "p", "p_fdr", "n_used", "auc_univariate"]:
         if col not in df.columns:
             df[col] = np.nan
 
@@ -1445,9 +1459,13 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         body.append(f"<p>{line}</p>")
 
         display_cols = ["predictor", "kind", "test", "effect_label", "effect",
-                        "p", "p_fdr", "significance", "strength", "n_used"]
+                        "auc_univariate", "p", "p_fdr", "significance", "strength", "n_used"]
         display_cols = [c for c in display_cols if c in sub.columns]
         interp_df = sub.copy()
+        if "auc_univariate" in sub.columns:
+            sub["auc_univariate"] = sub["auc_univariate"].apply(
+                lambda v: "" if _coerce_float(v) is None else f"{_coerce_float(v):.3f}",
+            )
         sub["p"] = sub["p"].apply(human_p)
         sub["p_fdr"] = sub["p_fdr"].apply(human_p)
         body.append(table_to_html(
@@ -1455,6 +1473,8 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             # 'strength' is a pre-built <span> badge — don't HTML-escape it.
             safe_html_cols=("strength",),
         ))
+        body.append(_render_diagnostic_accuracy(target, art, cfg))
+
         body.append(_render_eda_interpretation(target, interp_df, cfg))
 
         # Figures for this target
@@ -1600,6 +1620,176 @@ def _render_inferential_interpretation(target: str, tbl: pd.DataFrame,
         return ""
     return details_block(
         "💡 Interpretation", "<ul>" + "".join(lines) + "</ul>")
+
+
+_DIAGNOSTIC_LABELS: dict[str, str] = {
+    "perifocal_edema": "Peritumoral Edema",
+    "sinus_invasion": "Skull Invasion",
+    "tumor_location_non_skull_base": "Non-skull-base Location",
+    "tumor_margin_irregular": "Irregular Tumor Margin",
+    "sex_male": "Male Sex",
+    "cortical_destruction": "Cortical Destruction",
+    "heterogeneous_enhancement": "Heterogeneous Enhancement",
+    "cystic_component": "Cystic Component",
+    "mass_effect": "Mass Effect",
+    "dural_tail": "Dural Tail",
+    "capsular_enhancement": "Capsular Enhancement",
+    "brain_invasion": "Brain Invasion",
+    "t1_hypointensity": "T1 Hypointensity",
+    "t2_hyperintensity": "T2 Hyperintensity",
+    "dwi_hyperintensity": "DWI Hyperintensity",
+    "transfalcine_extension": "Transfalcine Extension",
+    "hist_necrosis": "Histologic Necrosis",
+    "progesterone_pos": "Progesterone Positive",
+}
+
+
+def _diagnostic_predictor_label(name: str) -> str:
+    if name in _DIAGNOSTIC_LABELS:
+        return _DIAGNOSTIC_LABELS[name]
+    return " ".join(part.capitalize() for part in str(name).split("_"))
+
+
+def _format_pct_ci(point: Any, lo: Any, hi: Any) -> str:
+    """Paper-style ``70.1% [62.2–77.2]``."""
+    p = _coerce_float(point)
+    if p is None:
+        return ""
+    pct = p * 100.0
+    lo_f = _coerce_float(lo)
+    hi_f = _coerce_float(hi)
+    if lo_f is None or hi_f is None:
+        return f"{pct:.1f}%"
+    return f"{pct:.1f}% [{lo_f * 100.0:.1f}–{hi_f * 100.0:.1f}]"
+
+
+def _format_diagnostic_auc(v: Any) -> str:
+    f = _coerce_float(v)
+    if f is None:
+        return ""
+    return f"{f:.3f}"
+
+
+def _build_diagnostic_display_df(sub: pd.DataFrame, cfg: ReportConfig) -> pd.DataFrame:
+    """Paper-style Table 3 layout (Upreti et al.)."""
+    evaluated = sub[sub["note"].fillna("").eq("")].copy()
+    if evaluated.empty:
+        return pd.DataFrame()
+
+    evaluated["_p_num"] = evaluated["p_fdr"].apply(_coerce_p)
+    evaluated = evaluated.sort_values(
+        ["_p_num", "sensitivity"],
+        ascending=[True, False],
+        na_position="last",
+    ).drop(columns="_p_num")
+
+    rows = []
+    for _, r in evaluated.iterrows():
+        sig = classify_significance(
+            r.get("p"), r.get("p_fdr"),
+            fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha,
+        )
+        label = _diagnostic_predictor_label(str(r["predictor"]))
+        if sig == "sig-fdr":
+            label = f"{label}*"
+        rows.append({
+            "Imaging feature": label,
+            "Sensitivity (95% CI)": _format_pct_ci(
+                r.get("sensitivity"), r.get("sensitivity_lo"), r.get("sensitivity_hi")),
+            "Specificity (95% CI)": _format_pct_ci(
+                r.get("specificity"), r.get("specificity_lo"), r.get("specificity_hi")),
+            "PPV (95% CI)": _format_pct_ci(
+                r.get("PPV"), r.get("PPV_lo"), r.get("PPV_hi")),
+            "NPV (95% CI)": _format_pct_ci(
+                r.get("NPV"), r.get("NPV_lo"), r.get("NPV_hi")),
+            "Accuracy": _format_pct_ci(
+                r.get("accuracy"), r.get("accuracy_lo"), r.get("accuracy_hi")),
+            "AUC": _format_diagnostic_auc(r.get("AUC")),
+            "_sig": sig,
+            "_p": r.get("p"),
+            "_p_fdr": r.get("p_fdr"),
+            "note": r.get("note", ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def _diagnostic_table_html(disp: pd.DataFrame, cfg: ReportConfig) -> str:
+    if disp.empty:
+        return '<p class="muted"><em>(no evaluable binary predictors)</em></p>'
+
+    show = disp.drop(columns=[c for c in disp.columns if c.startswith("_")], errors="ignore")
+    sig_classes = disp["_sig"].astype(str).tolist()
+    counter = [0]
+
+    def _class_fn(_r: pd.Series) -> str:
+        i = counter[0]
+        counter[0] += 1
+        return sig_classes[i] if i < len(sig_classes) else ""
+
+    html = table_to_html(show, row_class_fn=_class_fn)
+    return html.replace(
+        '<table class="report">',
+        '<table class="report diagnostic-accuracy">',
+        1,
+    )
+
+
+def _render_diagnostic_accuracy(target: str, art: Artifacts,
+                                cfg: ReportConfig) -> str:
+    """Collapsible univariate diagnostic accuracy table (one target)."""
+    if art.diagnostic_accuracy is None or art.diagnostic_accuracy.empty:
+        return details_block(
+            "Like in that research: univariate diagnostic accuracy",
+            warning_box("No diagnostic accuracy table was found."),
+        )
+
+    sub = art.diagnostic_accuracy[
+        art.diagnostic_accuracy["target"].astype(str) == str(target)
+    ].copy()
+    if sub.empty:
+        return details_block(
+            "Like in that research: univariate diagnostic accuracy",
+            warning_box(
+                f"No diagnostic accuracy rows for target <code>{_esc(target)}</code>."
+            ),
+        )
+
+    disp = _build_diagnostic_display_df(sub, cfg)
+    skipped = sub[sub["note"].fillna("").ne("")]
+
+    parts = [
+        "<p>Univariate diagnostic-test performance of each binary imaging feature "
+        "(present vs absent) against the target outcome, formatted like "
+        "Upreti et al. Table 3. Wilson 95% confidence intervals are shown in "
+        "brackets. Rows are colour-coded by significance "
+        "(<span class='badge' style='background:var(--green-bg)'>green</span> "
+        "= FDR-significant, "
+        "<span class='badge' style='background:var(--yellow-bg)'>yellow</span> "
+        "= nominally significant only). "
+        "An asterisk (*) marks FDR-significant features.</p>",
+        _diagnostic_table_html(disp, cfg),
+        (
+            "<p class='muted'><small>"
+            "* imaging feature with FDR p &lt; "
+            f"{cfg.fdr_alpha:g}. "
+            "PPV = positive predictive value; NPV = negative predictive value; "
+            "CI = confidence interval; AUC = (sensitivity + specificity) / 2 "
+            "for a binary predictor.</small></p>"
+        ),
+    ]
+    if not skipped.empty and "predictor" in skipped.columns:
+        skip_lines = "".join(
+            f"<li><code>{_esc(r['predictor'])}</code>: "
+            f"{_esc(r.get('note', ''))}</li>"
+            for _, r in skipped.iterrows()
+        )
+        parts.append(
+            "<p><strong>Skipped predictors</strong></p>"
+            f"<ul class='muted'>{skip_lines}</ul>"
+        )
+
+    return details_block(
+        "Like in that research: univariate diagnostic accuracy", "".join(parts))
 
 
 def _eda_direction_phrase(r: pd.Series, target: str) -> str:
@@ -2171,6 +2361,7 @@ def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
                 if "p_fdr" in disp.columns:
                     disp["p_fdr"] = disp["p_fdr"].apply(human_p)
                 body.append(table_to_html(disp))
+                body.append(_render_diagnostic_accuracy(target, art, cfg))
                 body.append(_render_eda_interpretation(
                     target, sub, cfg))
 

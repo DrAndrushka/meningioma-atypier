@@ -460,6 +460,21 @@ def export_calculator_meta(
                 "kind": "binary",
                 "coef": coef_by_col[pred],
             })
+        elif spec.kind == "ordinal":
+            if pred not in coef_by_col:
+                continue
+            s = imputed_frames[0][pred].dropna()
+            if spec.ordered_levels:
+                levels = [str(x) for x in spec.ordered_levels]
+            else:
+                cat = pd.Categorical(s, ordered=True)
+                levels = [str(x) for x in cat.categories]
+            terms.append({
+                "name": pred,
+                "kind": "ordinal",
+                "coef": coef_by_col[pred],
+                "levels": levels,
+            })
         elif spec.kind == "nominal":
             dummy_cols = [c for c in cols if c in coef_by_col]
             if not dummy_cols:

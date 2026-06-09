@@ -36,6 +36,29 @@ def test_bootstrap_internal_validation(tiny_model_df):
     assert out["roc_curves"]["curves"][0]["fpr"]
 
 
+def test_enrich_streamlit_artifact_with_ordinal_predictor():
+    df = pd.DataFrame({
+        "event": [0, 1, 0, 1, 0, 1],
+        "age_bins": [0.0, 1.0, 2.0, 3.0, 4.0, 2.0],
+    })
+    design_cols = ["age_bins"]
+    meta = {
+        "target": "event",
+        "intercept": -0.3,
+        "terms": [
+            {
+                "name": "age_bins",
+                "kind": "ordinal",
+                "coef": 0.2,
+                "levels": ["<50", "50-59", "60-69", "70-79", "80+"],
+            },
+        ],
+    }
+    artifact = calculator_meta_to_streamlit_artifact(meta, n=len(df), events=int(df["event"].sum()))
+    enriched = enrich_streamlit_artifact(artifact, df, design_cols, n_bootstrap=20)
+    assert enriched["coefficients"]["age_bins"] == pytest.approx(0.2 * enriched["coefficient_processing"]["shrinkage_factor"])
+
+
 def test_enrich_streamlit_artifact_adds_validation(tiny_model_df):
     df, design_cols, coefficients = tiny_model_df
     meta = {

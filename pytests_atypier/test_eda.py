@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 import eda
-from eda import benjamini_hochberg, screen_associations
+from eda import benjamini_hochberg, compute_univariate_auc, screen_associations
 from schema_infer import ColSpec
 
 
@@ -132,6 +132,59 @@ def test_plot_pair(tiny_df, tiny_schema, tmp_path):
     assert any(figs.glob("*.svg"))
 
 
+def test_compute_univariate_auc_continuous():
+    df = pd.DataFrame({
+        "high_grade": [True, True, False, False, True, False],
+        "age": [80.0, 75.0, 50.0, 45.0, 70.0, 40.0],
+    })
+    auc = compute_univariate_auc(
+        df, "high_grade", "age", "continuous", positive_class=True,
+    )
+    assert auc > 0.5
+
+
+def test_compute_univariate_auc_binary():
+    df = pd.DataFrame({
+        "high_grade": [True, True, False, False],
+        "necrosis": [True, False, True, False],
+    })
+    auc = compute_univariate_auc(
+        df, "high_grade", "necrosis", "binary", positive_class=True,
+    )
+    assert 0.0 <= auc <= 1.0
+
+
+def test_compute_univariate_auc_flips_reversed_direction():
+    df = pd.DataFrame({
+        "high_grade": [True, True, False, False, True, False],
+        "age": [40.0, 45.0, 80.0, 75.0, 50.0, 70.0],
+    })
+    auc = compute_univariate_auc(
+        df, "high_grade", "age", "continuous", positive_class=True,
+    )
+    assert auc > 0.5
+
+
+def test_compute_univariate_auc_nominal_skipped():
+    df = pd.DataFrame({
+        "high_grade": [True, False, True, False],
+        "sex": ["M", "F", "M", "F"],
+    })
+    assert np.isnan(compute_univariate_auc(
+        df, "high_grade", "sex", "nominal", positive_class=True,
+    ))
+
+
+def test_compute_univariate_auc_single_outcome_class():
+    df = pd.DataFrame({
+        "high_grade": [True, True, True],
+        "age": [50.0, 60.0, 70.0],
+    })
+    assert np.isnan(compute_univariate_auc(
+        df, "high_grade", "age", "continuous", positive_class=True,
+    ))
+
+
 def test_screen_associations(tiny_df, tiny_schema, tmp_output):
     out = screen_associations(
         tiny_df, tiny_schema,
@@ -139,4 +192,9 @@ def test_screen_associations(tiny_df, tiny_schema, tmp_output):
         output_root=tmp_output,
     )
     assert "target" in out.columns
+    assert "auc_univariate" in out.columns
+    age_row = out[out["predictor"] == "age"].iloc[0]
+    assert not np.isnan(age_row["auc_univariate"])
+    sex_row = out[out["predictor"] == "sex"].iloc[0]
+    assert np.isnan(sex_row["auc_univariate"])
     assert (tmp_output / "eda" / "tables" / "associations.csv").exists()

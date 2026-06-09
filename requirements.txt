@@ -1,18 +1,76 @@
-# meningioma-atypier — Python 3.11+
-# Tested on Python 3.12 with the pinned ranges below.
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🧠 meningioma-atypier — Python dependencies
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Python 3.11+ recommended (devcontainer uses 3.11; tested on 3.12).
+#
+# Install:
+#   pip install -r requirements.txt
+#
+# Run tests:
+#   cd meningioma-atypier
+#   python -m pytest
+#
+# Launch calculator:
+#   streamlit run app.py
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Core pipeline (cleaning, DDA, EDA, inferential, report)
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 📊 Core analysis pipeline
+#    cleaning → schema → DDA → EDA → MICE → logistic regression → HTML report
+# ───────────────────────────────────────────────────────────────────────────────
+
 pandas>=2.2,<4
+# Tabular data: cohort loading, schema application, CSV/Excel I/O, pipeline tables.
+
 numpy>=2.0,<3
+# Numeric arrays underpinning stats, design matrices, and imputation.
+
 scipy>=1.11
+# Classical tests (Mann–Whitney, χ², Fisher, t) and root-finding for calibration.
+
 statsmodels>=0.14
+# Multivariable logistic regression (Logit), VIF, proportion CIs, calibration models.
+
 scikit-learn>=1.4
+# MICE (IterativeImputer), bootstrap validation metrics (AUC, Brier, ROC).
+
 matplotlib>=3.8
+# Distribution plots (DDA), forest plots, validation charts, missingness bars.
+
 seaborn>=0.13
+# EDA association plots and missingness heatmaps.
+
 openpyxl>=3.1
+# Read Excel cohort files when the raw export is .xlsx (CSV also supported).
 
-# Streamlit calculator (app.py)
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 🌐 Streamlit clinical calculator (app.py)
+#    Reads a portable JSON model artifact — no notebook required at runtime.
+# ───────────────────────────────────────────────────────────────────────────────
+
 streamlit>=1.28
+# Interactive high-grade meningioma risk calculator UI.
 
-# Tests: cd meningioma-atypier && python -m pytest
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 🧪 Tests (pytests_atypier/)
+#    ~180 tests covering cleaning, EDA, inferential pooling, report, calculator.
+# ───────────────────────────────────────────────────────────────────────────────
+
 pytest>=8.0
+# Unit and integration tests for the heavy_machinery modules.
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 📓 Notebook workflow (optional — not needed for Streamlit or pytest alone)
+#    heavy_machinery/meningioma.ipynb orchestrates the full pipeline top-to-bottom.
+# ───────────────────────────────────────────────────────────────────────────────
+
+# ipython>=8.0
+# Jupyter display helpers used in config steps (§04 row filters, §09 derivations).
+
+# jupyter>=1.0
+# Run the main notebook: jupyter notebook heavy_machinery/meningioma.ipynb

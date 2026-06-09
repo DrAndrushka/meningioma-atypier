@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -236,6 +237,45 @@ def test_render_missingness(report_cfg, report_art):
 
 def test_render_eda(report_cfg, report_art):
     assert "<section" in render_eda(report_cfg, report_art)
+
+
+def test_render_diagnostic_accuracy(report_cfg, report_art):
+    report_art.associations = pd.DataFrame({
+        "target": ["event"], "predictor": ["age"], "kind": ["continuous"],
+        "test": ["spearman"], "effect_label": ["spearman_rho"], "effect": [0.2],
+        "p": [0.04], "p_fdr": [0.08], "n_used": [4],
+    })
+    report_art.diagnostic_accuracy = pd.DataFrame({
+        "target": ["event", "event"],
+        "predictor": ["perifocal_edema", "age"],
+        "n_used": [4, 4],
+        "TP": [2, np.nan], "FP": [0, np.nan], "FN": [1, np.nan], "TN": [1, np.nan],
+        "sensitivity": [0.667, np.nan],
+        "sensitivity_lo": [0.30, np.nan],
+        "sensitivity_hi": [0.90, np.nan],
+        "specificity": [1.0, np.nan],
+        "specificity_lo": [0.40, np.nan],
+        "specificity_hi": [1.0, np.nan],
+        "PPV": [1.0, np.nan],
+        "PPV_lo": [0.50, np.nan],
+        "PPV_hi": [1.0, np.nan],
+        "NPV": [0.5, np.nan],
+        "NPV_lo": [0.10, np.nan],
+        "NPV_hi": [0.90, np.nan],
+        "accuracy": [0.75, np.nan],
+        "accuracy_lo": [0.40, np.nan],
+        "accuracy_hi": [0.95, np.nan],
+        "AUC": [0.833, np.nan],
+        "p": [0.01, np.nan],
+        "p_fdr": [0.02, np.nan],
+        "note": ["", "Skipped: requires predefined cutoff"],
+    })
+    html = render_eda(report_cfg, report_art)
+    assert "Like in that research: univariate diagnostic accuracy" in html
+    assert "Peritumoral Edema" in html
+    assert "66.7% [30.0" in html
+    assert "sig-fdr" in html
+    assert "Sensitivity (95% CI)" in html
 
 
 def test_render_inferential(report_cfg, report_art):

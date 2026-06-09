@@ -10,6 +10,8 @@ from IPython.display import display
 
 from cleaning import export_cleaning_artifacts
 
+SPINAL_MENINGIOMA_LABEL = "Mugurkaula meningioma"
+
 
 @dataclass
 class RowFilter:
@@ -19,6 +21,24 @@ class RowFilter:
     keep: Callable[[pd.DataFrame], pd.Series]
     note: str  # human-readable rule text for logs and report
     active: bool = True
+
+
+def keep_brain_meningioma(df: pd.DataFrame) -> pd.Series:
+    """Keep intracranial cases; drop rows flagged as spinal meningioma."""
+    side = df["side"].astype("string")
+    mri = df["mri_date"].astype("string")
+    flagged = (side == SPINAL_MENINGIOMA_LABEL) | (mri == SPINAL_MENINGIOMA_LABEL)
+    return ~flagged.fillna(False)
+
+
+def brain_meningioma_row_filter(*, active: bool = True) -> RowFilter:
+    """Pre-schema inclusion filter — run before ``apply_schema``."""
+    return RowFilter(
+        name="Meningioma location - brain",
+        keep=keep_brain_meningioma,
+        note="inclusion criteria - brain meningioma",
+        active=active,
+    )
 
 
 def apply_row_filter(
@@ -71,6 +91,14 @@ def apply_row_filters(
     return df, pd.DataFrame(log)
 
 
+def combine_row_filter_logs(*logs: pd.DataFrame) -> pd.DataFrame:
+    """Concatenate pre- and post-schema filter logs in run order."""
+    frames = [log for log in logs if log is not None and not log.empty]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def _drop_log_for_export(row_filter_log: pd.DataFrame) -> list[dict]:
     """Map row_filter_log → drop_log format for cleaning_summary.csv / report."""
     if row_filter_log.empty:
@@ -93,6 +121,7 @@ def finalize_row_drops(
     *,
     output_root: Path,
     df_raw: pd.DataFrame,
+    n_rows_pre_schema: int | None = None,
     n_rows_after_schema: int,
     schema,
     dupes,
@@ -107,6 +136,7 @@ def finalize_row_drops(
         output_root,
         df=df,
         n_rows_raw=len(df_raw),
+        n_rows_pre_schema=n_rows_pre_schema,
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=len(df),
         schema=schema,

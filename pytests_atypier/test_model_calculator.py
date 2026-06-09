@@ -94,6 +94,27 @@ def test_calculator_meta_to_streamlit_artifact():
     assert out["n"] == 100
 
 
+def test_calculator_meta_ordinal_age_bins():
+    meta = {
+        "target": "high_grade",
+        "intercept": -0.2,
+        "terms": [
+            {
+                "name": "age_bins",
+                "kind": "ordinal",
+                "coef": 0.15,
+                "levels": ["<50", "50-59", "60-69", "70-79", "80+"],
+            },
+        ],
+    }
+    out = calculator_meta_to_streamlit_artifact(meta, n=50, events=10)
+    assert out["coefficients"]["age_bins"] == 0.15
+    feat = out["features"][0]
+    assert feat["type"] == "ordinal"
+    encoded = build_encoded_features({"age_bins": "60-69"}, out)
+    assert encoded["age_bins"] == 2.0
+
+
 def test_write_streamlit_artifacts(tmp_path: Path):
     tabs = tmp_path / "inferential" / "tables"
     tabs.mkdir(parents=True)
