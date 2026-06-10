@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 import dda
-from dda import plot_distribution_by_year, run_dda
+from dda import run_dda
 
 
 def test_ensure_dirs(tmp_output):
@@ -96,15 +96,6 @@ def test_plot_ordinal(tmp_path):
     s = pd.Series(pd.Categorical(["a", "b", "a"], categories=["a", "b"], ordered=True))
     paths = dda._plot_ordinal(s, "grade", tmp_path, ordered_levels=["a", "b"])
     assert len(paths) == 1
-
-
-def test_plot_distribution_by_year(tiny_df, tmp_path):
-    df = tiny_df.copy()
-    df["age_bins"] = pd.Categorical(
-        ["<50", "50-59", "60-69", "70+"], categories=["<50", "50-59", "60-69", "70+"],
-    )
-    p = plot_distribution_by_year(df, "age_bins", "entry_year", tmp_path, min_years=2)
-    assert p is not None and p.exists()
 
 
 def test_plot_nominal(tmp_path):

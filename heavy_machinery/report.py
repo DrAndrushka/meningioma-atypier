@@ -41,6 +41,7 @@ import ast
 import base64
 import html as _html
 import importlib
+import importlib.metadata
 import json
 import math
 import os
@@ -54,6 +55,13 @@ from typing import Any, Iterable, Sequence
 
 import numpy as np
 import pandas as pd
+
+from inferential import (
+    artifact_base,
+    model_key,
+    parse_artifact_base,
+    parse_model_key,
+)
 
 from cleaning import format_number, format_table_for_display
 
@@ -98,12 +106,6 @@ class ReportConfig:
     nominal_alpha: float = 0.05
     effect: EffectThresholds = field(default_factory=EffectThresholds)
     missing: MissingThresholds = field(default_factory=MissingThresholds)
-    # Primary exposure / predictor of interest — gets a dedicated synthesis section.
-    focus_predictor: str | None = None
-    # For one-hot nominal focus vars: which level is reference (e.g. transperineāla).
-    focus_reference_level: str | None = None
-    # Column used for multi-year focus figure (``<col>__bar_by_year.svg``).
-    year_column: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +173,9 @@ table.report th, table.report td { padding: 7px 10px; text-align: left;
 table.report thead th { background: var(--grey-bg); position: sticky; top: 0;
                         font-weight: 600; }
 table.report tbody tr:hover { background: #fafafa; }
+table.report th.nowrap, table.report td.nowrap {
+    white-space: nowrap;
+}
 table.report.diagnostic-accuracy th:not(:first-child),
 table.report.diagnostic-accuracy td:not(:first-child) {
     text-align: right;
@@ -250,161 +255,66 @@ details.collapsible > summary {
     cursor: pointer; font-weight: 600; padding: 6px 0;
     color: var(--accent);
 }
+details.collapsible.glossary-block {
+    margin: 28px 0 14px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+}
+details.collapsible.glossary-block > summary {
+    font-size: 17px;
+    padding: 8px 0 10px;
+}
+
+/* Major report sections (top-level dropdowns) */
+details.section-collapsible {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fff;
+    overflow: hidden;
+}
+details.section-collapsible > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.25;
+    padding: 20px 24px;
+    color: var(--fg);
+    background: var(--card);
+    border-bottom: 2px solid transparent;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+details.section-collapsible > summary::-webkit-details-marker { display: none; }
+details.section-collapsible > summary::marker { content: ""; }
+details.section-collapsible > summary::after {
+    content: "▸";
+    flex-shrink: 0;
+    font-size: 22px;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+}
+details.section-collapsible[open] > summary {
+    border-bottom-color: var(--border);
+}
+details.section-collapsible[open] > summary::after {
+    transform: rotate(90deg);
+}
+details.section-collapsible > .section-body {
+    padding: 4px 24px 28px;
+}
+details.section-collapsible > .section-body > h3:first-child,
+details.section-collapsible > .section-body > p:first-child {
+    margin-top: 12px;
+}
 
 /* TL;DR list */
 .tldr-list { padding-left: 22px; }
 .tldr-list li { margin: 4px 0; }
 
-/* Focus predictor spotlight */
-.focus-hero {
-    background: linear-gradient(135deg, #eff6ff 0%, #f0fdf4 100%);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 20px 22px;
-    margin: 16px 0 20px;
-}
-.focus-hero h3 { margin: 0 0 6px; font-size: 20px; color: var(--accent); }
-.focus-stat-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 10px;
-    margin: 14px 0 6px;
-}
-.focus-stat-card {
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    text-align: center;
-}
-.focus-stat-card .label {
-    font-size: 11px;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-.focus-stat-card .value {
-    font-size: 18px;
-    font-weight: 700;
-    color: var(--accent);
-    margin-top: 4px;
-    line-height: 1.2;
-}
-.focus-target-block {
-    border: 1px solid var(--border);
-    border-left: 4px solid var(--accent);
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin: 16px 0;
-    background: #fafbfc;
-}
-.focus-figure-hero {
-    max-width: 520px;
-    margin: 12px auto 18px;
-}
-.focus-figure-hero img { width: 100%; height: auto; display: block; }
-
-/* Variable of interest — compact tables + capped figure width */
-.focus-section { font-size: 15px; margin-top: 20px; }
-.focus-section > h3 { font-size: 19px; margin-bottom: 10px; }
-.focus-section h4 { font-size: 15px; margin: 10px 0 6px; }
-.focus-section p { font-size: 15px; margin: 4px 0 8px; }
-.focus-section table.report {
-    font-size: 14px;
-    margin: 6px 0 10px;
-    max-width: 100%;
-}
-.focus-section table.report th,
-.focus-section table.report td {
-    padding: 3px 5px;
-    line-height: 1.25;
-}
-.focus-section .focus-target-block {
-    border: 1px solid var(--border);
-    border-left: 4px solid var(--accent);
-    border-radius: 8px;
-    padding: 10px 12px;
-    margin: 10px 0;
-    background: #fafbfc;
-}
-.focus-section .focus-hero {
-    padding: 12px 14px;
-    margin: 10px 0 14px;
-}
-.focus-section .focus-stat-grid {
-    grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
-    gap: 6px;
-}
-.focus-section .focus-stat-card { padding: 6px 8px; }
-.focus-section .focus-stat-card .label { font-size: 9px; }
-.focus-section .focus-stat-card .value { font-size: 13px; }
-/* DDA distribution plot in Variable of interest (e.g. biopsy_type__bar.svg).
-   Sized via .focus-figure-hero below — not the full-width .figure-grid. */
-.focus-section .focus-figure-hero {
-    max-width: 600px;
-    margin: 8px auto 12px;
-}
-/* EDA plots per target — fixed width (avoids 1fr grid stretching one image full-page) */
-.focus-section .focus-eda-figure {
-    display: inline-block;
-    max-width: 500px;
-    width: 100%;
-    margin: 6px 0 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 6px;
-    background: #fff;
-}
-.focus-section .focus-eda-figure img {
-    width: 100%;
-    height: auto;
-    display: block;
-}
-.focus-section .focus-eda-figure .caption {
-    font-size: 12px;
-    color: var(--muted);
-    text-align: center;
-    margin-top: 4px;
-    word-break: break-word;
-}
-.focus-section ul { font-size: 11.5px; padding-left: 18px; }
-.focus-section ul li { margin: 2px 0; }
-.focus-route-note { font-size: 12px; color: #374151; margin: 6px 0 0; }
-.figure-note { font-size: 11px; color: #4b5563; margin: 8px 0 0; max-width: 52rem; }
-.focus-route-card {
-    margin: 8px 0 12px;
-    padding: 10px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: #fff;
-}
-.focus-route-card .focus-route-title {
-    font-size: 12px;
-    font-weight: 600;
-    margin: 0 0 8px;
-    color: var(--muted);
-}
-.focus-route-table { width: 100%; font-size: 13px; border-collapse: collapse; }
-.focus-route-table th {
-    text-align: left;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--muted);
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--border);
-}
-.focus-route-table td { padding: 7px 8px; border-bottom: 1px solid #f3f4f6; }
-.focus-route-table tr.focus-route-highlight td {
-    background: #eff6ff;
-    border-left: 3px solid var(--accent);
-}
-.focus-route-table .mono {
-    font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-variant-numeric: tabular-nums;
-}
-.focus-dda-routes { margin: 6px 0 10px; }
-
-/* Stats decoder */
+/* Glossary dropdowns (DDA / EDA) */
 .stat-decoder dt { font-weight: 600; margin-top: 12px; }
 .stat-decoder dd { margin-left: 0; color: #374151; }
 
@@ -615,7 +525,8 @@ def info_box(msg: str) -> str:
 def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
                   max_rows: int | None = None,
                   index: bool = False,
-                  safe_html_cols: Iterable[str] = ()) -> str:
+                  safe_html_cols: Iterable[str] = (),
+                  nowrap_cols: Iterable[str] = ()) -> str:
     """Render a DataFrame to HTML with optional per-row CSS class function.
 
     Parameters
@@ -627,6 +538,8 @@ def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
         Cells in these columns are emitted verbatim (NOT HTML-escaped).
         Use this for pre-built ``<span class='badge ...'>`` snippets.
         Any column not listed is still escaped — default-safe.
+    nowrap_cols : iterable of column names
+        Cells in these columns use ``white-space: nowrap`` (no line wrap).
     """
     if df is None or df.empty:
         return '<p class="muted"><em>(empty table)</em></p>'
@@ -634,7 +547,11 @@ def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
         df = df.head(max_rows).copy()
     cols = list(df.columns)
     safe_set = set(safe_html_cols)
-    head = "".join(f"<th>{_esc(c)}</th>" for c in cols)
+    nowrap_set = set(nowrap_cols)
+    head = "".join(
+        f'<th class="nowrap">{_esc(c)}</th>' if c in nowrap_set else f"<th>{_esc(c)}</th>"
+        for c in cols
+    )
     if index:
         head = f"<th>{_esc(df.index.name or '')}</th>" + head
 
@@ -645,7 +562,11 @@ def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
         cells = "".join(
             # Pre-built HTML (badges) passes through verbatim; everything else
             # is escaped to keep the document safe even with weird data.
-            f"<td>{row[c] if c in safe_set else _esc(row[c])}</td>"
+            (
+                f'<td class="nowrap">{row[c] if c in safe_set else _esc(row[c])}</td>'
+                if c in nowrap_set
+                else f"<td>{row[c] if c in safe_set else _esc(row[c])}</td>"
+            )
             for c in cols
         )
         if index:
@@ -680,25 +601,33 @@ def svg_grid(svg_paths: Iterable[Path], max_n: int | None = None) -> str:
     return f'<div class="figure-grid">{"".join(cards)}</div>'
 
 
-def _focus_eda_figure(svg_path: Path) -> str:
-    """Single compact EDA plot for the Variable-of-interest section."""
-    if not svg_path.exists():
-        return '<p class="muted"><em>(figure not found)</em></p>'
-    img = _figure_img_html(svg_path)
-    if not img:
-        return '<p class="muted"><em>(figure not found)</em></p>'
-    return (
-        '<div class="focus-eda-figure">'
-        f'{img}'
-        f'<div class="caption">{_esc(svg_path.stem)}</div>'
-        '</div>'
-    )
-
-
 def details_block(summary: str, inner_html: str, *, open: bool = False) -> str:
     open_attr = " open" if open else ""
     return (f'<details class="collapsible"{open_attr}>'
             f'<summary>{_esc(summary)}</summary>{inner_html}</details>')
+
+
+def glossary_block(inner_html: str, *, open: bool = False) -> str:
+    """Section-end metrics glossary (DDA / EDA / inferential)."""
+    open_attr = " open" if open else ""
+    return (
+        f'<details class="collapsible glossary-block"{open_attr}>'
+        f'<summary>{_esc("📖 What do these metrics mean?")}</summary>'
+        f'{inner_html}</details>'
+    )
+
+
+def section_block(title: str, inner_html: str, *, open: bool = False) -> str:
+    """Wrap a major report section in a top-level collapsible dropdown."""
+    open_attr = " open" if open else ""
+    return (
+        f'<section class="report-section">'
+        f'<details class="section-collapsible"{open_attr}>'
+        f'<summary>{_esc(title)}</summary>'
+        f'<div class="section-body">{inner_html}</div>'
+        f'</details>'
+        f'</section>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +674,8 @@ class Artifacts:
     inferential_cases: pd.DataFrame | None = None
     inferential_multivariable: dict[str, pd.DataFrame] = field(default_factory=dict)
     inferential_vif: dict[str, pd.DataFrame] = field(default_factory=dict)
+    inferential_model_titles: dict[str, str] = field(default_factory=dict)
+    inferential_model_links: dict[str, str] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
 
     # Warnings accumulated during load (rendered in appendix)
@@ -828,13 +759,33 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     inf_tab = root / "inferential" / "tables"
     art.inferential_summary = _maybe_read_csv(inf_tab / "inferential_summary.csv", art.warnings)
     art.inferential_cases = _maybe_read_csv(inf_tab / "multivariable_cases.csv", art.warnings)
+    known_targets: set[str] = set()
+    if art.inferential_cases is not None and not art.inferential_cases.empty:
+        known_targets = set(art.inferential_cases["target"].astype(str))
+    if art.inferential_summary is not None and not art.inferential_summary.empty:
+        known_targets |= set(art.inferential_summary["target"].astype(str))
     if inf_tab.exists():
+        if art.inferential_cases is not None and not art.inferential_cases.empty:
+            for _, row in art.inferential_cases.iterrows():
+                t = str(row["target"])
+                mid = str(row.get("model_id", "") or "")
+                title = str(row.get("model_title", "") or "")
+                link = str(row.get("model_link", "") or "")
+                key = model_key(t, mid)
+                if title:
+                    art.inferential_model_titles[key] = title
+                if link:
+                    art.inferential_model_links[key] = link
         for f in sorted(inf_tab.glob("*__multivariable.csv")):
-            target = f.stem.replace("__multivariable", "")
-            art.inferential_multivariable[target] = pd.read_csv(f)
+            base = f.stem.replace("__multivariable", "")
+            target, model_id = parse_artifact_base(base, known_targets)
+            key = model_key(target, model_id)
+            art.inferential_multivariable[key] = pd.read_csv(f)
         for f in sorted(inf_tab.glob("*__vif.csv")):
-            target = f.stem.replace("__vif", "")
-            art.inferential_vif[target] = pd.read_csv(f)
+            base = f.stem.replace("__vif", "")
+            target, model_id = parse_artifact_base(base, known_targets)
+            key = model_key(target, model_id)
+            art.inferential_vif[key] = pd.read_csv(f)
     inf_fig = root / "inferential" / "figures"
     if inf_fig.exists():
         art.inferential_figures = sorted(inf_fig.glob("*.svg"))
@@ -864,13 +815,35 @@ def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
 # Section renderers
 # ---------------------------------------------------------------------------
 
-def _inferential_target_meta(art: Artifacts, target: str) -> str:
-    """One-line EPV / sample-size summary for a multivariable target."""
+def _inferential_model_heading(
+    title: str = "",
+    *,
+    link: str = "",
+    model_id: str = "",
+) -> str:
+    """Section heading for one multivariable model variant."""
+    if title and link:
+        return (
+            f'<h4>📐 {_esc(title)} · '
+            f'<a href="{_esc(link)}" target="_blank" rel="noopener noreferrer">source</a></h4>'
+        )
+    if title:
+        return f"<h4>📐 {_esc(title)}</h4>"
+    if model_id:
+        return f"<h4>📐 Model <code>{_esc(model_id)}</code></h4>"
+    return ""
+
+
+def _inferential_target_meta(art: Artifacts, target: str, *, model_key_name: str) -> str:
+    """One-line EPV / sample-size summary for a multivariable target × model."""
     if art.inferential_cases is None or art.inferential_cases.empty:
         return ""
     if "target" not in art.inferential_cases.columns:
         return ""
-    sub = art.inferential_cases[art.inferential_cases["target"] == target]
+    sub = art.inferential_cases[art.inferential_cases["target"].astype(str) == target]
+    _, model_id = parse_model_key(model_key_name)
+    if "model_id" in sub.columns:
+        sub = sub.loc[sub["model_id"].astype(str).fillna("") == (model_id or "")]
     if sub.empty:
         return ""
     row = sub.iloc[0]
@@ -1098,14 +1071,14 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
              "null markers were applied, replacements were performed, data "
              "types were coerced, and skipped variables were excluded where "
              "appropriate.")
-    body = [f'<h2>🧹 Cleaning story</h2><p>{blurb}</p>']
+    body = [f'<p>{blurb}</p>']
 
     if (art.cleaning_summary is None and art.cleaning_log is None
             and art.derivation_log is None):
         body.append(warning_box(
             "No saved cleaning summary was found. Cleaning may have been "
             "performed, but no cleaning audit table was exported."))
-        return f'<section class="report-section">{"".join(body)}</section>'
+        return section_block("🧹 Cleaning story", "".join(body))
 
     if art.cleaning_summary is not None and not art.cleaning_summary.empty:
         body.append("<h3>Summary</h3>")
@@ -1127,7 +1100,7 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
                 + table_to_html(art.derivation_log, max_rows=200)
             )
         body.append(details_block("📜 Full cleaning log", log_html))
-    return f'<section class="report-section">{"".join(body)}</section>'
+    return section_block("🧹 Cleaning story", "".join(body))
 
 
 def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1137,11 +1110,11 @@ def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
              "ordering, nominal variables were treated as unordered categories, "
              "and ID/text/skip variables were excluded from statistical "
              "screening where appropriate.")
-    body = [f'<h2>🧬 Schema story</h2><p>{blurb}</p>']
+    body = [f'<p>{blurb}</p>']
 
     if art.schema_summary is None or art.schema_summary.empty:
         body.append(warning_box("No schema artifact was found."))
-        return f'<section class="report-section">{"".join(body)}</section>'
+        return section_block("🧬 Schema story", "".join(body))
 
     sch = art.schema_summary.copy()
 
@@ -1172,7 +1145,7 @@ def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
     body.append(table_to_html(
         sch, max_rows=400, row_class_fn=_schema_row_cls,
         safe_html_cols=["levels"]))
-    return f'<section class="report-section">{"".join(body)}</section>'
+    return section_block("🧬 Schema story", "".join(body))
 
 
 def _format_levels_cell(v: Any) -> str:
@@ -1209,7 +1182,6 @@ def _dda_continuous_for_report(df: pd.DataFrame) -> pd.DataFrame:
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
     """📊 DDA story with per-kind subsections."""
     body = [
-        '<h2>📊 Descriptive Data Analysis (DDA)</h2>',
         '<p>This section summarizes each variable on its own, before any '
         'association testing. Tables describe distribution shape and balance; '
         'figures show the same information visually.</p>',
@@ -1264,9 +1236,9 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
                                   grid_html))
 
     # Glossary at the end so a clinician can look up any column they just saw.
-    body.append(details_block("📖 What do these metrics mean?", _dda_glossary()))
+    body.append(glossary_block(_dda_glossary()))
 
-    return f'<section class="report-section">{"".join(body)}</section>'
+    return section_block("📊 Descriptive Data Analysis (DDA)", "".join(body))
 
 
 # Every metric emitted across the DDA tables, grouped by where it appears.
@@ -1295,13 +1267,28 @@ _DDA_GLOSSARY_GROUPS = [
         ("p_95th", "95th percentile — 5% of values fall above this."),
         ("median", "Middle value (50th percentile); robust to outliers."),
         ("mean", "Arithmetic average."),
-        ("trimmed_mean", "Mean after dropping extreme tails; robust to outliers."),
+        ("trimmed_mean",
+         "Average after removing the lowest 5% and highest 5% of values "
+         "(10% symmetric trim). 📐 One giant tumor can't drag the number up — "
+         "you still use most of the cohort. Compare to mean to see outlier pull."),
         ("mode", "Most frequent value."),
-        ("std", "Standard deviation — spread around the mean."),
-        ("cv", "Coefficient of variation (std / |mean|); relative spread."),
+        ("std",
+         "Typical distance from the average. 📏 Large std = values spread wide; "
+         "near zero = everyone clustered together. Shows how much patients differ "
+         "on this variable."),
+        ("cv",
+         "Relative spread: std ÷ |mean| (think of it as a %). 📊 Compares "
+         "variability across columns with different units — e.g. age vs tumor "
+         "volume. High cv = values bounce around a lot vs the typical level."),
         ("iqr", "Interquartile range (Q3 − Q1); middle-50% spread."),
-        ("skewness", "Distribution asymmetry. 0 = symmetric."),
-        ("kurtosis", "Tail heaviness / outlier tendency. 0 = normal-like."),
+        ("skewness",
+         "Which way the long tail points. 0 ≈ symmetric. ➡️ Positive = a few "
+         "very high values (mean often above median). ⬅️ Negative = a few very "
+         "low values. Flags when the average is a poor 'typical patient' summary."),
+        ("kurtosis",
+         "How heavy the tails are vs a normal bell curve (0 = normal-like). "
+         "📈 High = more extreme outliers than expected; low = flatter, fewer "
+         "surprises. Early heads-up before choosing parametric vs non-parametric tests."),
     ]),
     ("Categorical / ordinal variables", [
         ("first_mode", "Most common category."),
@@ -1311,11 +1298,16 @@ _DDA_GLOSSARY_GROUPS = [
         ("rarest", "Least common category."),
         ("rarest_pct", "Share of the least common category."),
         ("max_class_imbalance",
-         "first_mode_count / rarest_count. Higher = more imbalanced."),
+         "How lopsided categories are: most-common count ÷ rarest count. "
+         "⚖️ 1 = perfectly even; 10 = the biggest group is 10× the smallest. "
+         "High values warn that one category may dominate plots and models."),
         ("median_category", "Middle category by rank order (ordinal only)."),
         ("balance", "Normalized Shannon entropy (0–1). Closer to 1 = more "
                     "evenly distributed."),
-        ("entropy_bin", "Raw Shannon entropy in bits."),
+        ("entropy_bin",
+         "Shannon entropy in bits — how mixed the categories are. 🎲 0 = "
+         "everyone in one bucket; higher = more categories contributing roughly "
+         "evenly. Helps spot variables with rich variety vs near-constant labels."),
     ]),
     ("Binary variables", [
         ("mode", "More common of the two values."),
@@ -1340,10 +1332,140 @@ def _dda_glossary() -> str:
     return "".join(parts)
 
 
+# Every metric shown in EDA association + diagnostic-accuracy tables.
+_EDA_GLOSSARY_GROUPS = [
+    ("Association table columns", [
+        ("predictor",
+         "The MRI or clinical variable being screened against the target."),
+        ("kind",
+         "Predictor type from the schema (continuous, count, binary, ordinal, "
+         "nominal, etc.). The test is picked to match this type."),
+        ("n_used",
+         "Patients with both target and predictor recorded for this test. 📏 "
+         "Low n_used = shakier result; missing data shrinks the sample."),
+    ]),
+    ("Statistical tests", [
+        ("mann_whitney_u",
+         "Compares a numeric predictor between outcome-present vs outcome-absent "
+         "groups using ranks, not raw values. 🔬 Chosen over a t-test because "
+         "tumor size, ADC, etc. are often skewed with outliers — ranks are more "
+         "trustworthy."),
+        ("mann_whitney_u_days",
+         "Same Mann–Whitney idea applied to time gaps (days since earliest MRI "
+         "date). Used when the predictor is a date."),
+        ("spearman",
+         "Measures whether higher values of one variable tend to pair with higher "
+         "(or lower) values of another, using ranks. 📈 Chosen over Pearson "
+         "correlation because it does not assume a straight-line relationship "
+         "or a bell-curve shape."),
+        ("chi2",
+         "Tests whether category counts differ across outcome groups (e.g. skull "
+         "base vs convex location by grade). 🗂️ Standard for larger tables. "
+         "We switch to Fisher's exact when a 2×2 table has very small expected "
+         "counts (< 5)."),
+        ("fisher_exact",
+         "Exact test for 2×2 category tables with sparse cells. 🎯 More reliable "
+         "than χ² when few patients fall in a box — common for rare imaging "
+         "findings."),
+        ("kruskal_wallis",
+         "Checks whether a numeric predictor differs across several outcome "
+         "groups. 📊 Non-parametric alternative to one-way ANOVA — we use it "
+         "when the outcome has 3+ categories and the predictor is not normally "
+         "distributed."),
+    ]),
+    ("Effect sizes", [
+        ("rank_biserial_r",
+         "Signed rank difference between two groups (−1 to +1). ➡️ Positive = "
+         "higher values in the outcome-present group; negative = lower. Shows "
+         "direction and strength beyond the p-value."),
+        ("spearman_rho",
+         "Spearman correlation (−1 to +1). ➡️ Positive = both variables rise "
+         "together; negative = one rises as the other falls. 0 ≈ no monotonic "
+         "link."),
+        ("cramers_v",
+         "How tightly two categorical variables are linked (0 = none, 1 = perfect). "
+         "🔗 Helps judge whether a location or margin category meaningfully "
+         "tracks the outcome, not just whether χ² is significant."),
+        ("epsilon_sq",
+         "Kruskal–Wallis effect size — share of overall spread explained by "
+         "group membership. 📐 Small ε² = groups overlap a lot; larger = clearer "
+         "separation."),
+        ("effect",
+         "The numeric effect size for that row (one of the labels above). Separate "
+         "from p: a big sample can make a tiny effect 'significant.'"),
+        ("strength",
+         "Badge classifying |effect| as strong / moderate / weak / none. 🚦 "
+         "Quick visual on whether the signal is clinically worth a closer look, "
+         "not just statistically detectable."),
+    ]),
+    ("P-values and significance", [
+        ("p",
+         "Nominal p-value — surprise if there were truly no association. ⚠️ "
+         "Screening dozens of predictors inflates false positives; do not rely "
+         "on raw p alone."),
+        ("p_fdr",
+         "FDR-adjusted p (Benjamini–Hochberg), recalculated within each target. "
+         "🎲 Without correction, screening dozens of predictors at p<0.05 means "
+         "you expect several false positives by luck alone — 'significant' rows "
+         "that are not real associations. "
+         "📐 Strict alternative (Bonferroni): divide α by the number of tests "
+         "(e.g. 0.05 ÷ 30 ≈ 0.0017) or multiply each p by 30 — very conservative, "
+         "but here it would often wipe out every hit and miss real MRI signals "
+         "in an exploratory screen. "
+         "🛡️ FDR is the middle path: among the predictors you flag, it caps "
+         "the expected share that are false discoveries — shortlist candidates "
+         "without treating every nominal p as trustworthy."),
+        ("significance",
+         "Row badge: 🟢 FDR-significant, 🟡 nominally significant only, ⚪ not "
+         "significant. Green rows survived multiple-testing correction."),
+        ("auc_univariate",
+         "One-predictor discrimination for binary targets (0.5 = coin flip, "
+         "1.0 = perfect). 🎯 Only for binary/continuous/count predictors. If "
+         "raw AUC < 0.5 we report 1 − AUC so direction does not hide strength."),
+    ]),
+    ("Diagnostic accuracy table", [
+        ("Sensitivity",
+         "Among patients with the outcome, what share had the imaging feature "
+         "present? 🔍 High = few false negatives. Low = the feature often misses "
+         "cases."),
+        ("Specificity",
+         "Among patients without the outcome, what share did not have the feature? "
+         "✅ High = few false positives. Low = the feature flags many healthy "
+         "patients."),
+        ("PPV",
+         "Positive predictive value — if the feature is present, what share "
+         "actually have the outcome? 🎯 Tells you how much to trust a positive "
+         "finding (depends on how common the outcome is)."),
+        ("NPV",
+         "Negative predictive value — if the feature is absent, what share truly "
+         "lack the outcome? 🛡️ High NPV = a negative finding is reassuring."),
+        ("Accuracy",
+         "Overall correct calls (present/absent vs outcome) as a %. 📊 Easy to "
+         "read but misleading when the outcome is rare — check sensitivity and "
+         "specificity too."),
+        ("AUC",
+         "In this table: (sensitivity + specificity) / 2 for a binary imaging "
+         "feature. 📐 Simple univariate separation score (not full ROC). Matches "
+         "the Upreti et al. Table 3 style."),
+        ("Wilson 95% CI",
+         "Confidence interval for each % in brackets. 📏 Narrow = precise; wide "
+         "= few events or small sample — interpret cautiously."),
+    ]),
+]
+
+
+def _eda_glossary() -> str:
+    parts: list[str] = []
+    for title, items in _EDA_GLOSSARY_GROUPS:
+        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
+                     for k, v in items)
+        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
+    return "".join(parts)
+
+
 def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     """🕳️ Missingness story."""
     body = [
-        '<h2>🕳️ Missingness story</h2>',
         '<p>Missingness was assessed per variable and globally. Variables with '
         'high missingness should be interpreted cautiously, especially if used '
         'in association screening or models. Binary imaging variables were not '
@@ -1352,7 +1474,7 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     ]
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
-        return f'<section class="report-section">{"".join(body)}</section>'
+        return section_block("🕳️ Missingness story", "".join(body))
 
     if art.missingness_summary is not None and not art.missingness_summary.empty:
         body.append("<h3>Missingness per variable</h3>")
@@ -1375,25 +1497,22 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
         body.append("<h3>Patterns</h3>")
         body.append(svg_grid(art.missingness_figures))
 
-    return f'<section class="report-section">{"".join(body)}</section>'
+    return section_block("🕳️ Missingness story", "".join(body))
 
 
 def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     """🔍 EDA story — per-target, color-coded, with badges."""
-    body = ['<h2>🔍 Exploratory association screening (EDA)</h2>']
+    body: list[str] = []
     if art.associations is None or art.associations.empty:
         body.append(warning_box("No EDA associations table was found."))
-        return f'<section class="report-section">{"".join(body)}</section>'
+        body.append(glossary_block(_eda_glossary()))
+        return section_block("🔍 Exploratory association screening (EDA)", "".join(body))
 
     body.append(
         '<p>Each predictor was screened against each target using a '
         'test matched to both outcome and predictor types (binary, continuous, '
         'ordinal, or nominal). '
         'p-values are corrected per target using Benjamini–Hochberg FDR.</p>'
-        '<p class="muted"><small><code>auc_univariate</code> (binary and continuous '
-        'predictors only): univariate ROC AUC vs the target. If the raw AUC is '
-        'below 0.5, we report <em>1 − AUC</em> so the value reflects '
-        'discrimination strength regardless of predictor direction.</small></p>'
     )
 
     df = art.associations.copy()
@@ -1484,95 +1603,215 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
                 f"🖼️ EDA figures for {target} ({len(figs)})",
                 svg_grid(figs)))
 
-    return f'<section class="report-section">{"".join(body)}</section>'
+    body.append(glossary_block(_eda_glossary()))
+
+    return section_block("🔍 Exploratory association screening (EDA)", "".join(body))
+
+
+# Every metric shown in multivariable tables, EPV gauge, VIF, and forest plots.
+_INFERENTIAL_GLOSSARY_GROUPS = [
+    ("Sample size & power", [
+        ("epv",
+         "Events per variable: outcome events ÷ model parameters. 📏 Rule of thumb "
+         "≥ 10 = stable; 5–10 = borderline; < 5 = underpowered. Flags when too many "
+         "predictors chase too few high-grade cases."),
+        ("n_complete_cases",
+         "Patients with outcome and all retained predictors recorded. 🧩 Binary imaging "
+         "signs left missing (unknown ≠ absent) shrink this — models using them fit on "
+         "complete cases only."),
+        ("n_outcome_events",
+         "Count of positive outcomes in those complete cases. 🎯 Drives EPV and how "
+         "trustworthy each adjusted OR is."),
+        ("n_design_columns",
+         "Predictor columns in the final design matrix after encoding and VIF pruning. "
+         "📐 Nominal variables expand to several columns; each counts toward EPV."),
+    ]),
+    ("Adjusted OR table", [
+        ("predictor_col",
+         "Predictor name in the fitted model (one-hot levels show as "
+         "variable__category)."),
+        ("risk",
+         "% with the outcome. Ex: 20 high-grade / 100 patients → 20% risk. 🏥"),
+        ("odds",
+         "Cases ÷ non-cases. Ex: 20 high-grade / 80 not → 0.25. 🎲 Models use "
+         "odds, not %."),
+        ("or",
+         "Odds in one group ÷ odds in another (others held fixed). Ex: edema "
+         "12/18 = 0.67 vs no edema 8/62 = 0.13 → OR ≈ 5. 🔢 OR 2 = odds double; "
+         "not always risk double when outcome is common."),
+        ("or_ci_lo / or_ci_hi",
+         "95% confidence interval for the OR. 📏 CI entirely above 1 → likely risk "
+         "factor; entirely below 1 → likely protective; crossing 1 → not clearly "
+         "different from no effect."),
+        ("coef",
+         "Log-odds coefficient before exponentiating. Used internally; OR is the "
+         "clinician-facing scale."),
+        ("se",
+         "Standard error of the pooled coefficient. Smaller = more precise estimate."),
+        ("p",
+         "Two-sided p-value from the pooled estimate (Rubin + Barnard–Rubin df). ⚠️ "
+         "Use with the CI — a small p with a wide CI still means uncertainty."),
+        ("df",
+         "Pooled degrees of freedom for the t-test (Barnard–Rubin). Corrects for "
+         "multiple imputation; large values shown as ∞."),
+        ("n_models",
+         "Imputed datasets where this coefficient converged. Lower than m = 10 means "
+         "some fits failed — interpret that row cautiously."),
+        ("model_id",
+         "Short label for this literature or custom predictor-set variant."),
+    ]),
+    ("Collinearity (VIF)", [
+        ("vif",
+         "Variance inflation factor = 1 / (1 − R²). 🔗 VIF > 5 means the predictor "
+         "overlaps heavily with others (e.g. necrosis + heterogeneous enhancement). "
+         "Highest-VIF columns are dropped iteratively until all ≤ 5 — clearer ORs than "
+         "keeping redundant MRI signs."),
+        ("predictor",
+         "Design-matrix column checked for VIF (in the VIF diagnostics dropdown)."),
+    ]),
+    ("Forest plot", [
+        ("Adjusted OR (log scale)",
+         "Dot = pooled OR; whiskers = 95% CI. 📊 Log axis keeps large and small ORs "
+         "readable on one chart. Vertical dashed line at OR = 1 is the null — no "
+         "independent association."),
+    ]),
+    ("Encoding & pooling methods", [
+        ("z-score",
+         "Continuous/count predictors rescaled to (x − mean) / SD. 📐 OR becomes 'per "
+         "1 SD increase' — comparable across tumor volume, ADC, etc. Raw units would "
+         "mix incomparable scales on one forest plot."),
+        ("one-hot (drop-first)",
+         "Nominal categories → 0/1 columns vs a reference level. 🗂️ Avoids treating "
+         "location labels as ordered numbers."),
+        ("ordinal codes",
+         "Ordered categories kept as numeric ranks (not one-hot). Preserves "
+         "grade-like ordering without exploding column count."),
+        ("logistic regression (Logit)",
+         "Binary outcome model: linear combination of predictors → probability via "
+         "logistic curve. 📈 Standard for adjusted ORs in clinical papers — transparent "
+         "vs black-box ML that hides independent effects."),
+        ("MICE + Rubin pooling",
+         "Model fit on each of m imputed datasets; coefficients averaged and SEs "
+         "combined (within + between imputation variance). 🎲 Valid inference with "
+         "missing data — single imputation or complete-case-only would ignore "
+         "uncertainty or drop patients."),
+        ("Barnard–Rubin df",
+         "Small-sample correction for pooled p-values and CIs when m is modest. "
+         "Preferable to a plain z-test after MI, which can be anti-conservative."),
+        ("complete-case binary imaging",
+         "Binary MRI signs not imputed — missing = unrecorded, not confirmed absent. "
+         "Models including them use only patients with those fields filled. 🛡️ Avoids "
+         "treating 'unknown' as 'negative,' which would bias ORs."),
+    ]),
+]
+
+
+def _inferential_glossary() -> str:
+    parts: list[str] = []
+    for title, items in _INFERENTIAL_GLOSSARY_GROUPS:
+        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
+                     for k, v in items)
+        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
+    return "".join(parts)
 
 
 def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
     """🧮 Multivariable / inferential modelling."""
-    body = ['<h2>🧮 Multivariable modelling</h2>']
+    body: list[str] = []
     if not art.inferential_multivariable and (art.inferential_summary is None
                                                or art.inferential_summary.empty):
         body.append(warning_box("No multivariable model artifacts were found."))
-        return f'<section class="report-section">{"".join(body)}</section>'
+        body.append(glossary_block(_inferential_glossary()))
+        return section_block("🧮 Multivariable modelling", "".join(body))
 
     body.append(
-        '<p>A multivariable logistic regression model was fitted for each '
-        'target. Predictors were encoded according to schema type, '
-        'continuous/count variables were standardized, nominal variables '
-        'were one-hot encoded, and high-VIF predictors were pruned. '
-        'Multiple imputation was pooled with Rubin\u2019s rules.</p>'
+        '<p>Multivariable logistic regression was fitted for each target and '
+        'each predictor-set variant you defined. Predictors were encoded '
+        'according to schema type, continuous/count variables were standardized, '
+        'nominal variables were one-hot encoded, and high-VIF predictors were '
+        'pruned. Multiple imputation was pooled with Rubin\u2019s rules.</p>'
         '<p>Binary imaging variables were not imputed because missing values '
         'represented unrecorded/unknown findings rather than confirmed absence. '
         'Models using these variables were therefore fitted on complete cases '
         'for those predictors.</p>'
     )
 
-    targets = list(art.inferential_multivariable.keys())
-    # Reorder per user list
-    targets = ([t for t in cfg.targets if t in targets]
-               + [t for t in targets if t not in cfg.targets])
+    by_target: dict[str, list[str]] = {}
+    for key in art.inferential_multivariable:
+        target, _ = parse_model_key(key)
+        by_target.setdefault(target, []).append(key)
+
+    targets = ([t for t in cfg.targets if t in by_target]
+               + [t for t in by_target if t not in cfg.targets])
 
     for target in targets:
-        tbl = art.inferential_multivariable[target].copy()
+        model_keys = by_target.get(target, [])
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
-        meta = _inferential_target_meta(art, target)
-        if meta:
-            body.append(meta)
 
-        # Forest plot
-        forest = [p for p in art.inferential_figures
-                  if p.stem == f"{target}__forest"
-                  or p.stem.startswith(f"{target}__forest")]
-        if forest:
-            body.append(svg_grid(forest))
+        for mkey in model_keys:
+            _, model_id = parse_model_key(mkey)
+            title = art.inferential_model_titles.get(mkey, "")
+            link = art.inferential_model_links.get(mkey, "")
+            heading = _inferential_model_heading(title, link=link, model_id=model_id)
+            if heading:
+                body.append(heading)
 
-        # VIF (collapsed)
-        if target in art.inferential_vif:
-            body.append(details_block(
-                "🔢 VIF diagnostics",
-                table_to_html(art.inferential_vif[target])))
+            meta = _inferential_target_meta(art, target, model_key_name=mkey)
+            if meta:
+                body.append(meta)
 
-        # Multivariable table
-        # Normalise column names that may vary across pipeline versions
-        col_or  = _first_present(tbl, ["or", "OR", "odds_ratio"])
-        col_lo  = _first_present(tbl, ["or_ci_lo", "ci_lo", "lower"])
-        col_hi  = _first_present(tbl, ["or_ci_hi", "ci_hi", "upper"])
-        col_p   = _first_present(tbl, ["p", "pvalue", "p_value"])
-        col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
+            stem = artifact_base(target, model_id)
+            forest = [p for p in art.inferential_figures if p.stem == f"{stem}__forest"]
+            if forest:
+                body.append(svg_grid(forest))
 
-        def _row_cls(r):
-            if col_or and col_lo and col_hi:
-                return classify_or_direction(r.get(col_or), r.get(col_lo), r.get(col_hi))
-            return ""
+            if mkey in art.inferential_vif:
+                body.append(details_block(
+                    "🔢 VIF diagnostics",
+                    table_to_html(art.inferential_vif[mkey])))
 
-        # Sort by p-value, then effect strength (|log OR|)
-        if col_p:
-            tbl["_p_num"] = tbl[col_p].apply(_coerce_p)
-        if col_or:
-            tbl["_eff_abs"] = tbl[col_or].apply(
-                lambda v: abs(math.log(v)) if (o := _coerce_float(v)) and o > 0 else -1)
-        sort_cols = [c for c in ("_p_num", "_eff_abs", col_pred) if c and c in tbl.columns]
-        if sort_cols:
-            tbl = tbl.sort_values(
-                sort_cols,
-                ascending=[True, False, True][: len(sort_cols)],
-                na_position="last",
-            )
-        tbl = tbl.drop(columns=[c for c in ("_p_num", "_eff_abs") if c in tbl.columns])
+            tbl = art.inferential_multivariable[mkey].copy()
+            tbl = tbl.drop(columns=["model_title"], errors="ignore")
+            if "model_id" in tbl.columns:
+                tbl = tbl[["model_id"] + [c for c in tbl.columns if c != "model_id"]]
+            col_or  = _first_present(tbl, ["or", "OR", "odds_ratio"])
+            col_lo  = _first_present(tbl, ["or_ci_lo", "ci_lo", "lower"])
+            col_hi  = _first_present(tbl, ["or_ci_hi", "ci_hi", "upper"])
+            col_p   = _first_present(tbl, ["p", "pvalue", "p_value"])
+            col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
 
-        # Pre-format p / df for display only
-        if col_p and col_p in tbl.columns:
-            tbl[col_p] = tbl[col_p].apply(human_p)
-        if "df" in tbl.columns:
-            tbl["df"] = tbl["df"].apply(human_pool_df)
+            def _row_cls(r, _or=col_or, _lo=col_lo, _hi=col_hi):
+                if _or and _lo and _hi:
+                    return classify_or_direction(r.get(_or), r.get(_lo), r.get(_hi))
+                return ""
 
-        body.append(table_to_html(tbl, row_class_fn=_row_cls))
+            if col_p:
+                tbl["_p_num"] = tbl[col_p].apply(_coerce_p)
+            if col_or:
+                tbl["_eff_abs"] = tbl[col_or].apply(
+                    lambda v: abs(math.log(v)) if (o := _coerce_float(v)) and o > 0 else -1)
+            sort_cols = [c for c in ("_p_num", "_eff_abs", col_pred) if c and c in tbl.columns]
+            if sort_cols:
+                tbl = tbl.sort_values(
+                    sort_cols,
+                    ascending=[True, False, True][: len(sort_cols)],
+                    na_position="last",
+                )
+            tbl = tbl.drop(columns=[c for c in ("_p_num", "_eff_abs") if c in tbl.columns])
 
-        # Plain-English interpretation
-        body.append(_render_inferential_interpretation(
-            target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
+            if col_p and col_p in tbl.columns:
+                tbl[col_p] = tbl[col_p].apply(human_p)
+            if "df" in tbl.columns:
+                tbl["df"] = tbl["df"].apply(human_pool_df)
 
-    return f'<section class="report-section">{"".join(body)}</section>'
+            nowrap = ("model_id",) if "model_id" in tbl.columns else ()
+            body.append(table_to_html(tbl, row_class_fn=_row_cls, nowrap_cols=nowrap))
+            body.append(_render_inferential_interpretation(
+                target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
+
+    body.append(glossary_block(_inferential_glossary()))
+
+    return section_block("🧮 Multivariable modelling", "".join(body))
 
 
 def _to_int_or_none(x: Any) -> int | None:
@@ -1860,682 +2099,96 @@ def _render_eda_interpretation(target: str, sub: pd.DataFrame,
         "💡 Interpretation", "<ul>" + "".join(lines) + caveat + "</ul>")
 
 
-def render_stats_decoder() -> str:
-    """🧠 Plain-language statistics primer for clinicians."""
-    items = [
-        ("p-value",
-         "How surprising this result would be if there were truly no "
-         "association. Small p-value = the observed pattern is unlikely under "
-         "the no-association assumption. It does <strong>not</strong> measure "
-         "clinical importance."),
-        ("FDR p-value",
-         "p-value corrected for multiple testing. Testing many variables at "
-         "α = 0.05 means each test has a 5% chance of a false positive on its "
-         "own, so screening dozens of predictors will flag several "
-         "&ldquo;significant&rdquo; associations by chance alone. The "
-         "Benjamini–Hochberg FDR adjustment rescales the p-values to control "
-         "the expected share of <em>false discoveries</em> among the hits. "
-         "Prefer FDR p over raw p whenever many predictors were screened."),
-        ("Effect size",
-         "How <em>large</em> the association is. Separate from p-value: a "
-         "tiny effect can have a tiny p in a huge sample, and a huge effect "
-         "can have a large p in a small sample."),
-        ("Spearman ρ",
-         "Whether higher values of one variable move with higher (positive) "
-         "or lower (negative) values of another. −1 = strong inverse, 0 = no "
-         "monotonic relationship, +1 = strong positive."),
-        ("Rank-biserial r",
-         "Difference in ranks between two groups. Useful when comparing a "
-         "numeric predictor between a binary outcome's two groups."),
-        ("Cramér's V",
-         "Strength of association between categorical variables. 0 = none, "
-         "1 = perfect association."),
-        ("Kruskal–Wallis",
-         "Whether a numeric predictor differs across multiple outcome "
-         "groups (non-parametric alternative to one-way ANOVA)."),
-        ("ε² (epsilon-squared)",
-         "Effect size for Kruskal–Wallis; proportion of variance explained "
-         "by group membership."),
-        ("Odds ratio (OR)",
-         "How many times higher or lower the odds of the outcome are. "
-         "OR = 1: no difference. OR > 1: higher odds. OR < 1: lower odds."),
-        ("95% confidence interval (CI)",
-         "Range of plausible values for the estimate. Narrow CI = precise. "
-         "Wide CI = imprecise. For OR, if CI crosses 1, do <strong>not</strong> "
-         "call the result a stable independent association."),
-        ("n_used",
-         "How many patients actually contributed to a specific test. Low "
-         "n_used means the result can wobble — interpret cautiously."),
-        ("Unstable estimate",
-         "The data are not strong enough to pin down the true effect. The "
-         "observed association may change substantially if a few patients "
-         "were added, removed, recoded, or if missing values were handled "
-         "differently."),
-    ]
-    dt = "".join(f"<dt>{_esc(k)}</dt><dd>{v}</dd>" for k, v in items)
-
-    warnings = [
-        "very wide 95% CI",
-        "OR CI crosses 1",
-        "p-value not significant after FDR correction",
-        "very small n_used",
-        "very few outcome events",
-        "rare predictor category",
-        "high missingness in predictor or target",
-        "heavy multiple imputation",
-        "model convergence warnings",
-        "extreme OR with huge CI (e.g. OR = 12, CI 0.8–180)",
-    ]
-    warn_list = "".join(f"<li>{_esc(w)}</li>" for w in warnings)
-
-    plain = (
-        "<h4>Plain wording you can re-use</h4>"
-        "<ul>"
-        "<li>“The direction may be real, but the data are too thin to be confident.”</li>"
-        "<li>“The estimate suggests higher odds, but the confidence interval is "
-        "wide, so the true effect could be much smaller, absent, or much larger.”</li>"
-        "<li>“Because the CI crosses 1, this result should not be treated as a "
-        "stable independent association.”</li>"
-        "</ul>"
-    )
-
-    return (
-        '<section class="report-section">'
-        '<h2>🧠 Stats decoder for clinicians</h2>'
-        '<p>Quick reference for interpreting numbers in the tables above. '
-        'Designed for a clinician with minimal stats background.</p>'
-        f'<dl class="stat-decoder">{dt}</dl>'
-        '<h4>⚠️ Warning signs that an estimate is unstable</h4>'
-        f'<ul>{warn_list}</ul>'
-        f'{plain}'
-        '</section>'
-    )
-
-
-def _dda_row_for_column(art: Artifacts, col: str) -> tuple[pd.Series | None, str]:
-    """Return (row, table_label) for a column from any DDA summary table."""
-    tables = (
-        ("continuous / count", art.dda_continuous),
-        ("categorical / ordinal", art.dda_categorical),
-        ("binary", art.dda_binary),
-        ("datetime", art.dda_datetime),
-    )
-    for label, tbl in tables:
-        if tbl is None or tbl.empty or "column" not in tbl.columns:
-            continue
-        hit = tbl[tbl["column"].astype(str) == col]
-        if not hit.empty:
-            return hit.iloc[0], label
-    return None, ""
-
-
-def _figures_for_column(paths: Iterable[Path], col: str) -> list[Path]:
-    return sorted(
-        p for p in paths
-        if p.stem == col or p.stem.startswith(f"{col}__")
-    )
-
-
-def _inferential_matches(term: Any, col: str) -> bool:
-    t = str(term or "")
-    return t == col or t.startswith(f"{col}_")
-
-
-def _onehot_modeled_level(term: str, base: str) -> str | None:
-    """Category name encoded by a one-hot column ``base_<level>``."""
-    prefix = f"{base}_"
-    if term.startswith(prefix):
-        return term[len(prefix):]
-    return None
-
-
-def _invert_or_ci(o: float, lo: float, hi: float) -> tuple[float, float, float]:
-    """OR and CI for the reference level when the model reports the other level."""
-    if o <= 0 or lo <= 0 or hi <= 0:
-        return (np.nan, np.nan, np.nan)
-    return (1.0 / o, 1.0 / hi, 1.0 / lo)
-
-
-def _or_ci_phrase(o: float, lo: float, hi: float) -> str:
-    if not all(np.isfinite([o, lo, hi])):
-        return "—"
-    return f"{o:.2f} ({lo:.2f}–{hi:.2f})"
-
-
-def _infer_focus_reference(
-    col: str,
-    modeled_level: str,
-    cfg_ref: str | None,
-    dda_row: pd.Series | None,
-) -> str:
-    if cfg_ref:
-        return cfg_ref
-    if dda_row is not None:
-        for key in ("first_mode", "second_mode", "mode", "rarest"):
-            lv = dda_row.get(key)
-            if lv is not None and not pd.isna(lv) and str(lv) != modeled_level:
-                return str(lv)
-    return "reference"
-
-
-def _render_focus_dda_routes(dda_row: pd.Series, highlight: str | None) -> str:
-    """Cohort mix for a binary/categorical focus predictor (two rows, one highlighted)."""
-    rows: list[tuple[str, Any]] = []
-    if "mode" in dda_row.index:
-        pairs = (("mode", "mode_pct"), ("rarest", "rarest_pct"))
-    else:
-        pairs = (("first_mode", "first_mode_pct"), ("second_mode", "second_mode_pct"))
-    for lk, pk in pairs:
-        if lk not in dda_row.index:
-            continue
-        lv = dda_row.get(lk)
-        if lv is None or (isinstance(lv, float) and not np.isfinite(lv)) or pd.isna(lv):
-            continue
-        pct = dda_row.get(pk)
-        pct_s = f"{float(pct):.1f}%" if _coerce_float(pct) is not None else "—"
-        rows.append((str(lv), pct_s))
-    if len(rows) < 2:
-        return ""
-    body_rows = []
-    for lv, pct_s in rows:
-        hl = ' class="focus-route-highlight"' if highlight and lv == highlight else ""
-        body_rows.append(
-            f"<tr{hl}><td><strong>{_esc(lv)}</strong></td>"
-            f'<td class="mono">{_esc(pct_s)} of cohort</td></tr>')
-    return (
-        '<div class="focus-dda-routes">'
-        '<table class="focus-route-table">'
-        "<thead><tr><th>Route</th><th>Share in data</th></tr></thead>"
-        f"<tbody>{''.join(body_rows)}</tbody></table></div>"
-    )
-
-
-def _render_focus_route_or_card(
-    target: str,
-    predictor: str,
-    modeled_level: str,
-    reference: str,
-    o: float,
-    lo: float,
-    hi: float,
-    p: Any,
-) -> str:
-    """Two-row adjusted OR table: reference (highlight) + modeled level (from regression)."""
-    o_ref, lo_ref, hi_ref = _invert_or_ci(o, lo, hi)
-    p_str = _esc(human_p(p))
-
-    def _row(level: str, or_txt: str, note: str, p_cell: str, highlight: bool) -> str:
-        hl = ' class="focus-route-highlight"' if highlight else ""
-        return (
-            f"<tr{hl}><td><strong>{_esc(level)}</strong></td>"
-            f'<td class="mono">{or_txt}</td><td>{note}</td>'
-            f"<td>{p_cell}</td></tr>"
-        )
-
-    rows_html = [
-        _row(
-            reference,
-            _or_ci_phrase(o_ref, lo_ref, hi_ref),
-            f"vs <strong>{_esc(modeled_level)}</strong>",
-            p_str,
-            highlight=True,
-        ),
-        _row(
-            modeled_level,
-            _or_ci_phrase(o, lo, hi),
-            f"vs <strong>{_esc(reference)}</strong>",
-            p_str,
-            highlight=False,
-        ),
-    ]
-
-    return (
-        '<div class="focus-route-card">'
-        f'<p class="focus-route-title">Adjusted OR · <code>{_esc(target)}</code> '
-        f"(copy-ready)</p>"
-        '<table class="focus-route-table">'
-        "<thead><tr><th>Biopsy route</th><th>Adj. OR (95% CI)</th>"
-        "<th>Comparison</th><th>p</th></tr></thead>"
-        f"<tbody>{''.join(rows_html)}</tbody></table>"
-        '<p class="focus-route-note">'
-        f"Regression reference: <strong>{_esc(reference)}</strong>. "
-        f"Highlighted row is the OR for your primary route; the other row matches "
-        f"<code>{_esc(predictor)}_{_esc(modeled_level)}</code> in the model output."
-        "</p></div>"
-    )
-
-
-def _focus_stat_cards(row: pd.Series, kind: str = "") -> str:
-    """Compact metric cards from one DDA summary row."""
-    specs: list[tuple[str, str]] = [
-        ("N", "n"),
-        ("Missing %", "missing_pct"),
-        ("Unique levels", "n_unique"),
-        ("Dominant value", "mode"),
-        ("Dominant %", "mode_pct"),
-        ("Dominant value", "first_mode"),
-        ("Dominant %", "first_mode_pct"),
-        ("Second value", "second_mode"),
-        ("Second %", "second_mode_pct"),
-        ("Rarest", "rarest"),
-        ("Rarest %", "rarest_pct"),
-        ("Median", "median"),
-        ("Mean", "mean"),
-        ("IQR", "iqr"),
-        ("Balance", "balance"),
-    ]
-    cards = []
-    for label, key in specs:
-        if key not in row.index:
-            continue
-        val = row.get(key)
-        if val is None or (isinstance(val, float) and not np.isfinite(val)):
-            continue
-        if pd.isna(val):
-            continue
-        if isinstance(val, (int, float, np.floating)):
-            rule = "central" if key in {
-                "median", "mean", "trimmed_mean", "min", "max", "std", "cv",
-                "iqr", "p_5th", "p_95th", "skewness", "kurtosis", "mode",
-            } else "default"
-            disp = str(format_number(val, rule))
-        else:
-            disp = str(val)
-        cards.append(
-            '<div class="focus-stat-card">'
-            f'<div class="label">{_esc(label)}</div>'
-            f'<div class="value">{_esc(disp)}</div>'
-            '</div>'
-        )
-    if not cards:
-        return ""
-    kind_badge = f' <span class="badge kind">{_esc(kind)}</span>' if kind else ""
-    return f'<div class="focus-stat-grid">{"".join(cards)}</div>{kind_badge}'
-
-
-def _parse_mapping_value(val: Any) -> dict | None:
-    """Parse a dict-like cell (list/dict literal string or mapping)."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return None
-    if isinstance(val, dict):
-        return val
-    s = str(val).strip()
-    if not s or s.lower() in ("nan", "none", ""):
-        return None
-    try:
-        parsed = ast.literal_eval(s)
-    except (ValueError, SyntaxError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _parse_levels_value(val: Any) -> list | None:
-    """Parse a levels cell (list literal string or sequence)."""
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return None
-    if isinstance(val, (list, tuple)):
-        return list(val)
-    s = str(val).strip()
-    if not s or s.lower() in ("nan", "none", ""):
-        return None
-    try:
-        parsed = ast.literal_eval(s)
-    except (ValueError, SyntaxError):
-        return None
-    if isinstance(parsed, (list, tuple)):
-        return list(parsed)
-    return None
-
-
-def _levels_from_replace(val: Any) -> list | None:
-    """Nominal category labels from a schema replace mapping."""
-    mapping = _parse_mapping_value(val)
-    if not mapping:
-        return None
-    seen: list[Any] = []
-    for v in mapping.values():
-        if v not in seen:
-            seen.append(v)
-    return seen or None
-
-
-def _normalize_kind_label(kind: Any) -> str:
-    s = str(kind or "").strip().lower()
-    for k in (
-        "ordinal", "nominal", "binary", "continuous", "count",
-        "datetime", "id", "text", "skip",
-    ):
-        if k in s:
-            return k
-    return s
-
-
-def _format_levels_display(kind: str, levels: list) -> str:
-    texts = [str(x) for x in levels]
-    if kind == "ordinal":
-        return " < ".join(texts)
-    if kind == "nominal":
-        return ", ".join(texts)
-    return ", ".join(texts)
-
-
-def _focus_schema_display_row(hit: pd.Series) -> pd.DataFrame:
-    """Schema snippet for Variable of interest (levels formatted by kind)."""
-    row: dict[str, Any] = {}
-    for c in ("kind", "keep", "note"):
-        if c in hit.index and not (c != "keep" and pd.isna(hit.get(c))):
-            row[c] = hit[c]
-    kind = _normalize_kind_label(hit.get("kind"))
-    levels = _parse_levels_value(hit.get("levels"))
-    if levels is None:
-        levels = _parse_levels_value(hit.get("ordered_levels"))
-    if levels is None and kind == "nominal":
-        levels = _levels_from_replace(hit.get("replace"))
-    if levels and kind in ("ordinal", "nominal"):
-        row["levels"] = _format_levels_display(kind, levels)
-    display_cols = [c for c in ("kind", "keep", "levels", "note") if c in row]
-    if not display_cols:
-        return pd.DataFrame()
-    return pd.DataFrame([{c: row[c] for c in display_cols}])
-
-
-def render_focus_predictor(cfg: ReportConfig, art: Artifacts) -> str:
-    """Spotlight one predictor: DDA, EDA, and multivariable stats + figures."""
-    col = (cfg.focus_predictor or "").strip()
-    if not col:
-        return ""
-
-    ref_level = (cfg.focus_reference_level or "").strip() or None
-    hero_extra = ""
-    if ref_level:
-        hero_extra = (
-            f'<p class="focus-route-note">Primary route: '
-            f"<strong>{_esc(ref_level)}</strong> "
-            f"(highlighted below; adjusted ORs for both routes).</p>"
-        )
-    body: list[str] = [
-        '<div class="focus-section">',
-        '<h3>🔬 Variable of interest</h3>',
-        '<div class="focus-hero">'
-        f'<h4>Primary focus: <code>{_esc(col)}</code></h4>'
-        '<p>Descriptive profile, univariate screening (EDA), and adjusted '
-        'multivariable results for this variable — all in one place.</p>',
-        hero_extra,
-        '</div>',
-    ]
-
-    if art.schema_summary is not None and not art.schema_summary.empty:
-        sc = art.schema_summary
-        name_col = "column" if "column" in sc.columns else "name" if "name" in sc.columns else None
-        if name_col:
-            hit = sc[sc[name_col].astype(str) == col]
-            if not hit.empty:
-                show_df = _focus_schema_display_row(hit.iloc[0])
-                if not show_df.empty:
-                    body.append("<h4>Schema</h4>")
-                    body.append(table_to_html(show_df))
-
-    dda_row, dda_label = _dda_row_for_column(art, col)
-    kind = str(dda_row.get("kind", "")).strip() if dda_row is not None else ""
-    if dda_row is not None:
-        dist_label = kind or dda_label
-        body.append(f"<h4>📊 Distribution ({_esc(dist_label)})</h4>")
-        cards_html = _focus_stat_cards(dda_row, kind)
-        if cards_html:
-            body.append(cards_html)
-        routes_html = _render_focus_dda_routes(dda_row, ref_level)
-        if routes_html:
-            body.append(routes_html)
-        row_df = pd.DataFrame([dda_row])
-        if kind in ("continuous", "count"):
-            row_df = _dda_continuous_for_report(row_df)
-        body.append(table_to_html(row_df))
-
-    # DDA figure: first SVG from output/dda/figures/ matching focus_predictor
-    # (stem == col or col__*, e.g. biopsy_type__bar.svg from dda.py). Display
-    # size is .focus-section .focus-figure-hero in _CSS above.
-    dda_figs = _figures_for_column(art.dda_figures, col)
-    by_year = next((p for p in dda_figs if p.stem == f"{col}__bar_by_year"), None)
-    hero = by_year if by_year is not None else (dda_figs[0] if dda_figs else None)
-    if hero is not None:
-        body.append("<h4>Distribution figure</h4>")
-        hero_img = _figure_img_html(hero)
-        if hero_img:
-            body.append(
-                '<div class="focus-figure-hero figure-card">'
-                f'{hero_img}'
-                f'<div class="caption">{_esc(hero.stem)}</div>'
-                '</div>'
-            )
-        if by_year is not None:
-            yr = (cfg.year_column or "year").strip()
-            body.append(
-                '<p class="figure-note">Top: cohort-wide counts. Bottom: stacked counts '
-                f"within each {yr} (total bar height = patients that year; "
-                "n on tick labels). Descriptive only — not adjusted for "
-                "confounding. Optional χ² p-value tests marginal association with calendar "
-                f"year when expected counts ≥ 5.</p>"
-            )
-
-    if art.missingness_summary is not None and not art.missingness_summary.empty:
-        ms = art.missingness_summary
-        ncol = "column" if "column" in ms.columns else "variable" if "variable" in ms.columns else None
-        if ncol:
-            mhit = ms[ms[ncol].astype(str) == col]
-            if not mhit.empty:
-                body.append("<h4>🕳️ Missingness</h4>")
-                body.append(table_to_html(mhit))
-
-    targets = [t for t in cfg.targets if t]
-    if not targets and art.associations is not None and "target" in art.associations.columns:
-        targets = list(art.associations["target"].dropna().unique())
-
-    eda_all = (
-        art.associations[art.associations["predictor"].astype(str) == col].copy()
-        if art.associations is not None and not art.associations.empty
-        and "predictor" in art.associations.columns
-        else None
-    )
-    if eda_all is not None and not eda_all.empty:
-        eda_all["_p_num"] = eda_all["p_fdr"].apply(_coerce_p)
-        eda_all["_eff_abs"] = eda_all["effect"].apply(
-            lambda v: abs(_coerce_float(v)) if _coerce_float(v) is not None else -1)
-        eda_all = eda_all.sort_values(
-            ["_p_num", "_eff_abs"], ascending=[True, False], na_position="last")
-
-    for target in targets:
-        body.append(f'<div class="focus-target-block">')
-        body.append(f'<h4>🎯 Outcome: <code>{_esc(target)}</code></h4>')
-
-        if eda_all is not None:
-            sub = eda_all[eda_all["target"].astype(str) == target]
-            if not sub.empty:
-                body.append("<p><strong>Univariate (EDA)</strong></p>")
-                show = [c for c in (
-                    "test", "effect_label", "effect", "p", "p_fdr",
-                    "fdr_significant", "n_used",
-                ) if c in sub.columns]
-                disp = sub[show].copy()
-                if "p" in disp.columns:
-                    disp["p"] = disp["p"].apply(human_p)
-                if "p_fdr" in disp.columns:
-                    disp["p_fdr"] = disp["p_fdr"].apply(human_p)
-                body.append(table_to_html(disp))
-                body.append(_render_diagnostic_accuracy(target, art, cfg))
-                body.append(_render_eda_interpretation(
-                    target, sub, cfg))
-
-        eda_fig = next(
-            (p for p in art.eda_figures if p.stem == f"{target}__{col}"), None)
-        if eda_fig is not None:
-            body.append("<p><strong>EDA figure</strong></p>")
-            body.append(_focus_eda_figure(eda_fig))
-
-        if target in art.inferential_multivariable:
-            tbl = art.inferential_multivariable[target].copy()
-            col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
-            if col_pred:
-                hit = tbl[tbl[col_pred].astype(str).apply(
-                    lambda t: _inferential_matches(t, col))]
-                if not hit.empty:
-                    body.append("<p><strong>Multivariable (adjusted)</strong></p>")
-                    col_or = _first_present(hit, ["or", "OR"])
-                    col_lo = _first_present(hit, ["or_ci_lo", "ci_lo"])
-                    col_hi = _first_present(hit, ["or_ci_hi", "ci_hi"])
-                    col_p = _first_present(hit, ["p", "pvalue"])
-                    showed_route_card = False
-                    if (
-                        len(hit) == 1
-                        and col_pred
-                        and col_or and col_lo and col_hi
-                    ):
-                        r0 = hit.iloc[0]
-                        term = str(r0.get(col_pred))
-                        modeled = _onehot_modeled_level(term, col)
-                        o = _coerce_float(r0.get(col_or))
-                        lo = _coerce_float(r0.get(col_lo))
-                        hi = _coerce_float(r0.get(col_hi))
-                        if modeled and o is not None and lo is not None and hi is not None:
-                            reference = _infer_focus_reference(
-                                col, modeled, ref_level, dda_row)
-                            body.append(_render_focus_route_or_card(
-                                target, col, modeled, reference, o, lo, hi,
-                                r0.get(col_p) if col_p else None,
-                            ))
-                            showed_route_card = True
-                    if not showed_route_card:
-                        show = [c for c in (
-                            col_pred, "or", "or_ci_lo", "or_ci_hi", "p", "coef", "se",
-                        ) if c and c in hit.columns]
-                        show = list(dict.fromkeys(show))
-                        disp = hit[show].copy()
-                        if "p" in disp.columns:
-                            disp["p"] = disp["p"].apply(human_p)
-                        body.append(table_to_html(disp))
-                        body.append(_render_inferential_interpretation(
-                            target, disp, col_pred, col_or, col_lo, col_hi, col_p))
-
-        body.append("</div>")
-
-    if not (
-        (eda_all is not None and not eda_all.empty)
-        or dda_row is not None
-        or dda_figs
-    ):
-        body.append(warning_box(
-            f"No artifacts were found for predictor '{col}'. "
-            "Check the name matches the schema and that EDA / DDA were run.",
-        ))
-
-    body.append('</div>')
-    return "".join(body)
-
-
-def render_final_conclusion(cfg: ReportConfig, art: Artifacts) -> str:
-    """🎯 Tiny TL;DR — top hits only, 5–8 bullets max."""
-    bullets: list[str] = []
-
-    if art.associations is not None and not art.associations.empty:
-        df = art.associations.copy()
-        df["_p_num"] = df.get("p_fdr").apply(_coerce_p) if "p_fdr" in df.columns else None
-        df["_eff_abs"] = df.get("effect").apply(
-            lambda v: abs(_coerce_float(v)) if _coerce_float(v) is not None else -1
-        ) if "effect" in df.columns else -1
-
-        fdr_hits = df[(df["_p_num"].notna()) & (df["_p_num"] < cfg.fdr_alpha)] \
-            .sort_values(["_p_num", "_eff_abs"], ascending=[True, False])
-        for _, r in fdr_hits.head(4).iterrows():
-            tier = _strength_tier(r.get("effect"), "corr", cfg.effect)
-            emoji, label, _ = _STRENGTH_WORDING[tier]
-            bullets.append(
-                f"{emoji} <code>{_esc(r['predictor'])}</code> showed a "
-                f"<strong>{label}</strong> association with "
-                f"<code>{_esc(r['target'])}</code> "
-                f"({_esc(r.get('effect_label'))}={_esc(r.get('effect'))}, "
-                f"FDR p={human_p(r.get('p_fdr'))})."
-            )
-
-    for target, tbl in art.inferential_multivariable.items():
-        col_or = _first_present(tbl, ["or", "OR", "odds_ratio"])
-        col_lo = _first_present(tbl, ["or_ci_lo", "ci_lo", "lower"])
-        col_hi = _first_present(tbl, ["or_ci_hi", "ci_hi", "upper"])
-        col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
-        if not all([col_or, col_lo, col_hi, col_pred]):
-            continue
-        for _, r in tbl.iterrows():
-            o = _coerce_float(r.get(col_or))
-            lo = _coerce_float(r.get(col_lo))
-            hi = _coerce_float(r.get(col_hi))
-            if None in (o, lo, hi):
-                continue
-            if lo > 1.0:
-                bullets.append(
-                    f"🔴 In multivariable analysis, <code>{_esc(r[col_pred])}</code> "
-                    f"was associated with <strong>higher</strong> odds of "
-                    f"<code>{_esc(target)}</code> (OR={o:.2f}, 95% CI {lo:.2f}–{hi:.2f}).")
-            elif hi < 1.0:
-                bullets.append(
-                    f"🔵 In multivariable analysis, <code>{_esc(r[col_pred])}</code> "
-                    f"was associated with <strong>lower</strong> odds of "
-                    f"<code>{_esc(target)}</code> (OR={o:.2f}, 95% CI {lo:.2f}–{hi:.2f}).")
-
-    if art.associations is not None and not art.associations.empty:
-        for target in cfg.targets:
-            sub = art.associations[art.associations.get("target") == target]
-            if sub.empty:
-                continue
-            ps = sub.get("p_fdr").apply(_coerce_p)
-            if not ((ps.notna()) & (ps < cfg.fdr_alpha)).any():
-                bullets.append(
-                    f"⚪ No FDR-significant association was found for "
-                    f"<code>{_esc(target)}</code>.")
-
-    cautions = []
-    if art.missingness_summary is not None and not art.missingness_summary.empty:
-        miss_col = ("missing_pct" if "missing_pct" in art.missingness_summary.columns
-                    else "pct_missing" if "pct_missing" in art.missingness_summary.columns
-                    else None)
-        if miss_col:
-            high = art.missingness_summary[
-                art.missingness_summary[miss_col].apply(_coerce_float)
-                .apply(lambda v: v is not None and v >= cfg.missing.high)]
-            if not high.empty:
-                cautions.append(
-                    f"🚨 {len(high)} variable(s) had &gt;{cfg.missing.high:.0f}% "
-                    f"missingness — interpret any analyses using them with caution.")
-    bullets.extend(cautions)
-
-    bullets = bullets[:8]
-    if not bullets:
-        bullets = ["<em>(No findings were detected from the supplied artifacts.)</em>"]
-
-    lis = "".join(f"<li>{b}</li>" for b in bullets)
-    focus = render_focus_predictor(cfg, art)
-    return (
-        '<section class="report-section">'
-        '<h2>🎯 Final conclusion</h2>'
-        '<p>The bottom line, distilled. For full details refer to the EDA and '
-        'multivariable tables above.</p>'
-        f'<ul class="tldr-list">{lis}</ul>'
-        f'{focus}'
-        '</section>'
-    )
-
-
 # ---------------------------------------------------------------------------
 # Appendix — runtime environment
 # ---------------------------------------------------------------------------
 
-_REPORT_PACKAGES: tuple[tuple[str, str], ...] = (
-    ("pandas", "pandas"),
-    ("numpy", "numpy"),
-    ("scipy", "scipy"),
-    ("statsmodels", "statsmodels"),
-    ("scikit-learn", "sklearn"),
-    ("matplotlib", "matplotlib"),
-    ("seaborn", "seaborn"),
-    ("openpyxl", "openpyxl"),
-)
+_IMPORT_TO_DIST: dict[str, str] = {
+    "IPython": "ipython",
+    "PIL": "Pillow",
+    "cv2": "opencv-python",
+    "sklearn": "scikit-learn",
+    "yaml": "PyYAML",
+}
+
+
+def _repo_root() -> Path:
+    """meningioma-atypier project root (parent of heavy_machinery/)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _collect_local_module_names(repo_root: Path) -> set[str]:
+    """Top-level names of project .py modules (excluded from third-party scan)."""
+    names: set[str] = set()
+    for path in repo_root.rglob("*.py"):
+        if ".ipynb_checkpoints" in path.parts:
+            continue
+        if path.name == "__init__.py":
+            names.add(path.parent.name)
+        else:
+            names.add(path.stem)
+    return names
+
+
+def _collect_imported_top_level_modules(
+    repo_root: Path,
+    *,
+    local: set[str],
+) -> set[str]:
+    """Third-party top-level modules imported anywhere under repo_root."""
+    stdlib = getattr(sys, "stdlib_module_names", set())
+    found: set[str] = set()
+    for path in repo_root.rglob("*.py"):
+        if ".ipynb_checkpoints" in path.parts:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    found.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                found.add(node.module.split(".")[0])
+    return {m for m in found if m not in stdlib and m not in local}
+
+
+def _parse_requirements_packages(requirements_path: Path) -> set[str]:
+    """Distribution names declared in requirements.txt (comments/blank lines skipped)."""
+    if not requirements_path.is_file():
+        return set()
+    names: set[str] = set()
+    for raw in requirements_path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        for sep in (">=", "<=", "==", "!=", "~=", "<", ">", ";"):
+            if sep in line:
+                line = line.split(sep, 1)[0]
+        name = line.strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _distribution_name(import_name: str) -> str:
+    """Map a top-level import name to its PyPI distribution name."""
+    mapped = importlib.metadata.packages_distributions().get(import_name)
+    if mapped:
+        return mapped[0]
+    return _IMPORT_TO_DIST.get(import_name, import_name)
+
+
+def _discovered_distribution_names() -> list[str]:
+    """Union of requirements.txt and third-party imports across the whole repo."""
+    repo = _repo_root()
+    local = _collect_local_module_names(repo)
+    imports = _collect_imported_top_level_modules(repo, local=local)
+    req = _parse_requirements_packages(repo / "requirements.txt")
+    dists = set(req)
+    dists.update(_distribution_name(imp) for imp in imports)
+    return sorted(dists, key=str.lower)
 
 
 def _total_memory_gb() -> float | None:
@@ -2767,13 +2420,17 @@ def _graphics_descriptions() -> list[str]:
     return [g for g in gpus if g]
 
 
-def _package_version(import_name: str) -> str:
+def _package_version(distribution_name: str) -> str:
     try:
-        mod = importlib.import_module(import_name)
-    except ImportError:
-        return "not installed"
-    ver = getattr(mod, "__version__", None)
-    return str(ver) if ver else "unknown"
+        return importlib.metadata.version(distribution_name)
+    except importlib.metadata.PackageNotFoundError:
+        import_name = distribution_name.replace("-", "_")
+        try:
+            mod = importlib.import_module(import_name)
+        except ImportError:
+            return "not installed"
+        ver = getattr(mod, "__version__", None)
+        return str(ver) if ver else "unknown"
 
 
 def _system_specs_rows() -> list[dict[str, str]]:
@@ -2804,8 +2461,8 @@ def _system_specs_rows() -> list[dict[str, str]]:
 
 def _package_version_rows() -> list[dict[str, str]]:
     return [
-        {"package": label, "version": _package_version(import_name)}
-        for label, import_name in _REPORT_PACKAGES
+        {"package": dist, "version": _package_version(dist)}
+        for dist in _discovered_distribution_names()
     ]
 
 
@@ -2817,8 +2474,9 @@ def _render_environment_appendix() -> str:
         "<h4>Computer / runtime</h4>"
         f"{table_to_html(pd.DataFrame(_system_specs_rows()))}"
         "<h4>Package versions</h4>"
-        "<p>Core libraries used by the analysis pipeline "
-        "(cleaning, DDA, EDA, inferential, report).</p>"
+        "<p>Third-party libraries declared in "
+        "<code>requirements.txt</code> or imported anywhere under the "
+        "project repository (analysis pipeline, Streamlit app, tests, config).</p>"
         f"{table_to_html(pd.DataFrame(_package_version_rows()))}"
     )
 
@@ -2877,8 +2535,6 @@ def build_report(cfg: ReportConfig) -> str:
         render_missingness(cfg, art),
         render_eda(cfg, art),
         render_inferential(cfg, art),
-        render_stats_decoder(),
-        render_final_conclusion(cfg, art),
         render_appendix(cfg, art),
     ]
 
@@ -2926,8 +2582,6 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                    help="Optional schema CSV or JSON to render the schema section.")
     p.add_argument("--title", default="Research Data Analysis Report")
     p.add_argument("--author", default="")
-    p.add_argument("--focus-predictor", default=None,
-                   help="Column name to spotlight in the final conclusion section.")
     p.add_argument("--out", type=Path, default=None,
                    help="Output HTML path. Defaults to <output-root>/report/report.html")
     return p.parse_args(argv)
@@ -2941,7 +2595,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         author=args.author,
         targets=tuple(args.targets),
         schema_path=args.schema.expanduser().resolve() if args.schema else None,
-        focus_predictor=args.focus_predictor,
     )
     out_path = args.out or (cfg.output_root / "report" / "report.html")
     html = build_report(cfg)

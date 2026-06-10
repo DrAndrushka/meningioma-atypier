@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 import inferential as inf
 from inferential import (
     _empty_inferential_df,
     _safe_z_denominator,
+    artifact_base,
     fit_multivariable_logistic,
+    model_key,
+    normalize_inferential_variants,
     run_inferential,
 )
 from schema_infer import ColSpec
@@ -91,6 +97,26 @@ def _make_imputed(tiny_df, tiny_schema):
     return [df], schema
 
 
+def test_fit_logit_robust(tiny_df):
+    sub = tiny_df.dropna(subset=["age", "event"])
+    Xc = sm.add_constant(sub[["age"]].astype(float), has_constant="add")
+    model = inf._fit_logit_robust(sub["event"].astype(float), Xc)
+    assert model is not None
+    assert inf._logit_converged(model)
+
+
+def test_fit_logit_robust_retries_after_stalled_newton():
+    y = pd.Series([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
+    Xc = sm.add_constant(pd.DataFrame({"x": [10.0, 10.0, 10.0, -10.0, -10.0, -10.0]}))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model = inf._fit_logit_robust(y, Xc)
+    assert model is not None
+    assert not any(
+        issubclass(w.category, ConvergenceWarning) for w in caught
+    )
+
+
 def test_fit_multivariable_logistic(tiny_df, tiny_schema):
     frames, schema = _make_imputed(tiny_df, tiny_schema)
     pooled, vif = fit_multivariable_logistic(
@@ -129,6 +155,59 @@ def test_summarize_multivariable_cases(tiny_df, tiny_schema):
     )
     assert summary.iloc[0]["n_complete_cases"] == len(frames[0])
     assert summary.iloc[0]["n_outcome_events"] >= 1
+
+
+def test_normalize_inferential_variants_tuple():
+    vars_ = normalize_inferential_variants(
+        variants=[("bondo_et_al", "Bondo et al.", "https://example.com/bondo", "high_grade", ["age", "sex"])],
+    )
+    assert vars_[0].model_id == "bondo_et_al"
+    assert vars_[0].title == "Bondo et al."
+    assert vars_[0].target == "high_grade"
+    assert vars_[0].link == "https://example.com/bondo"
+
+
+def test_normalize_inferential_variants_legacy_tuple():
+    vars_ = normalize_inferential_variants(
+        variants=[("bondo_et_al", "Bondo et al.", ["age", "sex"])],
+        default_target="event",
+    )
+    assert vars_[0].target == "event"
+
+
+def test_run_inferential_variant_target(tiny_df, tiny_schema, tmp_output):
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    out = run_inferential(
+        frames, schema,
+        targets=["event", "grade"],
+        variants=[("sex_only", "Sex only", "", "event", ["sex"])],
+        positive_class={"event": True},
+        output_root=tmp_output,
+    )
+    assert set(out["target"].unique()) == {"event"}
+    assert (tmp_output / "inferential" / "tables" / "event__sex_only__multivariable.csv").exists()
+    assert not (tmp_output / "inferential" / "tables" / "grade__sex_only__multivariable.csv").exists()
+
+
+def test_run_inferential_variants(tiny_df, tiny_schema, tmp_output):
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    out = run_inferential(
+        frames, schema,
+        targets=["event"],
+        variants=[
+            ("full", "Full model", "", "event", ["age"]),
+            ("sex_only", "Sex only", "", "event", ["sex"]),
+        ],
+        positive_class={"event": True},
+        output_root=tmp_output,
+    )
+    assert set(out["model_id"].unique()) == {"full", "sex_only"}
+    assert (tmp_output / "inferential" / "tables" / "event__full__multivariable.csv").exists()
+    assert (tmp_output / "inferential" / "tables" / "event__sex_only__multivariable.csv").exists()
+    cases = pd.read_csv(tmp_output / "inferential" / "tables" / "multivariable_cases.csv")
+    assert len(cases) == 2
+    assert model_key("event", "full") == "event::full"
+    assert artifact_base("event", "full") == "event__full"
 
 
 def test_run_inferential(tiny_df, tiny_schema, tmp_output):

@@ -21,20 +21,24 @@ Pipeline per target
        95% CI     = theta_bar ± t.ppf(0.975, df) * SE_pool
 5. Report adjusted odds ratios = exp(theta_bar), 95% CI on OR scale.
 
-Outputs (per target) under output/inferential/
-----------------------------------------------
-- tables/<target>__multivariable.csv : predictor, OR, 95% CI, p, n_models, intercept_coef, intercept_or, z_mu, z_sd
-- tables/<target>__vif.csv           : VIFs after pruning
-- figures/<target>__forest.svg       : forest plot of adjusted ORs
+Outputs (per target × model variant) under output/inferential/
+--------------------------------------------------------------
+- tables/<target>__<model_id>__multivariable.csv  (single-model: <target>__multivariable.csv)
+- tables/<target>__<model_id>__vif.csv
+- tables/<target>__<model_id>__calculator.json
+- figures/<target>__<model_id>__forest.svg
 
-Also writes tables/inferential_summary.csv combining all targets.
-- tables/multivariable_cases.csv    : complete-case counts and EPV per target
+Also writes:
+- tables/inferential_summary.csv   : all targets × variants combined
+- tables/multivariable_cases.csv   : EPV / complete-case counts per variant
 """
 
 from __future__ import annotations
 
+import re
 import warnings
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -45,9 +49,146 @@ import seaborn as sns
 import statsmodels.api as sm
 from scipy.stats import t as t_dist
 from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
+
+
+@dataclass(frozen=True)
+class InferentialModelVariant:
+    """One multivariable model specification (outcome + predictor set + report label)."""
+
+    model_id: str
+    title: str
+    link: str
+    target: str
+    predictors: tuple[str, ...]
+
+
+def _slug_model_id(model_id: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_]+", "_", model_id.strip().lower()).strip("_")
+    if not s:
+        raise ValueError(f"Invalid model id: {model_id!r}")
+    return s
+
+
+def _variant_targets(
+    variant: InferentialModelVariant,
+    fallback_targets: Sequence[str],
+) -> list[str]:
+    """Outcome column(s) to fit for one variant."""
+    if variant.target:
+        return [variant.target]
+    return list(fallback_targets)
+
+
+def normalize_inferential_variants(
+    predictors: Sequence[str] | None = None,
+    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
+    *,
+    default_target: str = "",
+) -> list[InferentialModelVariant]:
+    """
+    Build variant list from either ``variants=`` (multi-model) or ``predictors=`` (single).
+
+    ``variants`` entries may be:
+    - ``InferentialModelVariant``
+    - ``{\"id\": ..., \"title\": ..., \"link\": ..., \"target\": ..., \"predictors\": [...]}``
+    - ``(id, title, link, target, [predictors])``
+    - ``(id, title, target, [predictors])`` — no source link
+    - ``(id, title, [predictors])`` — uses ``default_target`` (legacy)
+    """
+    if variants is not None:
+        out: list[InferentialModelVariant] = []
+        for v in variants:
+            if isinstance(v, InferentialModelVariant):
+                out.append(v)
+            elif hasattr(v, "model_id") and hasattr(v, "predictors"):
+                # Accept variants from a pre-reload inferential import (reload breaks isinstance).
+                out.append(InferentialModelVariant(
+                    model_id=_slug_model_id(str(v.model_id)),
+                    title=str(getattr(v, "title", "") or v.model_id).strip(),
+                    link=str(getattr(v, "link", "") or "").strip(),
+                    target=str(getattr(v, "target", "") or default_target).strip(),
+                    predictors=tuple(v.predictors),
+                ))
+            elif isinstance(v, dict):
+                out.append(InferentialModelVariant(
+                    model_id=_slug_model_id(str(v["id"])),
+                    title=str(v.get("title") or v["id"]).strip(),
+                    link=str(v.get("link") or "").strip(),
+                    target=str(v.get("target") or default_target).strip(),
+                    predictors=tuple(v["predictors"]),
+                ))
+            elif isinstance(v, (tuple, list)) and len(v) >= 5 and isinstance(v[4], (list, tuple)):
+                out.append(InferentialModelVariant(
+                    model_id=_slug_model_id(str(v[0])),
+                    title=str(v[1]).strip(),
+                    link=str(v[2]).strip(),
+                    target=str(v[3]).strip(),
+                    predictors=tuple(v[4]),
+                ))
+            elif isinstance(v, (tuple, list)) and len(v) >= 4 and isinstance(v[3], (list, tuple)):
+                out.append(InferentialModelVariant(
+                    model_id=_slug_model_id(str(v[0])),
+                    title=str(v[1]).strip(),
+                    link="",
+                    target=str(v[2]).strip(),
+                    predictors=tuple(v[3]),
+                ))
+            elif isinstance(v, (tuple, list)) and len(v) == 3 and isinstance(v[2], (list, tuple)):
+                out.append(InferentialModelVariant(
+                    model_id=_slug_model_id(str(v[0])),
+                    title=str(v[1]).strip(),
+                    link="",
+                    target=default_target,
+                    predictors=tuple(v[2]),
+                ))
+            else:
+                raise ValueError(
+                    "Each variant must be InferentialModelVariant, dict, "
+                    "(id, title, link, target, predictors), (id, title, target, predictors), "
+                    "or legacy (id, title, predictors)."
+                )
+        if not out:
+            raise ValueError("variants= must contain at least one model.")
+        return out
+    if predictors is not None:
+        return [InferentialModelVariant("", "", "", default_target, tuple(predictors))]
+    raise ValueError("Provide predictors= or variants=.")
+
+
+def artifact_base(target: str, model_id: str = "") -> str:
+    """Filename stem prefix: ``high_grade`` or ``high_grade__bondo_et_al``."""
+    return f"{target}__{model_id}" if model_id else target
+
+
+def parse_artifact_base(base: str, known_targets: set[str] | None = None) -> tuple[str, str]:
+    """Split artifact stem into ``(target, model_id)``."""
+    known_targets = known_targets or set()
+    if base in known_targets:
+        return base, ""
+    for t in sorted(known_targets, key=len, reverse=True):
+        prefix = f"{t}__"
+        if base.startswith(prefix):
+            return t, base[len(prefix):]
+    if "__" in base:
+        target, model_id = base.split("__", 1)
+        return target, model_id
+    return base, ""
+
+
+def model_key(target: str, model_id: str = "") -> str:
+    """Internal dict key for report loading."""
+    return target if not model_id else f"{target}::{model_id}"
+
+
+def parse_model_key(key: str) -> tuple[str, str]:
+    if "::" in key:
+        target, model_id = key.split("::", 1)
+        return target, model_id
+    return key, ""
 
 
 def _pool_df_for_display(val: Any) -> object:
@@ -245,6 +386,44 @@ def _encode_target(y: pd.Series, positive_class) -> tuple[pd.Series, object]:
     return out, positive_class
 
 
+def _logit_converged(model: Any) -> bool:
+    mle = getattr(model, "mle_retvals", None)
+    if not isinstance(mle, dict):
+        params = getattr(model, "params", None)
+        return params is not None and np.all(np.isfinite(params))
+    return bool(mle.get("converged", False))
+
+
+def _fit_logit_robust(y: pd.Series, Xc: pd.DataFrame) -> Any | None:
+    """
+    Fit binary logistic regression with convergence-aware retries.
+
+    Tries Newton first, then BFGS, then L2-regularized logistic if MLE stalls.
+    Suppresses ``ConvergenceWarning`` while retrying alternative optimizers.
+    """
+    logit = sm.Logit(y, Xc)
+    strategies: list[dict[str, Any]] = [
+        {"disp": False, "method": "newton", "maxiter": 200},
+        {"disp": False, "method": "bfgs", "maxiter": 500},
+    ]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        for kwargs in strategies:
+            try:
+                model = logit.fit(**kwargs)
+            except Exception:
+                continue
+            if _logit_converged(model):
+                return model
+        try:
+            model = logit.fit_regularized(disp=False, alpha=1e-3)
+            if np.all(np.isfinite(model.params)):
+                return model
+        except Exception:
+            pass
+    return None
+
+
 def fit_multivariable_logistic(
     imputed_frames: list[pd.DataFrame],
     schema: dict[str, ColSpec],
@@ -290,13 +469,9 @@ def fit_multivariable_logistic(
         if len(sub) < max(20, X.shape[1] + 5):
             continue
         Xc = sm.add_constant(sub[keep_cols], has_constant="add")
-        try:
-            model = sm.Logit(sub["_y"], Xc).fit(disp=False, method="newton", maxiter=200)
-        except Exception:
-            try:
-                model = sm.Logit(sub["_y"], Xc).fit_regularized(disp=False, alpha=1e-3)
-            except Exception:
-                continue
+        model = _fit_logit_robust(sub["_y"], Xc)
+        if model is None:
+            continue
         for c in keep_cols:
             if c in model.params.index:
                 coefs_by_col[c].append(float(model.params[c]))
@@ -338,7 +513,14 @@ def fit_multivariable_logistic(
 # Forest plot
 # ---------------------------------------------------------------------------
 
-def _forest_plot(pooled: pd.DataFrame, target: str, figs_dir: Path) -> None:
+def _forest_plot(
+    pooled: pd.DataFrame,
+    target: str,
+    figs_dir: Path,
+    *,
+    model_id: str = "",
+    model_title: str = "",
+) -> None:
     plot_df = pooled.dropna(subset=["or"]).copy()
     if plot_df.empty:
         return
@@ -353,9 +535,13 @@ def _forest_plot(pooled: pd.DataFrame, target: str, figs_dir: Path) -> None:
     ax.set_yticks(y); ax.set_yticklabels(plot_df["predictor_col"])
     ax.set_xscale("log")
     ax.set_xlabel("Adjusted Odds Ratio (95% CI, log scale)")
-    ax.set_title(f"Multivariable logistic — {target}")
+    title = f"Multivariable logistic — {target}"
+    if model_title:
+        title += f"\n{model_title}"
+    ax.set_title(title)
     fig.tight_layout()
-    fig.savefig(figs_dir / f"{target}__forest.svg", format="svg", bbox_inches="tight")
+    stem = artifact_base(target, model_id)
+    fig.savefig(figs_dir / f"{stem}__forest.svg", format="svg", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -364,7 +550,7 @@ def _forest_plot(pooled: pd.DataFrame, target: str, figs_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _INFERENTIAL_COLS = [
-    "target", "predictor_col", "or", "or_ci_lo", "or_ci_hi",
+    "target", "model_id", "model_title", "model_link", "predictor_col", "or", "or_ci_lo", "or_ci_hi",
     "coef", "se", "p", "df", "n_models",
     "intercept_coef", "intercept_or", "z_mu", "z_sd",
 ]
@@ -378,37 +564,43 @@ def summarize_multivariable_cases(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
     targets: Sequence[str],
-    predictors: Sequence[str],
+    predictors: Sequence[str] | None = None,
     *,
+    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
     positive_class: dict | None = None,
     vif_threshold: float = 5.0,
 ) -> pd.DataFrame:
     """Complete-case counts for multivariable logistic (design + VIF prune + dropna)."""
     positive_class = positive_class or {}
+    model_variants = normalize_inferential_variants(predictors, variants)
     rows: list[dict] = []
     n_total = len(df)
 
-    for target in targets:
-        if target not in df.columns:
-            continue
-        if not _target_is_binary(df[target], schema.get(target)):
-            continue
-        X, _, _ = _build_design(df, schema, predictors)
-        Xp, _ = _prune_by_vif(X, threshold=vif_threshold)
-        y_enc, _ = _encode_target(df[target], positive_class.get(target))
-        sub = pd.concat([y_enc.rename("_y"), Xp], axis=1).dropna()
-        n_used = len(sub)
-        n_events = int(sub["_y"].sum()) if n_used else 0
-        n_params = len(Xp.columns)
-        rows.append({
-            "target": target,
-            "n_rows_total": n_total,
-            "n_complete_cases": n_used,
-            "n_rows_dropped": n_total - n_used,
-            "n_outcome_events": n_events,
-            "n_design_columns": n_params,
-            "epv": round(n_events / n_params, 1) if n_params else np.nan,
-        })
+    for variant in model_variants:
+        for target in _variant_targets(variant, targets):
+            if target not in df.columns:
+                continue
+            if not _target_is_binary(df[target], schema.get(target)):
+                continue
+            X, _, _ = _build_design(df, schema, variant.predictors)
+            Xp, _ = _prune_by_vif(X, threshold=vif_threshold)
+            y_enc, _ = _encode_target(df[target], positive_class.get(target))
+            sub = pd.concat([y_enc.rename("_y"), Xp], axis=1).dropna()
+            n_used = len(sub)
+            n_events = int(sub["_y"].sum()) if n_used else 0
+            n_params = len(Xp.columns)
+            rows.append({
+                "target": target,
+                "model_id": variant.model_id,
+                "model_title": variant.title,
+                "model_link": variant.link,
+                "n_rows_total": n_total,
+                "n_complete_cases": n_used,
+                "n_rows_dropped": n_total - n_used,
+                "n_outcome_events": n_events,
+                "n_design_columns": n_params,
+                "epv": round(n_events / n_params, 1) if n_params else np.nan,
+            })
     return pd.DataFrame(rows)
 
 
@@ -508,50 +700,71 @@ def run_inferential(
     schema: dict[str, ColSpec],
     *,
     targets: Sequence[str],
-    predictors: Sequence[str],
+    predictors: Sequence[str] | None = None,
+    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
     positive_class: dict | None = None,
     vif_threshold: float = 5.0,
     output_root: Path | str = "output",
 ) -> pd.DataFrame:
     """
-    Run multivariable logistic regression per target with Rubin pooling over the
-    MICE imputations. Returns combined long-format results and writes tables +
-    forest plot SVGs.
+    Run multivariable logistic regression per target × model variant with Rubin
+    pooling over the MICE imputations. Returns combined long-format results and
+    writes tables + forest plot SVGs.
+
+    Pass ``predictors=`` for a single model (legacy filenames), or ``variants=``
+    for multiple named predictor sets (e.g. literature-based calculators).
+    Each variant may set its own ``target``; otherwise all ``targets=`` are fit.
     """
     output_root = Path(output_root)
     figs_dir, tabs_dir = _ensure_dirs(output_root)
     positive_class = positive_class or {}
+    model_variants = normalize_inferential_variants(predictors, variants)
 
     all_rows = []
-    for target in targets:
-        if target not in imputed_frames[0].columns:
-            continue
-        spec = schema.get(target)
-        if not _target_is_binary(imputed_frames[0][target], spec):
-            warnings.warn(
-                f"Inferential skipped for '{target}': multivariable logistic "
-                f"requires a binary outcome (got kind={getattr(spec, 'kind', '?')}).",
-                stacklevel=2,
+    for variant in model_variants:
+        for target in _variant_targets(variant, targets):
+            if target not in imputed_frames[0].columns:
+                continue
+            spec = schema.get(target)
+            if not _target_is_binary(imputed_frames[0][target], spec):
+                warnings.warn(
+                    f"Inferential skipped for '{target}' / '{variant.model_id or 'default'}': "
+                    f"multivariable logistic requires a binary outcome "
+                    f"(got kind={getattr(spec, 'kind', '?')}).",
+                    stacklevel=2,
+                )
+                continue
+            pooled_df, vif_df = fit_multivariable_logistic(
+                imputed_frames, schema, target, variant.predictors,
+                positive_class=positive_class.get(target),
+                vif_threshold=vif_threshold,
             )
-            continue
-        pooled_df, vif_df = fit_multivariable_logistic(
-            imputed_frames, schema, target, predictors,
-            positive_class=positive_class.get(target),
-            vif_threshold=vif_threshold,
-        )
-        # display-only rounding on save; raw df kept for downstream concat/plots
-        _format_inferential_table(pooled_df).to_csv(
-            tabs_dir / f"{target}__multivariable.csv", index=False)
-        _format_table_for_csv(vif_df).to_csv(tabs_dir / f"{target}__vif.csv", index=False)
-        meta = export_calculator_meta(
-            imputed_frames, schema, predictors, pooled_df,
-            vif_threshold=vif_threshold,
-        )
-        (tabs_dir / f"{target}__calculator.json").write_text(
-            json.dumps(meta, indent=2), encoding="utf-8",
-        )
-        _forest_plot(pooled_df, target, figs_dir)
-        all_rows.append(pooled_df)
+            pooled_df = pooled_df.copy()
+            pooled_df["model_id"] = variant.model_id
+            pooled_df["model_title"] = variant.title
+            pooled_df["model_link"] = variant.link
+            stem = artifact_base(target, variant.model_id)
+            table_df = pooled_df.drop(columns=["model_title", "model_link"], errors="ignore")
+            _format_inferential_table(table_df).to_csv(
+                tabs_dir / f"{stem}__multivariable.csv", index=False)
+            _format_table_for_csv(vif_df).to_csv(
+                tabs_dir / f"{stem}__vif.csv", index=False)
+            meta = export_calculator_meta(
+                imputed_frames, schema, variant.predictors, pooled_df,
+                vif_threshold=vif_threshold,
+            )
+            meta["model_id"] = variant.model_id
+            meta["model_title"] = variant.title
+            meta["model_link"] = variant.link
+            (tabs_dir / f"{stem}__calculator.json").write_text(
+                json.dumps(meta, indent=2), encoding="utf-8",
+            )
+            _forest_plot(
+                pooled_df, target, figs_dir,
+                model_id=variant.model_id,
+                model_title=variant.title,
+            )
+            all_rows.append(pooled_df)
 
     if not all_rows:
         empty = _empty_inferential_df()
@@ -562,7 +775,7 @@ def run_inferential(
     cases_df = summarize_multivariable_cases(
         imputed_frames[0], schema,
         targets=targets,
-        predictors=predictors,
+        variants=model_variants,
         positive_class=positive_class,
         vif_threshold=vif_threshold,
     )
@@ -576,7 +789,6 @@ def run_inferential(
         cases_df=cases_df,
         cohort_df=imputed_frames[0],
         schema=schema,
-        predictors=predictors,
         vif_threshold=vif_threshold,
     )
 

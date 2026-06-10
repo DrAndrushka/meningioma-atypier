@@ -31,12 +31,10 @@ from report import (
     render_dda,
     render_eda,
     render_final_conclusion,
-    render_focus_predictor,
     render_header,
     render_inferential,
     render_missingness,
     render_schema,
-    render_stats_decoder,
     svg_grid,
     table_to_html,
     warning_box,
@@ -143,13 +141,6 @@ def test_svg_grid(tmp_path):
     assert "figure-grid" in svg_grid([p])
 
 
-def test_focus_eda_figure(tmp_path):
-    p = tmp_path / "event__age.svg"
-    p.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
-    html = rp._focus_eda_figure(p)
-    assert "img" in html or html == ""
-
-
 def test_details_block():
     assert "<details" in details_block("sum", "<p>x</p>")
 
@@ -231,12 +222,28 @@ def test_dda_glossary():
     assert "missing_pct" in rp._dda_glossary()
 
 
+def test_eda_glossary():
+    html = rp._eda_glossary()
+    assert "mann_whitney_u" in html
+    assert "rank_biserial_r" in html
+    assert "Sensitivity" in html
+
+
+def test_inferential_glossary():
+    html = rp._inferential_glossary()
+    assert "epv" in html
+    assert "Rubin pooling" in html
+    assert "vif" in html
+
+
 def test_render_missingness(report_cfg, report_art):
     assert "<section" in render_missingness(report_cfg, report_art)
 
 
 def test_render_eda(report_cfg, report_art):
-    assert "<section" in render_eda(report_cfg, report_art)
+    html = render_eda(report_cfg, report_art)
+    assert "<section" in html
+    assert "What do these metrics mean?" in html
 
 
 def test_render_diagnostic_accuracy(report_cfg, report_art):
@@ -287,6 +294,8 @@ def test_render_inferential(report_cfg, report_art):
     }
     report_art.inferential_cases = pd.DataFrame([{
         "target": "event",
+        "model_id": "",
+        "model_title": "",
         "n_complete_cases": 40,
         "n_outcome_events": 12,
         "n_design_columns": 3,
@@ -294,11 +303,54 @@ def test_render_inferential(report_cfg, report_art):
     }])
     html = render_inferential(report_cfg, report_art)
     assert "<section" in html
-    # EPV = 4 → below the stability threshold of 10, rendered as the gauge.
     assert 'class="epv-card"' in html
-    assert 'class="epv-value"' in html
     assert "Underpowered" in html
-    assert "EPV \u2265 10" in html
+    assert "What do these metrics mean?" in html
+
+
+def test_render_inferential_multiple_variants(report_cfg, report_art):
+    report_art.inferential_multivariable = {
+        "high_grade::atypier_primary": pd.DataFrame({
+            "predictor_col": ["sex"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+        "high_grade::bondo_et_al": pd.DataFrame({
+            "predictor_col": ["tumor_margin"], "or": [0.5], "or_ci_lo": [0.2],
+            "or_ci_hi": [0.9], "p": [0.04],
+        }),
+    }
+    report_art.inferential_vif = {
+        "high_grade::atypier_primary": pd.DataFrame({"predictor": ["sex"], "vif": [1.2]}),
+        "high_grade::bondo_et_al": pd.DataFrame({"predictor": ["tumor_margin"], "vif": [1.1]}),
+    }
+    report_art.inferential_model_titles = {
+        "high_grade::atypier_primary": "meningioma_atypier primary model",
+        "high_grade::bondo_et_al": "Bondo et al.",
+    }
+    report_art.inferential_model_links = {
+        "high_grade::bondo_et_al": "https://example.com/bondo",
+    }
+    report_art.inferential_cases = pd.DataFrame([
+        {
+            "target": "high_grade", "model_id": "atypier_primary",
+            "model_title": "meningioma_atypier primary model",
+            "n_complete_cases": 40, "n_outcome_events": 12,
+            "n_design_columns": 3, "epv": 4.0,
+        },
+        {
+            "target": "high_grade", "model_id": "bondo_et_al",
+            "model_title": "Bondo et al.",
+            "n_complete_cases": 38, "n_outcome_events": 12,
+            "n_design_columns": 2, "epv": 6.0,
+        },
+    ])
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+    assert "meningioma_atypier primary model" in html
+    assert "Bondo et al." in html
+    assert 'href="https://example.com/bondo"' in html
+    assert "Interpretation" in html
+    assert "What do these metrics mean?" in html
 
 
 def test_to_int_or_none():
@@ -334,91 +386,10 @@ def test_render_eda_interpretation(report_cfg):
     assert isinstance(html, str)
 
 
-def test_render_stats_decoder():
-    assert "Spearman" in render_stats_decoder() or "spearman" in render_stats_decoder().lower()
-
-
-def test_dda_row_for_column(report_art):
-    report_art.dda_continuous = pd.DataFrame([{"column": "age", "mean": 55.0}])
-    row, kind = rp._dda_row_for_column(report_art, "age")
-    assert row is not None
-
-
-def test_figures_for_column(tmp_path):
-    p = tmp_path / "age__hist.svg"
-    p.write_text("x")
-    assert rp._figures_for_column([p], "age") == [p]
-
-
-def test_inferential_matches():
-    assert rp._inferential_matches("sex_F", "sex")
-
-
-def test_onehot_modeled_level():
-    assert rp._onehot_modeled_level("sex_F", "sex") == "F"
-
-
-def test_invert_or_ci():
-    o, lo, hi = rp._invert_or_ci(2.0, 1.5, 3.0)
-    assert lo < o < hi or o > 0
-
-
-def test_or_ci_phrase():
-    assert "2.00" in rp._or_ci_phrase(2.0, 1.5, 3.0)
-
-
-def test_infer_focus_reference():
-    dda_row = pd.Series({"first_mode": "M", "second_mode": "F"})
-    ref = rp._infer_focus_reference("sex", "F", None, dda_row)
-    assert ref == "M"
-
-
-def test_render_focus_dda_routes():
-    row = pd.Series({"column": "age", "kind": "continuous", "mean": 55.0})
-    html = rp._render_focus_dda_routes(row, "age")
-    assert isinstance(html, str)
-
-
-def test_render_focus_route_or_card():
-    html = rp._render_focus_route_or_card(
-        "event", "sex", "F", "M", 2.0, 1.5, 3.0, 0.04,
-    )
-    assert "focus-route" in html
-
-
-def test_focus_stat_cards():
-    row = pd.Series({"mean": 55.0, "median": 54.0})
-    assert "stat-card" in rp._focus_stat_cards(row, kind="continuous")
-
-
-def test_render_focus_predictor(report_cfg, report_art):
-    report_cfg.focus_predictor = "grade"
-    report_art.schema_summary = pd.DataFrame([{
-        "column": "grade",
-        "kind": "ordinal",
-        "keep": True,
-        "levels": [1, 2, 3],
-        "note": "",
-    }])
-    report_art.dda_continuous = pd.DataFrame([{"column": "age", "mean": 55.0}])
-    html = render_focus_predictor(report_cfg, report_art)
-    assert isinstance(html, str)
-    assert "1 &lt; 2 &lt; 3" in html
-
-
-def test_focus_schema_display_row():
-    ordinal = rp._focus_schema_display_row(pd.Series({
-        "kind": "ordinal", "keep": True, "levels": ["low", "mid", "high"],
-    }))
-    assert ordinal.loc[0, "levels"] == "low < mid < high"
-    nominal = rp._focus_schema_display_row(pd.Series({
-        "kind": "nominal", "keep": True, "levels": ["primary", "recurrent"],
-    }))
-    assert nominal.loc[0, "levels"] == "primary, recurrent"
-
-
 def test_render_final_conclusion(report_cfg, report_art):
-    assert isinstance(render_final_conclusion(report_cfg, report_art), str)
+    html = render_final_conclusion(report_cfg, report_art)
+    assert isinstance(html, str)
+    assert "Variable of interest" not in html
 
 
 def test_render_appendix(report_cfg, report_art):

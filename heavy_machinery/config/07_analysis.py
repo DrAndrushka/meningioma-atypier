@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pandas as pd
 
+from inferential import InferentialModelVariant, normalize_inferential_variants
+
 _BINARY_POSITIVE_TARGETS = frozenset(
     {
         "histology_available",
@@ -51,3 +53,23 @@ def resolve_analysis(
         eda_positive_class,
         inferential_positive_class,
     )
+
+
+def resolve_inferential_variants(
+    df: pd.DataFrame,
+    variants: list,
+    *,
+    default_target: str = "",
+) -> list[InferentialModelVariant]:
+    """Keep only targets/predictors present in ``df`` for each multivariable model variant."""
+    resolved: list[InferentialModelVariant] = []
+    for var in normalize_inferential_variants(variants=variants, default_target=default_target):
+        if var.target and var.target not in df.columns:
+            continue
+        preds = tuple(c for c in var.predictors if c in df.columns)
+        if not preds:
+            continue
+        resolved.append(InferentialModelVariant(
+            var.model_id, var.title, var.link, var.target, preds,
+        ))
+    return resolved

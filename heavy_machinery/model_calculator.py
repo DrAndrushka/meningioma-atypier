@@ -616,13 +616,23 @@ def write_streamlit_artifacts(
     out_dir = Path(artifact_dir) if artifact_dir is not None else _default_streamlit_artifact_dir(output_root)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    from inferential import parse_artifact_base
+
+    known_targets: set[str] = set()
+    if cases_df is not None and not cases_df.empty and "target" in cases_df.columns:
+        known_targets = set(cases_df["target"].astype(str))
+
     written: list[Path] = []
     for meta_path in sorted(tabs_dir.glob("*__calculator.json")):
-        target = meta_path.stem.replace("__calculator", "")
+        base = meta_path.stem.replace("__calculator", "")
+        target, model_id = parse_artifact_base(base, known_targets)
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        model_id = str(meta.get("model_id") or model_id or "")
         n = events = None
         if cases_df is not None and not cases_df.empty and "target" in cases_df.columns:
-            hit = cases_df.loc[cases_df["target"] == target]
+            hit = cases_df.loc[cases_df["target"].astype(str) == target]
+            if "model_id" in cases_df.columns:
+                hit = hit.loc[hit["model_id"].astype(str).fillna("") == model_id]
             if not hit.empty:
                 row = hit.iloc[0]
                 if pd.notna(row.get("n_complete_cases")):
@@ -656,7 +666,8 @@ def write_streamlit_artifacts(
             except (ValueError, RuntimeError):
                 pass
 
-        out_path = out_dir / f"{target}_model.json"
+        fname = f"{target}_{model_id}_model.json" if model_id else f"{target}_model.json"
+        out_path = out_dir / fname
         out_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
         written.append(out_path)
     return written
