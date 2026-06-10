@@ -1,6 +1,6 @@
 # 🧠 meningioma-atypier
 
-> MRI-based research pipeline for meningioma atypia — from messy clinical spreadsheets to pooled logistic models and a clinician-facing risk calculator.
+> MRI-based research pipeline for meningioma atypia — from messy clinical spreadsheets to pooled logistic models, literature-aligned multivariable comparisons, and a clinician-facing risk calculator.
 
 ---
 
@@ -10,13 +10,13 @@
 
 The workflow is deliberately **statistics-first, not black-box ML**:
 
-1. 🧹 Clean and type clinical data with an explicit schema
-2. 🔍 Screen univariate associations (EDA + diagnostic accuracy)
+1. 🧹 Clean and type clinical data with an explicit schema (row filters, derivations, pre-schema category cleanup)
+2. 🔍 Screen univariate associations (EDA + paper-style diagnostic accuracy)
 3. 🧩 Impute missing values with MICE, then pool uncertainty with Rubin's rules
-4. 📐 Fit multivariable logistic regression with collinearity control (VIF)
-5. ✅ Validate internally (bootstrap optimism correction + shrinkage)
-6. 🌐 Ship a **Streamlit calculator** driven by a portable JSON model artifact
-7. 📄 Generate a self-contained **HTML report** with figures and interpretation
+4. 📐 Fit **one or more** multivariable logistic models — your experimental predictor set plus published predictor sets from the literature
+5. ✅ Validate internally (bootstrap optimism correction + shrinkage) per model variant
+6. 🌐 Ship a **Streamlit calculator** driven by portable JSON model artifacts
+7. 📄 Generate a self-contained **HTML report** with collapsible sections, inline formula glossaries, and interpretation dropdowns
 
 > ⚠️ **Research tool, not a standalone clinical decision system.** External validation on an independent cohort is required before any clinical use.
 
@@ -44,23 +44,23 @@ Raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`
 meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
 ├── model_artifacts/
-│   └── high_grade_model.json       # 📦 Deployed logistic model + validation stats
+│   ├── high_grade_model.json       # 📦 Primary deployed calculator artifact
+│   └── high_grade__*_model.json    # 📦 One JSON per inferential model variant
 ├── heavy_machinery/
 │   ├── meningioma.ipynb            # 📓 Main pipeline notebook (run top → bottom)
 │   ├── cleaning.py                 # 🧹 Schema application, derivations, export
 │   ├── schema_infer.py             # 🔎 Auto-detect column types + overrides
 │   ├── dda.py                      # 📊 Data discovery & distribution plots
-│   ├── eda.py                      # 🔗 Univariate association screening
-│   ├── diagnostic_accuracy.py      # 🎯 2×2 diagnostic metrics (sensitivity, PPV…)
+│   ├── eda.py                      # 🔗 Univariate association screening (+ ROC-AUC column)
+│   ├── diagnostic_accuracy.py      # 🎯 Paper-style 2×2 metrics (sensitivity, PPV, Wilson CIs…)
 │   ├── missingness_resolution.py   # 🧩 MICE multiple imputation
-│   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression
+│   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression (multi-variant)
 │   ├── model_validation.py         # ✅ Bootstrap internal validation + shrinkage
-│   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI
-│   ├── atypier_calculator.py       # 🧮 CSV/meta-based probability engine
-│   ├── report.py                   # 📄 HTML report builder
+│   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI + artifact export
+│   ├── report.py                   # 📄 Collapsible HTML report builder
 │   ├── config/                     # ⚙️ Cohort, rename map, missingness policy, analysis
 │   └── output/                     # 📁 Generated tables, figures, report
-└── pytests_atypier/                # 🧪 ~180 automated tests
+└── pytests_atypier/                # 🧪 140+ automated tests
 ```
 
 ---
@@ -72,9 +72,11 @@ flowchart LR
     A[📥 Raw CSV] --> B[🧹 Clean + Schema]
     B --> C[📊 DDA]
     C --> D[🔗 EDA Screen]
-    D --> E[🧩 MICE m=10]
+    D --> D2[🎯 Diagnostic Accuracy]
+    D2 --> E[🧩 MICE m=10]
     E --> F[📐 Logistic + Rubin Pool]
-    F --> G[✅ Bootstrap Validate]
+    F --> F2[📚 Literature model variants]
+    F2 --> G[✅ Bootstrap Validate]
     G --> H[🌐 Streamlit Calculator]
     G --> I[📄 HTML Report]
 ```
@@ -85,11 +87,22 @@ flowchart LR
 | 07 | `dda.py` | Per-column distribution stats + SVG histograms |
 | 08 | `missingness_resolution.py` | Missingness heatmap, MICE imputed frames |
 | 09–10 | `eda.py` | Association table + per-pair plots (FDR-corrected) |
-| 09b | `diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV per feature |
-| 11–12 | `inferential.py` | Adjusted ORs, VIF table, forest plot |
+| 09b | `diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
+| 11–12 | `inferential.py` | Adjusted ORs, VIF, forest plot — **one block per model variant** |
 | 12b | `model_validation.py` | Optimism-corrected AUC, Brier, calibration slope |
-| 13 | `report.py` | `output/report/report.html` |
+| 13 | `report.py` | `output/report/report.html` (collapsible sections) |
 | 🌐 | `app.py` | Interactive risk calculator |
+
+### 📚 Multiple multivariable models
+
+In the notebook (§07), define `INFERENTIAL_MODEL_VARIANTS` — a list of `(id, title, link, target, [predictors])` tuples or dicts. Each variant gets its own:
+
+- EPV stability gauge (threshold marker at **EPV = 10**)
+- Rubin-pooled coefficient table + forest plot
+- VIF diagnostics (collapsed by default)
+- Per-variant `*__calculator.json` → `model_artifacts/<target>_<id>_model.json`
+
+Built-in examples mirror published meningioma grading models (Yao et al. 2022, Amano et al. 2021, Radeesri & Lekhavat 2020, Azeemuddin et al. 2018, Peng et al. 2021) alongside an experimental predictor set.
 
 ---
 
@@ -105,21 +118,24 @@ Each choice exists because clinical data is **small-N, missing, and multi-tested
 | Ordinal vs binary | **Spearman ρ** | Uses rank order without assuming equal spacing between WHO-style categories. |
 | Nominal vs binary | **χ²** (or **Fisher exact** if sparse) | Tests independence in the 2×K table. Effect: **Cramér's V** = √(χ² / n·min(r−1, c−1)). |
 | Multiple predictors per target | **Benjamini–Hochberg FDR** | Controls false discoveries across dozens of MRI features: qᵢ = min_{k≥i} p₍ₖ₎·m/k. |
+| Binary predictor vs binary outcome | **ROC-AUC** (`auc_univariate`) | Proper rank-based discrimination for the EDA table (distinct from the diagnostic-accuracy shortcut below). |
 
 ### 🎯 Diagnostic accuracy (`diagnostic_accuracy.py`)
 
-For each binary MRI sign vs binary outcome, a standard 2×2 table:
+Separate from multivariable modelling. For each binary MRI sign vs binary outcome:
 
-- **Sensitivity** = TP / (TP + FN) — catches true high-grade cases
-- **Specificity** = TN / (TN + FP) — avoids false alarms
-- **PPV / NPV** — what a positive or negative sign actually means in *this* cohort
-- **AUC** = (sensitivity + specificity) / 2 — a quick univariate discrimination summary (not ROC-AUC)
+- **Sensitivity** = TP / (TP + FN)
+- **Specificity** = TN / (TN + FP)
+- **PPV / NPV** with **Wilson 95% CIs**
+- **AUC** = (sensitivity + specificity) / 2 — a quick univariate summary aligned with radiology association tables (e.g. Upreti et al., *Neuroradiology* 2024), not full ROC-AUC
+
+The HTML report renders this as a collapsible **"Like in that research"** table per target.
 
 ### 🧩 Missing data (`missingness_resolution.py`)
 
 - **MICE** (m = 10 imputations): chained equations fill missing values while preserving relationships between variables.
 - **Why multiple imputations?** Single imputation treats imputed values as known → **standard errors are too small**. Rubin pooling fixes that.
-- **Why m = 10?** At typical clinical missingness (~30%), m = 10 captures ~97% of the information efficiency.
+- **Binary imaging signs** are generally **not imputed** — missing means unrecorded/unknown, not confirmed absence. Models using them fit on complete cases.
 
 ### 📐 Multivariable model (`inferential.py`)
 
@@ -129,31 +145,17 @@ For each binary MRI sign vs binary outcome, a standard 2×2 table:
 - Nominal → one-hot (drop-first reference)
 - Binary → 0/1
 
-**Collinearity:** iteratively drop predictors with **VIF > 5**, where VIFⱼ = 1 / (1 − R²ⱼ). Above 5 means the model cannot reliably separate overlapping MRI signs.
+**Collinearity:** iteratively drop predictors with **VIF > 5**.
 
-**Logistic regression:**
+**Sample-size guard:** EPV = events ÷ design columns. Report flags **≥ 10 stable**, **5–10 borderline**, **< 5 underpowered**.
 
-$$P(Y{=}1) = \frac{1}{1 + e^{-(\beta_0 + \sum \beta_j x_j)}}$$
-
-**Adjusted odds ratio:** ORⱼ = e^βⱼ — the multiplicative change in odds per encoded unit of predictor j, holding others constant.
-
-### 🔀 Rubin pooling across imputations
-
-For each coefficient across m = 10 imputed fits:
-
-- Pooled estimate: θ̄ = mean(θᵢ)
-- Total variance: T = W + (1 + 1/m)·B
-  - W = mean of within-imputation SE² (model uncertainty)
-  - B = variance across imputations (missing-data uncertainty)
-- Pooled SE = √T; p-values use **Barnard–Rubin** degrees of freedom (small-sample correction when m is modest)
+**Rubin pooling** across m = 10 imputed fits with **Barnard–Rubin** degrees of freedom.
 
 ### ✅ Internal validation (`model_validation.py`)
 
-- **Bootstrap optimism correction** (1000 resamples): corrected metric = apparent − mean(optimism)
-- **AUC** — discrimination (ranking high-grade vs low-grade)
-- **Brier score** — probability accuracy (lower is better; compared to prevalence-only baseline)
-- **Calibration slope** — regression of outcome on logit(predicted p); slope ≈ 1 means predicted probabilities match observed rates
-- **Shrinkage + intercept recalibration** — coefficients are uniformly shrunk by the optimism-corrected calibration slope; intercept is reset so mean predicted risk matches cohort prevalence
+- **Bootstrap optimism correction** (1000 resamples)
+- **AUC**, **Brier score**, **calibration slope**
+- **Shrinkage + intercept recalibration** → exported into each Streamlit JSON artifact
 
 ---
 
@@ -173,7 +175,7 @@ cd heavy_machinery
 jupyter notebook meningioma.ipynb
 ```
 
-Run all cells top to bottom. Outputs land in `heavy_machinery/output/`.
+Run all cells top to bottom. Outputs land in `heavy_machinery/output/`. Edit `INFERENTIAL_MODEL_VARIANTS` in §07 before the inferential cells to add or remove literature-aligned models.
 
 ### 3️⃣ Launch the calculator
 
@@ -181,7 +183,7 @@ Run all cells top to bottom. Outputs land in `heavy_machinery/output/`.
 streamlit run app.py
 ```
 
-The app reads `model_artifacts/high_grade_model.json` — coefficients, feature encodings, and bootstrap validation metrics travel together in one file.
+By default the app loads `model_artifacts/high_grade_model.json`. Pass a different artifact path to `render_model_calculator()` if you wire a model selector later.
 
 ### 4️⃣ Run tests
 
@@ -195,12 +197,28 @@ python -m pytest
 
 | Path | Contents |
 |------|----------|
-| `output/eda/tables/associations.csv` | Univariate tests + FDR q-values |
-| `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV |
-| `output/inferential/tables/high_grade__multivariable.csv` | Adjusted ORs with 95% CI |
-| `output/inferential/figures/high_grade__forest.svg` | Forest plot (log-scale OR axis) |
-| `output/report/report.html` | Full narrative report with embedded figures |
-| `model_artifacts/high_grade_model.json` | Streamlit-ready shrunken model |
+| `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
+| `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
+| `output/inferential/tables/<target>__<model_id>__multivariable.csv` | Adjusted ORs with 95% CI per variant |
+| `output/inferential/tables/inferential_summary.csv` | All variants combined |
+| `output/inferential/tables/multivariable_cases.csv` | EPV / complete-case counts per variant |
+| `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot (log-scale OR axis) |
+| `output/report/report.html` | Full narrative report — major sections collapse/expand |
+| `model_artifacts/high_grade_<model_id>_model.json` | Streamlit-ready shrunken model per variant |
+
+---
+
+## 📄 HTML report
+
+`report.py` assembles a self-contained document aimed at a clinician-researcher audience:
+
+- **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, inferential, appendix)
+- **Scrollable wide tables** instead of page-wide horizontal scroll
+- **Interpretation dropdowns** per EDA target and per inferential model variant
+- **Inline formula glossaries** (FDR, EPV gauge, Rubin pooling, diagnostic metrics)
+- **Schema table** fades `keep=False` columns; long level lists collapse behind expanders
+
+Removed in the current report flow: standalone "variable of interest" and "final conclusions" sections — interpretation now lives next to each table.
 
 ---
 
@@ -221,28 +239,29 @@ python -m pytest
 
 - **Clean data before clever models** — schema, missingness policy, and audit logs are first-class outputs, not afterthoughts.
 - **Interpretability over complexity** — pooled logistic regression with explicit ORs beats opaque ensembles for a manuscript and for clinicians.
+- **Compare against the literature** — replicate published predictor sets on your cohort before trusting a bespoke model.
 - **Honest uncertainty** — MICE + Rubin pooling + bootstrap correction acknowledge that N is modest and data is incomplete.
-- **Reproducible artifacts** — the JSON model file decouples statistical fitting from the Streamlit UI.
+- **Reproducible artifacts** — JSON model files decouple statistical fitting from the Streamlit UI.
 
 ---
 
 ## 🔮 Status
 
-🟢 **Active research pipeline** — cleaning through validation, report, and calculator are implemented and tested.
+🟢 **Active research pipeline** — cleaning through validation, multi-variant inferential modelling, report, and calculator are implemented and tested.
 
-Current deployed model (`high_grade_model.json`): **age group + sex** predictors, n = 353, 106 events, optimism-corrected AUC ≈ 0.61. The notebook can refit with the full MRI predictor set as the cohort and imputation strategy evolve.
+Primary deployed calculator (`high_grade_model.json`): experimental high-grade model with sex, max diameter, tumor margin, perifocal edema, and cystic component — bootstrap-shrunken with internal validation metrics embedded in the JSON. Additional literature-aligned variants are exported alongside it under `model_artifacts/`.
 
 ---
 
 ## 📚 Reference style
 
-Univariate diagnostic screening follows the spirit of radiology association tables (e.g. Upreti et al., *Neuroradiology* 2024). Multivariable methods follow standard biostatistics practice: Rubin (1987) pooling, Barnard–Rubin (1999) df, VIF threshold 5 for modest sample sizes.
+Univariate diagnostic screening follows the spirit of radiology association tables (e.g. Upreti et al., *Neuroradiology* 2024). Multivariable methods follow standard biostatistics practice: Rubin (1987) pooling, Barnard–Rubin (1999) df, VIF threshold 5 for collinearity, EPV ≥ 10 as the stability rule of thumb (Peduzzi et al.).
 
 ---
 
 ## 📖 Formula guide — DDA, EDA, MICE, inferential
 
-Plain-language notes on **what each number means**, **how it is computed**, and **why this pipeline picked it** over the usual alternatives. No deep theory — just enough to read the output tables with confidence.
+Plain-language notes on **what each number means**, **how it is computed**, and **why this pipeline picked it** over the usual alternatives. The HTML report embeds shorter versions of these glossaries next to each section.
 
 ---
 
@@ -275,6 +294,19 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Fisher exact** (2×2, sparse cells) | Exact probability for the table — no large-sample approximation. | Used automatically when counts are tiny (rare imaging signs). **Alternative:** forcing χ² on sparse data — inflated false positives. |
 | **Kruskal–Wallis**; **ε²** = (H − k + 1)/(n − 1) | Non-parametric "are group medians different?" across 3+ groups. ε² is a simple effect size. | Continuous predictor vs multi-level outcome, or grouped comparisons. **Alternative:** one-way ANOVA — same normality problem as the *t*-test. |
 | **Benjamini–Hochberg FDR** qᵢ = min_{k≥i} p₍ₖ₎·m/k | Adjusts p-values so ~5% of "significant" calls are expected false discoveries, not 5% of all tests. | Dozens of MRI features × several targets — uncorrected testing would flood false positives. **Alternative:** Bonferroni (divide α by m) — far too strict, kills real signals in exploratory radiology screens. |
+| **ROC-AUC** (`auc_univariate`) | Rank-based area under the ROC curve for binary predictor vs binary outcome; flipped if < 0.5. | Adds a discrimination column comparable across binary signs. **Alternative:** only p-values — two features with similar p can differ sharply in clinical separation. |
+
+---
+
+### 🎯 Diagnostic accuracy (`diagnostic_accuracy.py`)
+
+**Purpose:** radiology-style 2×2 performance metrics per binary imaging sign — complementary to EDA, not a substitute for multivariable modelling.
+
+| Formula | How it works (brief) | Why here (vs alternatives) |
+|---------|----------------------|----------------------------|
+| **Sensitivity / specificity** | TP rate and TN rate from a 2×2 table. | Directly maps to "how often does this sign flag high-grade?" **Alternative:** only ORs from EDA — harder to compare with published radiology tables. |
+| **Wilson 95% CI** | Binomial CI for proportions; stable at small n. | Cohort sizes per sign are modest; normal approximation CIs can go outside [0, 1]. **Alternative:** Wald interval — unreliable when events are rare. |
+| **AUC** = (sens + spec) / 2 | Quick univariate summary used in several meningioma imaging papers. | Matches literature tables for side-by-side comparison. **Alternative:** full ROC-AUC — better statistically, but not what those papers report; EDA already carries ROC-AUC separately. |
 
 ---
 
@@ -295,7 +327,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ### 📐 Inferential — Multivariable Logistic Regression (`inferential.py`)
 
-**Purpose:** estimate **adjusted** odds ratios — "if we hold all other MRI signs constant, what does this one contribute to high-grade risk?" Results are **Rubin-pooled** across the 10 imputed datasets.
+**Purpose:** estimate **adjusted** odds ratios — "if we hold all other MRI signs constant, what does this one contribute to high-grade risk?" Results are **Rubin-pooled** across the 10 imputed datasets. Run multiple **variants** to compare your cohort against published predictor sets.
 
 | Formula | How it works (brief) | Why here (vs alternatives) |
 |---------|----------------------|----------------------------|
@@ -307,4 +339,4 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Rubin pooling** θ̄ = mean(θᵢ); T = W + (1 + 1/m)·B | Average coefficient across 10 imputations; total variance = within-model noise + between-imputation noise. | Only statistically valid way to merge MI results. **Alternative:** fit on one imputed set — ignores imputation uncertainty; **complete-case** — throws away ~30% of patients and can bias if missing is not random. |
 | **Barnard–Rubin df** | Small-sample correction for p-values and CIs when m is modest (here m = 10). | Original Rubin df → ∞ too easily when between-variance is small. **Alternative:** normal z-test after MI — anti-conservative with small m. |
 | **Forest plot (log-scale OR)** | OR = 1 is null; CI crossing 1 means "not clearly different." Log axis keeps symmetric CIs readable. | Standard visual for multivariable clinical papers. **Alternative:** linear OR axis — squashes large ORs and stretches small ones, harder to read. |
-| **EPV check** (events per variable) | Events ÷ number of predictors in the final model. | With ~100 high-grade cases and many MRI features, overfitting is a real risk. **Alternative:** throwing in 30 predictors — apparent fit, nonsense coefficients; **Firth penalized logistic** — viable for tiny EPV but harder to defend than principled VIF pruning + fewer terms. |
+| **EPV check** (events per variable) | Events ÷ number of design columns in the final model. | With ~100 high-grade cases and many MRI features, overfitting is a real risk. Report marks **≥ 10 stable**, **5–10 borderline**, **< 5 underpowered**. **Alternative:** throwing in 30 predictors — apparent fit, nonsense coefficients. |

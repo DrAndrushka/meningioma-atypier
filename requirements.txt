@@ -18,7 +18,8 @@
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 📊 Core analysis pipeline
-#    cleaning → schema → DDA → EDA → MICE → logistic regression → HTML report
+#    cleaning → schema → DDA → EDA → diagnostic accuracy → MICE →
+#    multivariable logistic (multi-variant) → bootstrap validation → HTML report
 # ───────────────────────────────────────────────────────────────────────────────
 
 pandas>=2.2,<4
@@ -28,13 +29,13 @@ numpy>=2.0,<3
 # Numeric arrays underpinning stats, design matrices, and imputation.
 
 scipy>=1.11
-# Classical tests (Mann–Whitney, χ², Fisher, t) and root-finding for calibration.
+# Classical tests (Mann–Whitney, χ², Fisher, skew/kurtosis) and calibration root-finding.
 
 statsmodels>=0.14
-# Multivariable logistic regression (Logit), VIF, proportion CIs, calibration models.
+# Multivariable logistic regression (Logit), VIF, Wilson-style proportion CIs, calibration.
 
 scikit-learn>=1.4
-# MICE (IterativeImputer), bootstrap validation metrics (AUC, Brier, ROC).
+# MICE (IterativeImputer + RandomForestRegressor), bootstrap metrics (AUC, Brier, ROC).
 
 matplotlib>=3.8
 # Distribution plots (DDA), forest plots, validation charts, missingness bars.
@@ -48,7 +49,7 @@ openpyxl>=3.1
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🌐 Streamlit clinical calculator (app.py)
-#    Reads a portable JSON model artifact — no notebook required at runtime.
+#    Reads portable JSON artifacts from model_artifacts/ — no notebook required at runtime.
 # ───────────────────────────────────────────────────────────────────────────────
 
 streamlit>=1.28
@@ -57,7 +58,8 @@ streamlit>=1.28
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🧪 Tests (pytests_atypier/)
-#    ~180 tests covering cleaning, EDA, inferential pooling, report, calculator.
+#    140+ tests covering cleaning, EDA, diagnostic accuracy, inferential pooling,
+#    multi-variant artifacts, report, and calculator.
 # ───────────────────────────────────────────────────────────────────────────────
 
 pytest>=8.0
@@ -67,10 +69,11 @@ pytest>=8.0
 # ───────────────────────────────────────────────────────────────────────────────
 # 📓 Notebook workflow (optional — not needed for Streamlit or pytest alone)
 #    heavy_machinery/meningioma.ipynb orchestrates the full pipeline top-to-bottom.
+#    Config steps use IPython.display for inline schema / filter previews.
 # ───────────────────────────────────────────────────────────────────────────────
 
-# ipython>=8.0
-# Jupyter display helpers used in config steps (§04 row filters, §09 derivations).
+ipython>=8.0
+# Inline display helpers in config steps (§04 row filters, §06 derivations).
 
-# jupyter>=1.0
+jupyter>=1.0
 # Run the main notebook: jupyter notebook heavy_machinery/meningioma.ipynb
