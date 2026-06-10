@@ -6,9 +6,9 @@
   "coefficients": {
     "const": -1.4753285346920901,
     "sex_male": 0.4054690881053549,
-    "tumor_margin_regular": -0.7259021183376239,
-    "cystic_component": 0.7760986900377721,
-    "perifocal_edema": 0.42741616817506406,
+    "tumor_margin_regular": -0.7259021183376237,
+    "cystic_component": 0.776098690037772,
+    "perifocal_edema": 0.427416168175064,
     "dural_tail": 0.4454848700842627
   },
   "features": [

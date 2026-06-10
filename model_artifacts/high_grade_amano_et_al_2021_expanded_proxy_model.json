@@ -4,13 +4,13 @@
   "model_type": "logistic_regression",
   "created_from": "bootstrap-shrunken multivariable logistic regression",
   "coefficients": {
-    "const": -0.7953435649591372,
-    "tumor_location_skull_base": -0.8185790246355449,
-    "tumor_margin_regular": -0.47161327705565925,
-    "heterogeneous_enhancement": 0.1569738844704184,
-    "perifocal_edema": 0.35977417030437064,
-    "tumor_volume": 0.3434339212677404,
-    "cortical_destruction": 0.8461385728110205
+    "const": -0.7959255669066246,
+    "tumor_location_skull_base": -0.8185878585789351,
+    "tumor_margin_regular": -0.4715763999458388,
+    "heterogeneous_enhancement": 0.15703423601598201,
+    "perifocal_edema": 0.3604863787742211,
+    "tumor_volume": 0.3421832343640543,
+    "cortical_destruction": 0.8472476814354104
   },
   "features": [
     {
