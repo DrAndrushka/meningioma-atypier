@@ -1,4 +1,4 @@
-"""Artifact-driven logistic calculator for Streamlit."""
+"""Streamlit calculator from a json model file — inputs, probability, validation charts."""
 
 from __future__ import annotations
 

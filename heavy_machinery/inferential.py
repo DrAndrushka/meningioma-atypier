@@ -1,36 +1,8 @@
-"""
-inferential.py
-===============
-Multivariable logistic regression with MICE pooling (Rubin's rules) + VIF check.
+"""Adjusted logistic models, Rubin-pooled over the MICE sets.
 
-Pipeline per target
--------------------
-1. Build design matrix X (one-hot for nominal, ordinal codes kept as numeric,
-   continuous standardized to z-scores so coefficients are comparable).
-2. Drop predictors with VIF > vif_threshold (default 5), iteratively.
-3. Fit a logistic regression on each of the m imputed datasets
-   (statsmodels Logit). For each predictor record (coef, se).
-4. Pool across imputations with Rubin's rules:
-       theta_bar  = mean(theta_i)
-       within_var = mean(SE_i^2)
-       between_var= var(theta_i, ddof=1)
-       total_var  = within_var + (1 + 1/m) * between_var
-       SE_pool    = sqrt(total_var)
-       df         = (m - 1) * (1 + within_var / ((1+1/m)*between_var))^2   (Barnard–Rubin)
-       p          = 2 * (1 - t.cdf(|theta_bar/SE_pool|, df))
-       95% CI     = theta_bar ± t.ppf(0.975, df) * SE_pool
-5. Report adjusted odds ratios = exp(theta_bar), 95% CI on OR scale.
-
-Outputs (per target × model variant) under output/inferential/
---------------------------------------------------------------
-- tables/<target>__<model_id>__multivariable.csv  (single-model: <target>__multivariable.csv)
-- tables/<target>__<model_id>__vif.csv
-- tables/<target>__<model_id>__calculator.json
-- figures/<target>__<model_id>__forest.svg
-
-Also writes:
-- tables/inferential_summary.csv   : all targets × variants combined
-- tables/multivariable_cases.csv   : EPV / complete-case counts per variant
+VIF prune, forest plot, calculator json per variant — mine plus the literature
+copies from the notebook list. EPV counts in multivariable_cases.csv.
+output/inferential/.
 """
 
 from __future__ import annotations

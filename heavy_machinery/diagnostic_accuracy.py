@@ -1,16 +1,6 @@
-"""
-diagnostic_accuracy.py
-======================
-Univariate diagnostic-test performance for binary imaging features vs binary targets.
+"""Sens/spec/PPV/NPV tables for binary MRI signs — the radiology paper style thing.
 
-Paper-style 2×2 metrics (sensitivity, specificity, PPV, NPV, accuracy, AUC) per
-(target × predictor), analogous to Upreti et al. Neuroradiology 2024 Table 3.
-
-This is **not** multivariable modelling and **not** the clinical calculator.
-
-Outputs (under output/eda/tables/)
-----------------------------------
-- diagnostic_accuracy.csv
+Not multivariable, not the calculator. Same folder as eda outputs.
 """
 
 from __future__ import annotations

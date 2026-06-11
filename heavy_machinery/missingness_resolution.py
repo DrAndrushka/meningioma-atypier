@@ -1,32 +1,17 @@
-"""
-missingness_resolution.py
-==========================
-Missingness analysis + MICE imputation.
+"""Missingness audit, then MICE (m=10) for modelling.
 
-Stages
-------
-1. analyze_missingness(df)
-   -> per-column missing %, count, pairwise co-missingness matrix (top pairs),
-      saved as table + heatmap SVG.
-
-2. add_missing_flags(df, cols)
-   -> add boolean <col>_missing columns for explicit MNAR/MAR tracking.
-
-3. mice_impute(df, m=10, ...)
-   -> returns a LIST of m imputed DataFrames using sklearn's IterativeImputer
-      (multivariate chained equations). Numeric and categorical predictors are
-      handled separately; categoricals are ordinal-encoded for imputation and
-      decoded back.
-
-4. simple_impute(df, impute_binary=False)
-   -> single-frame imputation for fast screening (median for numeric, mode for
-      categorical). Binary columns are left as NaN by default (unknown ≠ absent).
-
-Outputs saved under output/missingness/{figures,tables}.
+simple_impute is the quick single-frame fill for eda — binary cols stay NaN
+unless you say otherwise, because blank on the form isn't the same as absent.
+output/missingness/.
 """
 
 from __future__ import annotations
 
+import os
+import platform
+import subprocess
+import time
+import warnings
 from pathlib import Path
 from typing import Sequence
 
@@ -34,6 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from joblib import Parallel, delayed
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer
 from sklearn.ensemble import RandomForestRegressor
@@ -266,6 +253,114 @@ def drop_rows(
 # 3. MICE imputation (multiple imputation)
 # ---------------------------------------------------------------------------
 
+def _macos_on_battery() -> bool:
+    """
+    Return True if running on macOS and currently on battery power.
+    If detection fails, return False.
+    """
+    try:
+        if platform.system() != "Darwin":
+            return False
+
+        result = subprocess.run(
+            ["pmset", "-g", "batt"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        text = (result.stdout or "").lower()
+        return "battery power" in text
+
+    except Exception:
+        return False
+
+
+def _apply_mice_slot_guardrail(
+    n_jobs_imputations: int,
+    n_jobs_rf: int,
+    slot_limit: int,
+) -> tuple[int, int]:
+    """Reduce RF / imputation parallelism so total worker slots fit within limit."""
+    estimated = n_jobs_imputations * n_jobs_rf
+    if estimated <= slot_limit:
+        return n_jobs_imputations, n_jobs_rf
+
+    n_jobs_rf = max(1, slot_limit // n_jobs_imputations)
+    estimated = n_jobs_imputations * n_jobs_rf
+    if estimated > slot_limit:
+        n_jobs_imputations = max(1, slot_limit // max(1, n_jobs_rf))
+
+    return n_jobs_imputations, n_jobs_rf
+
+
+def choose_mice_parallel_settings(
+    m: int,
+    os_profile: str = "auto",
+    safety_margin_cores: int = 2,
+    max_worker_slots: int | None = None,
+    emergency_safe_mode: bool = False,
+) -> dict:
+    """Choose conservative MICE parallelism based on OS and CPU availability."""
+    del os_profile  # reserved; OS is detected via platform.system() only
+
+    system = platform.system()
+    on_battery = _macos_on_battery()
+
+    if emergency_safe_mode:
+        n_jobs_imputations = 1
+        n_jobs_rf = 1
+        backend = "loky"
+    elif system == "Windows":
+        n_jobs_imputations = min(m, 4)
+        n_jobs_rf = 3
+        backend = "loky"
+    elif system == "Darwin":
+        if on_battery:
+            n_jobs_imputations = min(m, 2)
+            n_jobs_rf = 1
+        else:
+            n_jobs_imputations = min(m, 3)
+            n_jobs_rf = 2
+        backend = "loky"
+    else:
+        n_jobs_imputations = min(m, 2)
+        n_jobs_rf = 1
+        backend = "loky"
+
+    cpu_count = os.cpu_count() or 1
+    available_cores = max(1, cpu_count - safety_margin_cores)
+
+    effective_max_worker_slots = max_worker_slots
+    if effective_max_worker_slots is None and system == "Windows":
+        effective_max_worker_slots = 12
+
+    if not emergency_safe_mode:
+        n_jobs_imputations, n_jobs_rf = _apply_mice_slot_guardrail(
+            n_jobs_imputations, n_jobs_rf, available_cores,
+        )
+        if effective_max_worker_slots is not None:
+            n_jobs_imputations, n_jobs_rf = _apply_mice_slot_guardrail(
+                n_jobs_imputations, n_jobs_rf, effective_max_worker_slots,
+            )
+
+    estimated_worker_slots = n_jobs_imputations * n_jobs_rf
+
+    return {
+        "os_detected": system,
+        "macos_on_battery": on_battery,
+        "cpu_count": cpu_count,
+        "available_cores": available_cores,
+        "m": m,
+        "n_jobs_imputations": n_jobs_imputations,
+        "n_jobs_rf": n_jobs_rf,
+        "estimated_worker_slots": estimated_worker_slots,
+        "max_worker_slots": effective_max_worker_slots,
+        "backend": backend,
+        "emergency_safe_mode": emergency_safe_mode,
+    }
+
+
 def _encode_for_impute(df: pd.DataFrame, schema: dict[str, ColSpec]):
     """Encode categoricals to integer codes for the imputer; remember mapping."""
     work = df.copy()
@@ -310,6 +405,100 @@ def _decode_after_impute(
     return out
 
 
+def _restore_imputed_dtypes(original: pd.DataFrame, imputed: pd.DataFrame) -> pd.DataFrame:
+    """Recast imputed columns to match original categorical / Float64 dtypes."""
+    out = imputed.reindex(columns=original.columns).copy()
+    for col in original.columns:
+        orig_dtype = original[col].dtype
+        if isinstance(orig_dtype, pd.CategoricalDtype):
+            out[col] = pd.Categorical(
+                out[col],
+                categories=orig_dtype.categories,
+                ordered=orig_dtype.ordered,
+            )
+        elif isinstance(orig_dtype, pd.Float64Dtype):
+            out[col] = out[col].astype("Float64")
+    return out
+
+
+def _validate_imputed_frames(original: pd.DataFrame, frames: list[pd.DataFrame]) -> None:
+    """Post-imputation checks: columns, row count, categorical level integrity."""
+    for idx, frame in enumerate(frames):
+        assert list(frame.columns) == list(original.columns), (
+            f"imputed frame {idx}: column mismatch"
+        )
+        assert len(frame) == len(original), (
+            f"imputed frame {idx}: row count mismatch "
+            f"({len(frame)} vs {len(original)})"
+        )
+        for col in original.columns:
+            orig_dtype = original[col].dtype
+            if isinstance(orig_dtype, pd.CategoricalDtype):
+                allowed = set(orig_dtype.categories)
+                observed = set(frame[col].dropna().unique())
+                new_levels = observed - allowed
+                assert not new_levels, (
+                    f"imputed frame {idx}, column {col}: "
+                    f"new categorical levels {new_levels}"
+                )
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Human-readable duration for progress logs."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+def _run_single_mice_imputation(
+    i: int,
+    work: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    df: pd.DataFrame,
+    decoders: dict[str, dict[int, object]],
+    cat_cols: list[str],
+    dropped: list[str],
+    random_state: int,
+    max_iter: int,
+    n_estimators: int,
+    n_jobs_rf: int,
+    m_total: int,
+) -> pd.DataFrame:
+    """Run one MICE imputation draw; mirrors the original per-iteration logic."""
+    draw = i + 1
+    t0 = time.perf_counter()
+    print(
+        f"🔄 Imputation {draw}/{m_total} — "
+        f"IterativeImputer (max_iter={max_iter}, n_estimators={n_estimators}, "
+        f"seed={random_state + i})…",
+        flush=True,
+    )
+    imputer = IterativeImputer(
+        estimator=RandomForestRegressor(
+            n_estimators=n_estimators,
+            n_jobs=n_jobs_rf,
+            random_state=random_state + i,
+        ),
+        max_iter=max_iter,
+        sample_posterior=False,  # RF estimator doesn't support posterior
+        random_state=random_state + i,
+    )
+    arr = imputer.fit_transform(work)
+    imp = pd.DataFrame(arr, columns=work.columns, index=work.index)
+    decoded = _decode_after_impute(imp, decoders, cat_cols, schema)
+    for c in dropped:
+        if c in df.columns:
+            decoded[c] = df[c].values
+    decoded = decoded.reindex(columns=df.columns)
+    elapsed = time.perf_counter() - t0
+    print(f"✅ Imputation {draw}/{m_total} done ({_format_elapsed(elapsed)})", flush=True)
+    return decoded
+
+
 def mice_impute(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
@@ -318,39 +507,147 @@ def mice_impute(
     max_iter: int = 10,
     random_state: int = 42,
     output_root: Path | str = "output",
+    os_profile: str = "auto",
+    n_jobs_imputations: int | None = None,
+    n_jobs_rf: int | None = None,
+    n_estimators: int = 50,
+    safety_margin_cores: int = 2,
+    max_worker_slots: int | None = None,
+    emergency_safe_mode: bool = False,
 ) -> list[pd.DataFrame]:
     """
     Generate `m` imputed datasets via sklearn IterativeImputer with different
     random seeds (sample_posterior=True). Returns a list of m DataFrames with
     the same columns as the original (datetime/id/text columns are passed
     through unchanged from the original df).
+
+    Parallelism notes:
+    - Windows uses conservative parallelism because process spawning and nested
+      parallelism can be expensive.
+    - macOS is intentionally conservative to protect laptop thermals and battery.
+    - If macOS is detected on battery power, a much safer low-power profile is used.
+    - Imputations run in parallel; random forest parallelism is capped to avoid
+      CPU oversubscription.
     """
     figs, tabs = _ensure_dirs(Path(output_root))
 
     work, decoders, cat_cols, dropped = _encode_for_impute(df, schema)
     if work.isna().sum().sum() == 0:
         # nothing to impute -> return m copies
-        return [df.copy() for _ in range(m)]
+        print(f"✨ No missing values — returning {m} identical copies (no MICE run).")
+        imputed_frames = [_restore_imputed_dtypes(df, df.copy()) for _ in range(m)]
+        _validate_imputed_frames(df, imputed_frames)
+        return imputed_frames
 
-    imputed_frames: list[pd.DataFrame] = []
-    for i in range(m):
-        imputer = IterativeImputer(
-            estimator=RandomForestRegressor(n_estimators=50, n_jobs=-1,
-                                            random_state=random_state + i),
-            max_iter=max_iter,
-            sample_posterior=False,  # RF estimator doesn't support posterior
-            random_state=random_state + i,
+    t_start = time.perf_counter()
+    n_missing = int(work.isna().sum().sum())
+    print(
+        f"🧊 MICE starting — {m} imputations, {n_missing:,} coded missing cells "
+        f"across {work.shape[1]} columns × {work.shape[0]} rows"
+    )
+
+    settings = choose_mice_parallel_settings(
+        m=m,
+        os_profile=os_profile,
+        safety_margin_cores=safety_margin_cores,
+        max_worker_slots=max_worker_slots,
+        emergency_safe_mode=emergency_safe_mode,
+    )
+
+    if emergency_safe_mode:
+        settings["n_jobs_imputations"] = 1
+        settings["n_jobs_rf"] = 1
+    else:
+        if n_jobs_imputations is not None:
+            settings["n_jobs_imputations"] = n_jobs_imputations
+        if n_jobs_rf is not None:
+            settings["n_jobs_rf"] = n_jobs_rf
+
+    if not emergency_safe_mode:
+        settings["n_jobs_imputations"], settings["n_jobs_rf"] = _apply_mice_slot_guardrail(
+            settings["n_jobs_imputations"],
+            settings["n_jobs_rf"],
+            settings["available_cores"],
         )
-        arr = imputer.fit_transform(work)
-        imp = pd.DataFrame(arr, columns=work.columns, index=work.index)
-        decoded = _decode_after_impute(imp, decoders, cat_cols, schema)
-        # bring back untouched columns from the original df
-        for c in dropped:
-            if c in df.columns:
-                decoded[c] = df[c].values
-        # restore column order
-        decoded = decoded.reindex(columns=df.columns)
-        imputed_frames.append(decoded)
+        if settings["max_worker_slots"] is not None:
+            settings["n_jobs_imputations"], settings["n_jobs_rf"] = _apply_mice_slot_guardrail(
+                settings["n_jobs_imputations"],
+                settings["n_jobs_rf"],
+                settings["max_worker_slots"],
+            )
+
+    settings["estimated_worker_slots"] = (
+        settings["n_jobs_imputations"] * settings["n_jobs_rf"]
+    )
+
+    print(
+        "⚙️  MICE parallel settings:\n"
+        f"   🖥️  OS detected: {settings['os_detected']}\n"
+        f"   🔋 macOS on battery: {settings['macos_on_battery']}\n"
+        f"   🧮 CPU count: {settings['cpu_count']}\n"
+        f"   🛡️  available cores (after safety margin): {settings['available_cores']}\n"
+        f"   📦 m imputations: {settings['m']}\n"
+        f"   🔀 n_jobs_imputations: {settings['n_jobs_imputations']}\n"
+        f"   🌲 n_jobs_rf: {settings['n_jobs_rf']}\n"
+        f"   🎰 estimated worker slots: {settings['estimated_worker_slots']}\n"
+        f"   🚦 max_worker_slots: {settings['max_worker_slots']}\n"
+        f"   🔧 backend: {settings['backend']}\n"
+        f"   🆘 emergency_safe_mode: {settings['emergency_safe_mode']}"
+    )
+
+    impute_kwargs = dict(
+        work=work,
+        schema=schema,
+        df=df,
+        decoders=decoders,
+        cat_cols=cat_cols,
+        dropped=dropped,
+        random_state=random_state,
+        max_iter=max_iter,
+        n_estimators=n_estimators,
+        n_jobs_rf=settings["n_jobs_rf"],
+        m_total=m,
+    )
+
+    if settings["n_jobs_imputations"] == 1:
+        print(f"🐢 Running {m} imputations serially (safest / emergency mode)…")
+    else:
+        print(
+            f"🚀 Launching {m} imputations across "
+            f"{settings['n_jobs_imputations']} parallel workers…"
+        )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
+        warnings.filterwarnings("ignore", module=r"sklearn\.utils\.parallel")
+
+        if settings["n_jobs_imputations"] == 1:
+            imputed_frames = [
+                _run_single_mice_imputation(i=i, **impute_kwargs)
+                for i in range(m)
+            ]
+        else:
+            imputed_frames = Parallel(
+                n_jobs=settings["n_jobs_imputations"],
+                backend=settings["backend"],
+            )(
+                delayed(_run_single_mice_imputation)(i=i, **impute_kwargs)
+                for i in range(m)
+            )
+
+    elapsed = time.perf_counter() - t_start
+    nan_first = int(imputed_frames[0].isna().sum().sum())
+    print(
+        f"🏁 MICE complete — {len(imputed_frames)} frames in "
+        f"{_format_elapsed(elapsed)} "
+        f"({_format_elapsed(elapsed / m)} avg per draw)"
+    )
+    print(f"📊 NaN count in first imputed frame: {nan_first}")
+
+    imputed_frames = [
+        _restore_imputed_dtypes(df, frame) for frame in imputed_frames
+    ]
+    _validate_imputed_frames(df, imputed_frames)
 
     pd.DataFrame([{"m": m, "max_iter": max_iter, "random_state": random_state}]) \
       .to_csv(tabs / "mice_config.csv", index=False)

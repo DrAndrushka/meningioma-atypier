@@ -1,4 +1,4 @@
-"""Tests for report.py — one test per function."""
+"""pytest for report.py"""
 
 from __future__ import annotations
 

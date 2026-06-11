@@ -1,14 +1,7 @@
-"""
-cleaning.py
-============
-Apply a schema to a raw DataFrame:
-- coerce dtypes (numeric / categorical / datetime / bool)
-- apply null markers and value replacements
-- audit / drop duplicates by ID columns
-- provide derivation helpers (bin_numeric, bin_datetime, make_missing_flag,
-  combine_categories) for the notebook to call freely
+"""Make a raw dataframe match the ColSpec schema — dtypes, null markers, replacements, dupes.
 
-Everything here is universal — no project-specific column names.
+The notebook also pulls binning / missing-flag / category helpers from here.
+No hardcoded column names. Artifacts go to output/cleaning/.
 """
 
 from __future__ import annotations

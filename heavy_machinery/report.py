@@ -1,37 +1,7 @@
-"""Universal HTML report builder for the schema-driven analysis pipeline.
+"""Glue output/ csvs and svgs into one report.html — no refitting, just rendering.
 
-``report.py`` is a *renderer and explainer*, not an analyst. It reads CSV /
-SVG artifacts already produced by the cleaning / schema / DDA / missingness /
-EDA / inferential stages and assembles a single readable, emoji-rich HTML
-document aimed at a researcher (typically a clinician with limited stats
-background).
-
-Design rules
-------------
-* No statistics are recomputed. No data is cleaned. No models are fit.
-* No project-specific column names are hardcoded. The report adapts to
-  whatever ``output/`` contains.
-* Pure Python: f-string HTML + ``pandas.DataFrame.to_html`` + inline CSS.
-  No Jinja, no AI, no network calls.
-* Missing artifacts produce yellow / red warning boxes; rendering continues
-  for everything that *is* available.
-* All SVG figures are embedded inline (base64 data URIs) so a single
-  ``report.html`` opens anywhere with no sibling ``figures/`` folders.
-
-CLI
----
-::
-
-    python report.py \\
-        --output-root output \\
-        --schema schema.json \\
-        --targets upgrade upstage downgrade \\
-        --title "Research Data Analysis Report" \\
-        --author "Andy" \\
-        --out output/report/report.html
-
-If ``--schema`` is omitted the report falls back to ``output/schema/schema_summary.csv``
-(if present) or skips the schema section entirely.
+Figures embedded inline so the file travels alone. Missing inputs → warning box,
+rest still shows. CLI: python report.py --output-root output
 """
 
 from __future__ import annotations

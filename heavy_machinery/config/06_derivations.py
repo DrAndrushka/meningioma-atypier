@@ -1,4 +1,8 @@
-"""§06 — declarative derivations (notebook-driven)."""
+"""Step 06 — derived columns (bins, flags, custom fns).
+
+BinNumeric, Apply (one col), Compute (whole frame). List lives in the notebook;
+apply_derivations runs it and updates the schema.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace

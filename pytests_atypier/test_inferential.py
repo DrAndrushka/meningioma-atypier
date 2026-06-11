@@ -1,4 +1,4 @@
-"""Tests for inferential.py — one test per function."""
+"""pytest for inferential.py"""
 
 from __future__ import annotations
 

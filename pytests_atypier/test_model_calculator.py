@@ -1,4 +1,4 @@
-"""Tests for artifact-driven model_calculator."""
+"""pytest for model_calculator.py"""
 
 from __future__ import annotations
 

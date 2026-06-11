@@ -1,31 +1,7 @@
-"""
-eda.py
-=======
-Univariate target × predictor association screening.
+"""Univariate screen — every predictor vs every target.
 
-Target kinds (from schema, or inferred from data)
--------------------------------------------------
-- **binary**     : 2 levels → encode 0/1, then screening below
-- **continuous** : numeric outcome
-- **ordinal**    : ordered categories (≥2 levels)
-- **nominal**    : unordered categories (≥2 levels)
-
-Tests (target kind × predictor kind)
-------------------------------------
-| target \\ predictor | continuous / count | ordinal | nominal / binary | datetime |
-|--------------------|--------------------|---------|------------------|----------|
-| binary             | Mann–Whitney U     | Spearman ρ | χ² / Fisher   | MWU days |
-| continuous         | Spearman ρ         | Spearman ρ | Kruskal–Wallis | Spearman |
-| ordinal            | Spearman ρ         | Spearman ρ | χ²            | Spearman |
-| nominal            | Kruskal–Wallis    | χ²      | χ²            | Kruskal  |
-
-All p-values per target are corrected with Benjamini–Hochberg (FDR).
-
-Outputs (under output/eda/)
----------------------------
-- tables/associations.csv  : long-format (target, predictor, test, stat, p,
-                             p_fdr, effect, effect_size, n_used, auc_univariate)
-- figures/<target>__<predictor>.svg : the appropriate seaborn plot
+Picks the test from column kinds, FDR within each target. Good for hunting
+signals; not the adjusted model. output/eda/.
 """
 
 from __future__ import annotations

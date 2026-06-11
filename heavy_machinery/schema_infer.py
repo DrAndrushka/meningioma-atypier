@@ -1,31 +1,7 @@
-"""
-schema_infer.py
-================
-Auto-infer a column-kind schema for a DataFrame and print it as an editable
-Python dict so you can paste it back into the notebook and tweak.
+"""Guess what each column is, print a dict you edit in the notebook.
 
-Kinds
------
-- "id"          : high-cardinality unique identifier (skip from analysis)
-- "binary"      : exactly 2 non-null unique values (bool/0-1/yes-no/...)
-- "ordinal"     : ordered categorical with a small number of levels
-- "nominal"     : unordered categorical (incl. low-cardinality strings)
-- "continuous"  : numeric with many unique values (or floats)
-- "count"       : non-negative integer with moderate range
-- "datetime"    : parseable datetime
-- "text"        : free text / high-cardinality strings
-- "skip"        : explicitly skipped from analysis
-
-Usage
------
-    from schema_infer import infer_schema, print_schema_template
-    schema = infer_schema(df)
-    print_schema_template(schema)          # prints a paste-back dict (no Out[] echo)
-    print_column_uniques(df, schema)       # value lists for nulls= / replace=
-    # ...edit it in the notebook, then pass into cleaning.apply_schema(df, schema)
-    #
-    # Datetime binning on kind='datetime' (in place): datetime_bin='year' | 'month' | 'day' | 'hour' | 'full'
-    # ``full`` keeps h/m/s only when the source column has time data; otherwise bins to day.
+infer_schema → print_schema_template → tweak → cleaning.apply_schema.
+ColSpec is the object everything downstream actually reads.
 """
 
 from __future__ import annotations
@@ -50,7 +26,7 @@ DatetimeBin = Literal["year", "month", "day", "hour", "full"]
 
 @dataclass
 class ColSpec:
-    """One column's contract. Everything downstream reads from this."""
+    """One column — kind, levels, null markers, keep/skip."""
     name: str
     kind: Kind
     # Optional declared ordering for ordinal kinds (low -> high).

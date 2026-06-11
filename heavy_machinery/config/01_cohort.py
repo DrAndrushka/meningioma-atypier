@@ -1,4 +1,8 @@
-"""§01 — load raw data and filter cohort by year."""
+"""Step 01 — load the spreadsheet, optionally cut to ANALYSIS_YEARS.
+
+load_raw handles csv or xlsx. filter_cohort: None = all years, [2024, 2025] = subset.
+Empty list is an error — use None instead.
+"""
 from __future__ import annotations
 
 import pandas as pd

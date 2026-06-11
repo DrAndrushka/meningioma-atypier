@@ -1,4 +1,4 @@
-"""Streamlit calculator — driven by JSON model artifacts."""
+"""Streamlit entry point. Loads high_grade_model.json by default. streamlit run app.py"""
 
 from __future__ import annotations
 

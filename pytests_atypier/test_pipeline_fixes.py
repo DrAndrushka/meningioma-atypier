@@ -1,4 +1,4 @@
-"""Regression tests for pipeline correctness (pytest)."""
+"""regression tests — stuff that broke before and shouldn't again"""
 
 from __future__ import annotations
 

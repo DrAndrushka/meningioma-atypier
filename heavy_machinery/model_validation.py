@@ -1,4 +1,4 @@
-"""Bootstrap internal validation and shrinkage for Streamlit model artifacts."""
+"""Bootstrap internal validation + shrink coefficients before they go in the json artifact."""
 
 from __future__ import annotations
 

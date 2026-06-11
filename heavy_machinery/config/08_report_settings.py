@@ -1,4 +1,4 @@
-"""§08 — build and write HTML report."""
+"""Step 08 — call build_report and write report.html. Adds years to title if filtered."""
 from __future__ import annotations
 
 from pathlib import Path

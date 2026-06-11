@@ -1,4 +1,4 @@
-"""Tests for model_validation.py."""
+"""pytest for model_validation.py"""
 
 from __future__ import annotations
 

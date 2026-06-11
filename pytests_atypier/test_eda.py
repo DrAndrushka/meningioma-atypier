@@ -1,4 +1,4 @@
-"""Tests for eda.py — one test per function."""
+"""pytest for eda.py"""
 
 from __future__ import annotations
 

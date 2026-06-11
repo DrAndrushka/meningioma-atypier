@@ -1,4 +1,4 @@
-"""Tests for schema_infer.py — one test per function."""
+"""pytest for schema_infer.py"""
 
 from __future__ import annotations
 

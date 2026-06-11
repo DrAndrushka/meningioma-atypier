@@ -1,4 +1,11 @@
-"""Numbered pipeline steps (01–08). Import with config.load('01_cohort')."""
+"""Notebook config — one py file per section (01–08).
+
+    from config import load
+    load('01_cohort').load_raw(...)
+
+01 load + year filter · 02 renames · 03 schema overrides · 04 row filters
+05 missingness policy · 06 derivations · 07 targets/models · 08 report
+"""
 import importlib.util
 import sys
 from pathlib import Path

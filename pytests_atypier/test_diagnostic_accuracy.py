@@ -1,4 +1,4 @@
-"""Tests for diagnostic_accuracy.py."""
+"""pytest for diagnostic_accuracy.py"""
 
 from __future__ import annotations
 

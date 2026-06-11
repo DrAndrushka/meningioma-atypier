@@ -1,4 +1,8 @@
-"""§05 — declarative missingness policy (structural groups + MNAR flags)."""
+"""Step 05 — missingness rules before MICE.
+
+StructuralGroup: shared slots (blank = not measured there). Can derive count/max,
+mark raw cols skip. MnarColumn: missing might mean something → *_missing flag.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace

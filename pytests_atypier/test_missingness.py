@@ -1,4 +1,4 @@
-"""Tests for missingness_resolution.py — one test per function."""
+"""pytest for missingness_resolution.py"""
 
 from __future__ import annotations
 

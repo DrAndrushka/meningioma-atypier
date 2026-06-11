@@ -1,4 +1,4 @@
-"""Tests for cleaning.py — one test per function."""
+"""pytest for cleaning.py"""
 
 from __future__ import annotations
 

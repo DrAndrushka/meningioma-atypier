@@ -1,4 +1,4 @@
-"""Tests for config/04_row_filters.py."""
+"""pytest for config/04_row_filters.py"""
 
 from __future__ import annotations
 

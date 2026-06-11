@@ -1,4 +1,8 @@
-"""§07 — resolve analysis target/predictor lists."""
+"""Step 07 — eda/inferential targets, predictors, and INFERENTIAL_MODEL_VARIANTS.
+
+resolve_analysis drops missing cols and sets default positive class for binaries.
+resolve_inferential_variants filters the model list to what's actually in df.
+"""
 from __future__ import annotations
 
 import pandas as pd

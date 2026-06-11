@@ -1,4 +1,4 @@
-"""Tests for config/05_missingness.py."""
+"""pytest for config/05_missingness.py"""
 
 from __future__ import annotations
 

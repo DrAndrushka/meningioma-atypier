@@ -16,6 +16,7 @@ data/
 # Generated (output/ anywhere, e.g. heavy_machinery/output/)
 output/
 outputs/
+model_artifacts/
 .ipynb_checkpoints/
 dupes.csv
 *.tmp

@@ -1,4 +1,4 @@
-"""§03 — merge schema overrides and export summary."""
+"""Step 03 — merge schema_overrides and write schema_summary.csv for the report."""
 from __future__ import annotations
 
 from pathlib import Path

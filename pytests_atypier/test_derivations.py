@@ -1,4 +1,4 @@
-"""Tests for config/06_derivations.py."""
+"""pytest for config/06_derivations.py"""
 
 from __future__ import annotations
 

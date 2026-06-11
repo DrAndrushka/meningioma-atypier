@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for heavy_machinery pipeline tests."""
+"""tiny df + schema fixtures for pytest"""
 
 from __future__ import annotations
 

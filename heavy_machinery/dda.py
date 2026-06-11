@@ -1,50 +1,8 @@
-"""
-dda.py
-=======
-Descriptive Data Analysis driven by a ColSpec schema.
+"""Descriptive pass on every column before I test anything.
 
-Per column you get:
-- summary row (n, missing %, dtype, kind, kind-specific stats)
-- an appropriate plot saved to output/dda/figures/<col>.svg
-
-You also get aggregated overview tables saved to output/dda/tables/.
-
-Stats per kind
---------------
-- continuous / count :
-    n, n_unique, missing_pct, min, p_5th, median, mean, trimmed_mean,
-    p_95th, max, mode, std, cv, iqr, skewness, kurtosis
-- ordinal / nominal :
-    n, n_unique, missing_pct, ordered, first_mode, first_mode_pct,
-    second_mode, second_mode_pct, rarest, rarest_pct, max_class_imbalance,
-    median_category (ordinal only; empty for nominal),
-    balance, entropy_bin
-- binary :
-    n, n_unique, missing_pct, ordered, mode, mode_pct,
-    rarest, rarest_pct, max_class_imbalance, balance, entropy_bin
-- datetime : n, missing_pct, min, max, span_days
-- id/text  : n, missing_pct, n_unique
-
-Definitions
------------
-- trimmed_mean       : 10% symmetric trim (scipy.stats.trim_mean).
-- cv                 : std / mean (NaN when |mean| < 1e-12).
-- iqr                : Q3 - Q1.
-- kurtosis           : Fisher's excess kurtosis (0 = normal).
-- max_class_imbalance: first_mode_count / rarest_count
-                       (1 = perfect balance, large = degenerate).
-- balance            : normalized Shannon entropy H / log2(n_unique)
-                       (0 = single class, 1 = uniform).
-- entropy_bin        : raw Shannon entropy in BITS.
-
-Plots per kind (seaborn)
-------------------------
-- continuous / count : histogram + KDE  AND  boxplot (saved as two files)
-- ordinal            : ordered bar chart of counts
-- nominal            : bar chart of counts (top 15 + 'other')
-- binary             : count plot (True/False)
-- datetime           : line of counts-per-month
-- id / text / skip   : not plotted
+Stats table + a plot where it makes sense (hist/box for continuous, bars for
+categories, skip id/text). No p-values — just what's in the data.
+output/dda/.
 """
 
 from __future__ import annotations

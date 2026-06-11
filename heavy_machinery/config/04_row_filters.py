@@ -1,4 +1,8 @@
-"""§06 — declarative row filters (keep logic) and cleaning artifact export."""
+"""Step 04 — who stays in the cohort.
+
+RowFilter list with keep(df) masks. active=False skips but still logs.
+brain_meningioma_row_filter drops spinal cases. finalize_row_drops feeds the report.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

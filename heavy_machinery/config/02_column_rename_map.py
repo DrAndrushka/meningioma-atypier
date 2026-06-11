@@ -1,4 +1,8 @@
-"""§02 — column rename helpers."""
+"""Step 02 — rename columns before schema inference sees them.
+
+list_cols prints a COLUMN_RENAME_MAP skeleton to paste in the notebook.
+apply_rename applies it.
+"""
 from __future__ import annotations
 
 import json
