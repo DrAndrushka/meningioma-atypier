@@ -53,7 +53,7 @@ meningioma-atypier/
 │   ├── dda.py                      # 📊 Data discovery & distribution plots
 │   ├── eda.py                      # 🔗 Univariate association screening (+ ROC-AUC column)
 │   ├── diagnostic_accuracy.py      # 🎯 Paper-style 2×2 metrics (sensitivity, PPV, Wilson CIs…)
-│   ├── missingness_resolution.py   # 🧩 MICE multiple imputation
+│   ├── missingness_resolution.py   # 🧩 MICE (OS-aware parallel imputation + dtype restore)
 │   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression (multi-variant)
 │   ├── model_validation.py         # ✅ Bootstrap internal validation + shrinkage
 │   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI + artifact export
@@ -133,9 +133,21 @@ The HTML report renders this as a collapsible **"Like in that research"** table 
 
 ### 🧩 Missing data (`missingness_resolution.py`)
 
-- **MICE** (m = 10 imputations): chained equations fill missing values while preserving relationships between variables.
+- **MICE** (default m = 10 imputations): chained equations fill missing values while preserving relationships between variables.
+- **Parallel execution:** imputations run in parallel via `joblib` (one draw per worker); random-forest `n_jobs` is capped per OS to avoid CPU oversubscription, overheating, and nested parallelism stalls on Windows/macOS.
+- **OS-aware defaults:** Windows uses conservative settings (up to 4 parallel imputations, 3 RF jobs, 12 worker-slot cap); macOS is thermals/battery-conscious (fewer slots on battery).
+- **Post-imputation:** dtypes restored to match the original cohort (`Categorical`, nullable `Float64`); categorical level integrity validated before return.
 - **Why multiple imputations?** Single imputation treats imputed values as known → **standard errors are too small**. Rubin pooling fixes that.
 - **Binary imaging signs** are generally **not imputed** — missing means unrecorded/unknown, not confirmed absence. Models using them fit on complete cases.
+
+**Notebook profiles** (§11 `mice_impute` cell):
+
+| Profile | `m` | `max_iter` | `n_estimators` |
+|---------|-----|------------|----------------|
+| Fast iteration | 3 | 10 | 20 |
+| Publication | 10 | 25 | 50 |
+
+Optional: `max_worker_slots=4` (safer laptop), `emergency_safe_mode=True` (serial debug).
 
 ### 📐 Multivariable model (`inferential.py`)
 
@@ -228,7 +240,7 @@ Removed in the current report flow: standalone "variable of interest" and "final
 |-------|-------|
 | Data | pandas, numpy, openpyxl |
 | Statistics | scipy, statsmodels |
-| Imputation & metrics | scikit-learn |
+| Imputation & metrics | scikit-learn, joblib |
 | Visualization | matplotlib, seaborn |
 | Deployment | Streamlit |
 | Quality | pytest |
@@ -318,8 +330,10 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 |----------------|----------------------|----------------------------|
 | **Missingness heatmap** (co-missing %) | Shows which columns tend to go missing together. | Reveals structural patterns (e.g. ADC missing when DWI wasn't done) — informs the missingness policy. **Alternative:** column-wise % only — miss correlated gaps. |
 | **MICE** (m = 10 datasets) | Each missing value is predicted from the other columns, round by round, until stable. Repeat with 10 different random seeds → 10 full datasets. | Preserves relationships between variables (tumor size ↔ edema, location ↔ skull-base signs). **Alternative:** fill everything with the column median — fast, but destroys correlations and makes downstream models overconfident. |
+| **Parallel imputations (`joblib`)** | The m draws run in parallel; each draw uses a capped `RandomForestRegressor(n_jobs=…)` so total worker slots stay within OS/CPU limits. | **Alternative:** serial imputations with `n_jobs=-1` inside one RF — imputations wait in line while one forest hogs all cores; nested parallelism can slow Windows/macOS laptops. |
+| **OS-aware parallelism** | `platform.system()` picks conservative defaults; macOS on battery uses a low-power profile; optional `max_worker_slots` / `emergency_safe_mode`. | Protects thermals and battery without hand-tuning every machine. **Alternative:** hostname-specific profiles — brittle and not portable. |
 | **Iterative imputer + random forest** | Inner engine: a small random forest predicts each column from the rest, iteratively updating all missing cells. | Handles **mixed types** (numeric + categorical) in one pass. **Alternative:** linear regression imputation — assumes linearity; poor for binary signs and skewed volumes. |
-| **Categorical encode → impute → decode** | Nominal/ordinal levels become integer codes for imputation, then mapped back to labels. | Keeps "skull base" as a category, not a meaningless number. **Alternative:** imputing raw strings — most algorithms cannot; imputing as free numeric codes — invents nonsense levels. |
+| **Categorical encode → impute → decode** | Nominal/ordinal levels become integer codes for imputation, then mapped back to labels; dtypes restored (`Categorical`, `Float64`) before return. | Keeps "skull base" as a category, not a meaningless number. **Alternative:** imputing raw strings — most algorithms cannot; imputing as free numeric codes — invents nonsense levels. |
 | **Binary left NaN in screening** (`simple_impute`) | Fast single-fill for EDA only: median/mode; binaries stay missing unless explicitly allowed. | "Unknown" ≠ "absent" for imaging signs. **Alternative:** imputing binary as 0 — treats "not recorded" as "definitely negative," which biases association screens. |
 | **Why m = 10?** | Rubin: efficiency ≈ (1 + fmi/m)⁻¹. At ~30% missing info, m = 10 recovers ~97% of full efficiency. | Enough copies for stable pooled SEs without 10× runtime cost. **Alternative:** m = 1 (single imputation) — SEs too narrow, invalid inference; m = 50 — diminishing returns for this cohort size. |
 

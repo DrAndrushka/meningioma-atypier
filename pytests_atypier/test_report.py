@@ -236,6 +236,13 @@ def test_inferential_glossary():
     assert "vif" in html
 
 
+def test_missingness_glossary():
+    html = rp._missingness_glossary()
+    assert "joblib" in html
+    assert "n_jobs_imputations" in html
+    assert "missingness_resolution.py" in html
+
+
 def test_render_missingness(report_cfg, report_art):
     assert "<section" in render_missingness(report_cfg, report_art)
 

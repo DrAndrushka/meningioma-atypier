@@ -578,7 +578,7 @@ def details_block(summary: str, inner_html: str, *, open: bool = False) -> str:
 
 
 def glossary_block(inner_html: str, *, open: bool = False) -> str:
-    """Section-end metrics glossary (DDA / EDA / inferential)."""
+    """Section-end metrics glossary (DDA / EDA / missingness / inferential)."""
     open_attr = " open" if open else ""
     return (
         f'<details class="collapsible glossary-block"{open_attr}>'
@@ -1433,17 +1433,99 @@ def _eda_glossary() -> str:
     return "".join(parts)
 
 
+# Missingness audit + MICE imputation (missingness_resolution.py).
+_MICE_GLOSSARY_GROUPS = [
+    ("Missingness audit", [
+        ("missing_pct / pct_missing",
+         "Share of empty cells per column. High values flag variables that may "
+         "be unreliable in screening or models."),
+        ("co-missingness (Jaccard)",
+         "How often two columns are missing on the same patients (0 = never "
+         "together, 1 = always together). Reveals structural gaps — e.g. ADC "
+         "missing when DWI was not performed."),
+    ]),
+    ("MICE settings", [
+        ("m",
+         "Number of full imputed datasets (default 10 for publication; 3 for "
+         "fast iteration). Each draw uses seed random_state + i."),
+        ("max_iter",
+         "IterativeImputer rounds per draw until equations stabilise. "
+         "Publication runs typically use 25; quick dev runs use 10."),
+        ("n_estimators",
+         "Trees per random-forest column equation inside each draw (50 for "
+         "publication; 20 for fast iteration)."),
+        ("n_jobs_imputations",
+         "Parallel MICE draws via joblib — one imputation per worker slot. "
+         "Capped by OS defaults and CPU guardrails."),
+        ("n_jobs_rf",
+         "Random-forest threads inside each draw. Kept small to avoid nested "
+         "parallelism oversubscribing the CPU."),
+        ("max_worker_slots",
+         "Optional hard cap on imputations × RF threads (e.g. 4 on a laptop). "
+         "Windows defaults to 12 when not overridden."),
+        ("emergency_safe_mode",
+         "Forces serial execution (1 imputation, 1 RF job) for debugging."),
+    ]),
+    ("Parallel execution", [
+        ("OS-aware defaults",
+         "Windows: up to 4 parallel imputations, 3 RF jobs, 12 slot cap. "
+         "macOS plugged in: up to 3 imputations, 2 RF jobs. macOS on battery: "
+         "up to 2 imputations, 1 RF job. Other OS: safe fallback."),
+        ("CPU guardrail",
+         "Total worker slots (imputations × RF jobs) cannot exceed available "
+         "cores minus a safety margin. RF jobs are reduced first, then "
+         "parallel imputations."),
+        ("dtype restoration",
+         "After imputation, each frame is recast to match the original cohort: "
+         "Categorical columns keep original categories/order; nullable Float64 "
+         "columns stay Float64. Column order and values are unchanged."),
+        ("post-imputation validation",
+         "Asserts identical columns and row count, and that no new categorical "
+         "levels appeared in any imputed frame."),
+    ]),
+    ("Python modules", [
+        ("missingness_resolution.py",
+         "Project module: missingness audit, MICE imputation, simple_impute "
+         "screening fill, structural-missing handling."),
+        ("pandas / numpy",
+         "Tabular encoding/decoding, missing-cell counts, dtype restoration."),
+        ("scikit-learn",
+         "IterativeImputer + RandomForestRegressor (chained equations). "
+         "ConvergenceWarning suppressed during fit."),
+        ("joblib",
+         "Parallel(n_jobs=…) across the m imputation draws (loky backend)."),
+        ("matplotlib / seaborn",
+         "Missing-% bar chart and co-missingness heatmap figures."),
+        ("platform / os / subprocess (stdlib)",
+         "OS detection and macOS battery check for conservative parallelism."),
+    ]),
+]
+
+
+def _missingness_glossary() -> str:
+    parts: list[str] = []
+    for title, items in _MICE_GLOSSARY_GROUPS:
+        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
+                     for k, v in items)
+        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
+    return "".join(parts)
+
+
 def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     """🕳️ Missingness story."""
     body = [
-        '<p>Missingness was assessed per variable and globally. Variables with '
-        'high missingness should be interpreted cautiously, especially if used '
-        'in association screening or models. Binary imaging variables were not '
-        'imputed because missing values represented unrecorded/unknown findings '
-        'rather than confirmed absence.</p>',
+        '<p>Missingness was assessed per variable and globally. Multiple '
+        'imputation (MICE) generated m full datasets via '
+        '<code>missingness_resolution.mice_impute()</code> — imputations run '
+        'in parallel with OS-aware CPU limits, dtypes are restored afterward, '
+        'and results feed Rubin-pooled logistic regression. Variables with '
+        'high missingness should be interpreted cautiously. Binary imaging '
+        'variables were not imputed because missing values represented '
+        'unrecorded/unknown findings rather than confirmed absence.</p>',
     ]
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
+        body.append(glossary_block(_missingness_glossary()))
         return section_block("🕳️ Missingness story", "".join(body))
 
     if art.missingness_summary is not None and not art.missingness_summary.empty:
@@ -1466,6 +1548,8 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     if art.missingness_figures:
         body.append("<h3>Patterns</h3>")
         body.append(svg_grid(art.missingness_figures))
+
+    body.append(glossary_block(_missingness_glossary()))
 
     return section_block("🕳️ Missingness story", "".join(body))
 

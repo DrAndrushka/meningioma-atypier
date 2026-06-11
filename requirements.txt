@@ -37,6 +37,9 @@ statsmodels>=0.14
 scikit-learn>=1.4
 # MICE (IterativeImputer + RandomForestRegressor), bootstrap metrics (AUC, Brier, ROC).
 
+joblib>=1.3
+# Parallel MICE imputations across m draws (missingness_resolution.py); also bundled with scikit-learn.
+
 matplotlib>=3.8
 # Distribution plots (DDA), forest plots, validation charts, missingness bars.
 
