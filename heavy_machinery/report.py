@@ -1988,7 +1988,7 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
             ))
         if experimental_keys:
             body.append(details_block(
-                "🧪 Experimental model",
+                "🧪 Experimental models",
                 _render_model_blocks(experimental_keys),
             ))
 
