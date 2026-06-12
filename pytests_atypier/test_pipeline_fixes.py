@@ -1,4 +1,4 @@
-"""regression tests — stuff that broke before and shouldn't again"""
+"""Regression tests for design-matrix and encoding edge cases."""
 
 from __future__ import annotations
 

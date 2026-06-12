@@ -4,14 +4,17 @@
 #
 # Python 3.11+ recommended (devcontainer uses 3.11; tested on 3.12).
 #
-# Install:
+# Install (repo root):
 #   pip install -r requirements.txt
 #
-# Run tests:
-#   cd meningioma-atypier
+# Notebooks (run from heavy_machinery/):
+#   jupyter notebook meningioma-cleaning.ipynb
+#   jupyter notebook meningioma-modelling.ipynb
+#
+# Tests:
 #   python -m pytest
 #
-# Launch calculator:
+# Calculator:
 #   streamlit run app.py
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -19,7 +22,8 @@
 # ───────────────────────────────────────────────────────────────────────────────
 # 📊 Core analysis pipeline
 #    cleaning → schema → DDA → EDA → diagnostic accuracy → MICE →
-#    multivariable logistic (multi-variant) → bootstrap validation → HTML report
+#    multivariable logistic (literature + experimental variants) →
+#    bootstrap validation → HTML report
 # ───────────────────────────────────────────────────────────────────────────────
 
 pandas>=2.2,<4
@@ -38,7 +42,7 @@ scikit-learn>=1.4
 # MICE (IterativeImputer + RandomForestRegressor), bootstrap metrics (AUC, Brier, ROC).
 
 joblib>=1.3
-# Parallel MICE imputations across m draws (missingness_resolution.py); also bundled with scikit-learn.
+# Parallel MICE imputations across m draws (missingness_resolution.py).
 
 matplotlib>=3.8
 # Distribution plots (DDA), forest plots, validation charts, missingness bars.
@@ -47,12 +51,15 @@ seaborn>=0.13
 # EDA association plots and missingness heatmaps.
 
 openpyxl>=3.1
-# Read Excel cohort files when the raw export is .xlsx (CSV also supported).
+# Read Excel cohort exports when the raw file is .xlsx (CSV also supported).
+
+pyarrow>=15.0
+# Parquet I/O for dataset handoff and MICE imputation draws.
 
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🌐 Streamlit clinical calculator (app.py)
-#    Reads portable JSON artifacts from model_artifacts/ — no notebook required at runtime.
+#    Reads portable JSON artifacts from model_artifacts/ — no notebook at runtime.
 # ───────────────────────────────────────────────────────────────────────────────
 
 streamlit>=1.28
@@ -61,22 +68,21 @@ streamlit>=1.28
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🧪 Tests (pytests_atypier/)
-#    140+ tests covering cleaning, EDA, diagnostic accuracy, inferential pooling,
-#    multi-variant artifacts, report, and calculator.
+#    200+ tests: cleaning, handoff, EDA, diagnostic accuracy, inferential pooling,
+#    multi-variant artifacts, report rendering, calculator.
 # ───────────────────────────────────────────────────────────────────────────────
 
 pytest>=8.0
-# Unit and integration tests for the heavy_machinery modules.
+# Unit and integration tests for heavy_machinery modules.
 
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 📓 Notebook workflow (optional — not needed for Streamlit or pytest alone)
-#    heavy_machinery/meningioma.ipynb orchestrates the full pipeline top-to-bottom.
-#    Config steps use IPython.display for inline schema / filter previews.
+#    heavy_machinery/meningioma-cleaning.ipynb + meningioma-modelling.ipynb
 # ───────────────────────────────────────────────────────────────────────────────
 
 ipython>=8.0
-# Inline display helpers in config steps (§04 row filters, §06 derivations).
+# Inline display helpers in config steps and notebook previews.
 
-jupyter>=1.0
-# Run the main notebook: jupyter notebook heavy_machinery/meningioma.ipynb
+ipykernel>=6.0
+# Jupyter kernel for Cursor / VS Code.

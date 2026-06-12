@@ -1,4 +1,4 @@
-"""pytest for cleaning.py"""
+"""Tests for cleaning.py — schema application, derivations, export."""
 
 from __future__ import annotations
 

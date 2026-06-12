@@ -1,4 +1,4 @@
-"""pytest for eda.py"""
+"""Tests for eda.py — association screening and FDR correction."""
 
 from __future__ import annotations
 

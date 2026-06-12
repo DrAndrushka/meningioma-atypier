@@ -1,4 +1,4 @@
-"""pytest for report.py"""
+"""Tests for report.py — HTML sections, glossaries, inferential layout."""
 
 from __future__ import annotations
 
@@ -30,7 +30,6 @@ from report import (
     render_cleaning,
     render_dda,
     render_eda,
-    render_final_conclusion,
     render_header,
     render_inferential,
     render_missingness,
@@ -166,9 +165,24 @@ def test_load_artifacts(report_cfg, tmp_output):
     assert art.output_root == tmp_output
 
 
+def test_format_authors():
+    assert rp._format_authors("") == ""
+    assert rp._format_authors("Jane Doe") == "Jane Doe"
+    assert rp._format_authors("Jane Doe, John Smith") == "Jane Doe and John Smith"
+    assert rp._format_authors("A, B, C") == "A, B, and C"
+    assert rp._format_authors("A, B, and C") == "A, B, and C"
+    six = "Arturs Balodis, Sigita Zālīte, Roberts Tumeļkāns, Valērija Aksjonova, Elizabete Stankeviča, Andris Zaguzovs"
+    assert rp._format_authors(six).endswith(", and Andris Zaguzovs")
+
+
 def test_render_header(report_cfg, report_art):
     html = render_header(report_cfg, report_art)
     assert "Test" in html
+    report_cfg.author = "Alice, Bob, Carol"
+    html = render_header(report_cfg, report_art)
+    assert 'class="report-authors"' in html
+    assert "Alice, Bob, and Carol" in html
+    assert "Author" not in html or 'class="label">Author<' not in html
 
 
 def test_render_cleaning(report_cfg, report_art):
@@ -360,6 +374,43 @@ def test_render_inferential_multiple_variants(report_cfg, report_art):
     assert "What do these metrics mean?" in html
 
 
+def test_render_inferential_experimental_last(report_cfg, report_art):
+    report_art.inferential_multivariable = {
+        "high_grade::experimental": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+        "high_grade::yao_et_al_2022": pd.DataFrame({
+            "predictor_col": ["sex"], "or": [1.5], "or_ci_lo": [1.0],
+            "or_ci_hi": [2.0], "p": [0.04],
+        }),
+    }
+    report_art.inferential_model_titles = {
+        "high_grade::experimental": "meningioma_atypier experimental",
+        "high_grade::yao_et_al_2022": "Yao et al. 2022",
+    }
+    report_art.inferential_cases = pd.DataFrame([
+        {
+            "target": "high_grade", "model_id": "experimental",
+            "model_title": "meningioma_atypier experimental",
+            "n_complete_cases": 40, "n_outcome_events": 12,
+            "n_design_columns": 3, "epv": 4.0,
+        },
+        {
+            "target": "high_grade", "model_id": "yao_et_al_2022",
+            "model_title": "Yao et al. 2022",
+            "n_complete_cases": 38, "n_outcome_events": 12,
+            "n_design_columns": 2, "epv": 6.0,
+        },
+    ])
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+    assert html.index("Yao et al. 2022") < html.index("meningioma_atypier experimental")
+    assert "Literature-based models" in html
+    assert "Experimental model" in html
+    assert html.index("Literature-based models") < html.index("Experimental model")
+
+
 def test_to_int_or_none():
     assert rp._to_int_or_none(4.0) == 4
     assert rp._to_int_or_none("x") is None
@@ -391,12 +442,6 @@ def test_render_eda_interpretation(report_cfg):
     })
     html = rp._render_eda_interpretation("event", sub, report_cfg)
     assert isinstance(html, str)
-
-
-def test_render_final_conclusion(report_cfg, report_art):
-    html = render_final_conclusion(report_cfg, report_art)
-    assert isinstance(html, str)
-    assert "Variable of interest" not in html
 
 
 def test_render_appendix(report_cfg, report_art):

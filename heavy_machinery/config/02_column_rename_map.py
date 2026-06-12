@@ -1,7 +1,7 @@
-"""Step 02 — rename columns before schema inference sees them.
+"""Step 02 — rename columns before schema inference.
 
-list_cols prints a COLUMN_RENAME_MAP skeleton to paste in the notebook.
-apply_rename applies it.
+``list_cols`` prints a copy-paste ``COLUMN_RENAME_MAP`` skeleton for the notebook.
+``apply_rename`` applies the map to the raw dataframe.
 """
 from __future__ import annotations
 

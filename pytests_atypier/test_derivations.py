@@ -1,4 +1,4 @@
-"""pytest for config/06_derivations.py"""
+"""Tests for config/06_derivations.py — binning and derived columns."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
-"""Step 05 — missingness rules before MICE.
+"""Step 05 — missingness policy before MICE.
 
-StructuralGroup: shared slots (blank = not measured there). Can derive count/max,
-mark raw cols skip. MnarColumn: missing might mean something → *_missing flag.
+``StructuralGroup``: shared measurement slots (blank = not measured).
+``MnarColumn``: missing may be informative → optional ``*_missing`` flags.
 """
 from __future__ import annotations
 

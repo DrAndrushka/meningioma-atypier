@@ -1,4 +1,4 @@
-"""pytest for model_validation.py"""
+"""Tests for model_validation.py — bootstrap shrinkage."""
 
 from __future__ import annotations
 

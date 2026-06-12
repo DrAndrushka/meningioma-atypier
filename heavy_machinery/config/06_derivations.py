@@ -1,7 +1,7 @@
-"""Step 06 — derived columns (bins, flags, custom fns).
+"""Step 06 — derived columns (bins, flags, custom functions).
 
-BinNumeric, Apply (one col), Compute (whole frame). List lives in the notebook;
-apply_derivations runs it and updates the schema.
+``BinNumeric``, ``Apply`` (single column), ``Compute`` (whole frame). The derivation
+list lives in the cleaning notebook; ``apply_derivations`` runs it and updates schema.
 """
 from __future__ import annotations
 

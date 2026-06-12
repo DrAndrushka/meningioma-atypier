@@ -1,4 +1,4 @@
-"""tiny df + schema fixtures for pytest"""
+"""Shared pytest fixtures (tiny dataframe, schema, temp output root)."""
 
 from __future__ import annotations
 

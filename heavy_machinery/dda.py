@@ -1,8 +1,7 @@
-"""Descriptive pass on every column before I test anything.
+"""Descriptive data analysis (DDA) on every column before inferential testing.
 
-Stats table + a plot where it makes sense (hist/box for continuous, bars for
-categories, skip id/text). No p-values — just what's in the data.
-output/dda/.
+Summary stats plus histogram/box/bar plots where appropriate. No p-values.
+Artifacts → ``output/dda/``.
 """
 
 from __future__ import annotations

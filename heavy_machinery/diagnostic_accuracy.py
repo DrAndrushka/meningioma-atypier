@@ -1,6 +1,7 @@
-"""Sens/spec/PPV/NPV tables for binary MRI signs — the radiology paper style thing.
+"""Radiology-style diagnostic accuracy for binary MRI signs vs binary outcomes.
 
-Not multivariable, not the calculator. Same folder as eda outputs.
+Sensitivity, specificity, PPV, NPV, Wilson 95% CIs, and paper-style AUC.
+Complements EDA; not multivariable modelling. Artifacts → ``output/eda/``.
 """
 
 from __future__ import annotations

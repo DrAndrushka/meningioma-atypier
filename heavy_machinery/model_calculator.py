@@ -1,4 +1,8 @@
-"""Streamlit calculator from a json model file — inputs, probability, validation charts."""
+"""Streamlit risk calculator UI and JSON artifact export.
+
+Renders inputs, predicted probability, and validation charts from inferential
+``*__calculator.json`` files. Writes ``model_artifacts/<target>_<model_id>_model.json``.
+"""
 
 from __future__ import annotations
 

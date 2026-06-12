@@ -1,7 +1,7 @@
-"""Step 04 — who stays in the cohort.
+"""Step 04 — cohort inclusion row filters.
 
-RowFilter list with keep(df) masks. active=False skips but still logs.
-brain_meningioma_row_filter drops spinal cases. finalize_row_drops feeds the report.
+``RowFilter`` list with ``keep(df)`` masks. ``active=False`` skips but still logs.
+``brain_meningioma_row_filter`` drops spinal cases. ``finalize_row_drops`` feeds the report.
 """
 from __future__ import annotations
 

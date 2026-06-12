@@ -1,4 +1,4 @@
-"""pytest for dda.py"""
+"""Tests for dda.py — descriptive tables and figure outputs."""
 
 from __future__ import annotations
 

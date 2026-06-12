@@ -1,4 +1,4 @@
-"""pytest for schema_infer.py"""
+"""Tests for schema_infer.py — type inference and categorical order."""
 
 from __future__ import annotations
 
@@ -31,6 +31,26 @@ def test_looks_id():
 def test_infer_one():
     assert si._infer_one(pd.Series(np.arange(20, dtype=float)), 20, 15) == "continuous"
     assert si._infer_one(pd.Series([True, False]), 2, 15) == "binary"
+
+
+def test_infer_schema_preserves_ordered_categorical_levels():
+    df = pd.DataFrame({
+        "age_bins": pd.Categorical(
+            ["60-69", "<50", "80+"],
+            categories=["<50", "50-59", "60-69", "70-79", "80+"],
+            ordered=True,
+        ),
+        "ki67_group": pd.Categorical(
+            ["high_ge_10", "low_le_4", "low_le_4"],
+            categories=["low_le_4", "intermediate_5_9", "high_ge_10"],
+            ordered=True,
+        ),
+    })
+    schema = infer_schema(df)
+    assert schema["age_bins"].ordered_levels == ["<50", "50-59", "60-69", "70-79", "80+"]
+    assert schema["ki67_group"].ordered_levels == [
+        "low_le_4", "intermediate_5_9", "high_ge_10",
+    ]
 
 
 def test_infer_schema(tiny_df):

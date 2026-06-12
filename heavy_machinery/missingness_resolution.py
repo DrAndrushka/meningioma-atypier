@@ -1,19 +1,22 @@
-"""Missingness audit, then MICE (m=10) for modelling.
+"""Missingness audit, MICE imputation (m=10), and modelling dataset export.
 
-simple_impute is the quick single-frame fill for eda — binary cols stay NaN
-unless you say otherwise, because blank on the form isn't the same as absent.
-output/missingness/.
+``simple_impute`` provides a single-frame fill for EDA; binary imaging columns
+stay NaN unless explicitly allowed (missing ≠ confirmed absent).
+Artifacts → ``output/missingness/``, ``output/datasets/``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import shutil
 import subprocess
 import time
 import warnings
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Literal, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -461,6 +464,445 @@ def _validate_imputed_frames(original: pd.DataFrame, frames: list[pd.DataFrame])
                 )
 
 
+def _mice_dataset_dir(output_root: Path | str) -> Path:
+    return Path(output_root) / "missingness" / "mice"
+
+
+def _datasets_dir(output_root: Path | str) -> Path:
+    return Path(output_root) / "datasets"
+
+
+UNIMPUTED_DATASET_NAME = "unimputed_df.parquet"
+MICE_MODELING_DATASET_NAME = "mice_imputed_df.parquet"
+SIMPLE_MODELING_DATASET_NAME = "simple_imputed_df.parquet"
+DATASETS_MANIFEST_NAME = "manifest.json"
+
+
+def prepare_datasets_dir(output_root: Path | str) -> Path:
+    """Reset ``output/datasets/`` (delete if present, then recreate)."""
+    datasets_dir = _datasets_dir(output_root)
+    if datasets_dir.exists():
+        shutil.rmtree(datasets_dir)
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    return datasets_dir
+
+
+def _read_datasets_manifest(output_root: Path | str) -> dict[str, Any]:
+    manifest_path = _datasets_dir(output_root) / DATASETS_MANIFEST_NAME
+    if not manifest_path.exists():
+        return {}
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _write_datasets_manifest(output_root: Path | str, manifest: dict[str, Any]) -> None:
+    manifest_path = _datasets_dir(output_root) / DATASETS_MANIFEST_NAME
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def _save_dataset_parquet(
+    df: pd.DataFrame,
+    path: Path,
+    *,
+    context: str = "",
+    dtype_reference: pd.DataFrame | None = None,
+) -> None:
+    """Write parquet and assert column dtypes survive the roundtrip."""
+    label = context or path.name
+    if dtype_reference is not None:
+        _assert_frame_dtypes_match(
+            dtype_reference, df, context=f"{label} pre-save",
+        )
+
+    dtype_spec = _dtype_manifest(df)
+    df.to_parquet(path, index=False, engine="pyarrow")
+    roundtrip = _apply_dtype_manifest(
+        pd.read_parquet(path, engine="pyarrow"),
+        dtype_spec,
+    )
+    _assert_frame_dtypes_match(
+        df, roundtrip, context=f"{label} parquet roundtrip",
+    )
+
+
+def _load_dataset_parquet(path: Path, dtype_spec: dict[str, Any]) -> pd.DataFrame:
+    frame = _apply_dtype_manifest(
+        pd.read_parquet(path, engine="pyarrow"),
+        dtype_spec,
+    )
+    template = _dtype_template(list(frame.columns), dtype_spec)
+    _assert_frame_dtypes_match(template, frame, context=f"{path.name} post-load")
+    return frame
+
+
+def stage_unimputed_dataset(df: pd.DataFrame, output_root: Path | str) -> Path:
+    """Wipe ``output/datasets/`` and write ``unimputed_df.parquet`` (DDA / EDA cohort)."""
+    datasets_dir = prepare_datasets_dir(output_root)
+    path = datasets_dir / UNIMPUTED_DATASET_NAME
+    _save_dataset_parquet(
+        df, path, context=UNIMPUTED_DATASET_NAME,
+    )
+    _write_datasets_manifest(output_root, {
+        "saved_at": datetime.now(UTC).isoformat(),
+        "unimputed": UNIMPUTED_DATASET_NAME,
+        "dtypes": _dtype_manifest(df),
+        "imputation_method": None,
+        "modeling_dataset": None,
+    })
+    print(f"💾 Saved unimputed cohort → {path}", flush=True)
+    return path
+
+
+def save_modeling_dataset(
+    df: pd.DataFrame,
+    output_root: Path | str,
+    *,
+    method: Literal["mice", "simple"],
+) -> Path:
+    """Write ``mice_imputed_df.parquet`` or ``simple_imputed_df.parquet`` for modelling."""
+    datasets_dir = _datasets_dir(output_root)
+    datasets_dir.mkdir(parents=True, exist_ok=True)
+    filename = (
+        MICE_MODELING_DATASET_NAME if method == "mice"
+        else SIMPLE_MODELING_DATASET_NAME
+    )
+    path = datasets_dir / filename
+    _save_dataset_parquet(df, path, context=filename)
+
+    manifest = _read_datasets_manifest(output_root)
+    manifest.update({
+        "saved_at": datetime.now(UTC).isoformat(),
+        "imputation_method": method,
+        "modeling_dataset": filename,
+        "dtypes": _dtype_manifest(df),
+    })
+    _write_datasets_manifest(output_root, manifest)
+    print(f"💾 Saved {method} modelling cohort → {path}", flush=True)
+    return path
+
+
+def load_unimputed_dataset(output_root: Path | str = "output") -> pd.DataFrame:
+    """Load ``output/datasets/unimputed_df.parquet``."""
+    datasets_dir = _datasets_dir(output_root)
+    path = datasets_dir / UNIMPUTED_DATASET_NAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No unimputed dataset at {path}. Run imputation staging first."
+        )
+    manifest = _read_datasets_manifest(output_root)
+    dtype_spec = manifest.get("dtypes") or {}
+    if not dtype_spec:
+        raise FileNotFoundError(
+            f"Missing dtype manifest in {datasets_dir / DATASETS_MANIFEST_NAME}."
+        )
+    return _load_dataset_parquet(path, dtype_spec)
+
+
+def load_modeling_frames(output_root: Path | str = "output") -> list[pd.DataFrame]:
+    """Load imputed cohort(s) for multivariable modelling.
+
+    Prefers full MICE draws from ``output/missingness/mice/`` when present
+    (Rubin pooling). Otherwise loads the single modelling parquet from
+    ``output/datasets/``.
+    """
+    mice_manifest = _mice_dataset_dir(output_root) / "manifest.json"
+    if mice_manifest.exists():
+        return load_imputed_frames(output_root)
+
+    datasets_dir = _datasets_dir(output_root)
+    manifest = _read_datasets_manifest(output_root)
+    dtype_spec = manifest.get("dtypes") or {}
+    modeling_name = manifest.get("modeling_dataset")
+    candidates = [modeling_name] if modeling_name else []
+    candidates.extend([SIMPLE_MODELING_DATASET_NAME, MICE_MODELING_DATASET_NAME])
+    seen: set[str] = set()
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        path = datasets_dir / name
+        if path.exists():
+            if not dtype_spec:
+                raise FileNotFoundError(
+                    f"Missing dtype manifest in {datasets_dir / DATASETS_MANIFEST_NAME}."
+                )
+            return [_load_dataset_parquet(path, dtype_spec)]
+
+    raise FileNotFoundError(
+        f"No modelling dataset in {datasets_dir} or {_mice_dataset_dir(output_root)}. "
+        "Run mice_impute() or simple_impute_stage() first."
+    )
+
+
+def _serialize_category(value: Any) -> Any:
+    if pd.isna(value):
+        return {"__dtype__": "null"}
+    if isinstance(value, bool):
+        return {"__dtype__": "bool", "value": value}
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        return {"__dtype__": "int", "value": int(value)}
+    if isinstance(value, (float, np.floating)):
+        return {"__dtype__": "float", "value": float(value)}
+    if isinstance(value, (pd.Timestamp, np.datetime64)):
+        ts = pd.Timestamp(value)
+        return {"__dtype__": "datetime", "value": ts.isoformat()}
+    return {"__dtype__": "str", "value": str(value)}
+
+
+def _deserialize_category(item: Any) -> Any:
+    if not isinstance(item, dict) or "__dtype__" not in item:
+        return item
+    kind = item["__dtype__"]
+    if kind == "null":
+        return pd.NA
+    if kind == "bool":
+        return bool(item["value"])
+    if kind == "int":
+        return int(item["value"])
+    if kind == "float":
+        return float(item["value"])
+    if kind == "datetime":
+        return pd.Timestamp(item["value"])
+    return str(item["value"])
+
+
+def _serialize_categories(categories: Sequence[Any]) -> list[Any]:
+    return [_serialize_category(c) for c in categories]
+
+
+def _deserialize_categories(items: Sequence[Any]) -> list[Any]:
+    return [_deserialize_category(item) for item in items]
+
+
+def _datetime_unit(dtype: Any) -> str:
+    unit, _count = np.datetime_data(dtype)
+    return str(unit)
+
+
+def _dtype_manifest(df: pd.DataFrame) -> dict[str, Any]:
+    spec: dict[str, Any] = {}
+    for col in df.columns:
+        dt = df[col].dtype
+        if isinstance(dt, pd.CategoricalDtype):
+            spec[col] = {
+                "kind": "categorical",
+                "categories": _serialize_categories(dt.categories),
+                "ordered": bool(dt.ordered),
+            }
+        elif dt == "boolean" or str(dt) == "boolean":
+            spec[col] = {"kind": "boolean"}
+        elif isinstance(dt, pd.Float64Dtype) or str(dt) == "Float64":
+            spec[col] = {"kind": "Float64"}
+        elif isinstance(dt, pd.Int64Dtype) or str(dt) == "Int64":
+            spec[col] = {"kind": "Int64"}
+        elif pd.api.types.is_datetime64_any_dtype(dt):
+            spec[col] = {"kind": "datetime64", "unit": _datetime_unit(dt)}
+        elif pd.api.types.is_string_dtype(dt):
+            spec[col] = {"kind": "string"}
+        elif dt == np.dtype("bool"):
+            spec[col] = {"kind": "boolean"}
+        else:
+            spec[col] = {"kind": str(dt)}
+    return spec
+
+
+def _apply_dtype_manifest(df: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
+    out = df.copy()
+    for col, info in spec.items():
+        if col not in out.columns:
+            continue
+        kind = info.get("kind") if isinstance(info, dict) else info
+        if kind == "categorical":
+            cats = _deserialize_categories(info["categories"])
+            out[col] = pd.Categorical(
+                out[col],
+                categories=cats,
+                ordered=bool(info.get("ordered", False)),
+            )
+        elif kind == "Float64":
+            out[col] = out[col].astype("Float64")
+        elif kind == "Int64":
+            out[col] = out[col].astype("Int64")
+        elif kind == "boolean":
+            out[col] = out[col].astype("boolean")
+        elif kind == "datetime64":
+            unit = info.get("unit", "ns")
+            out[col] = pd.to_datetime(out[col]).astype(f"datetime64[{unit}]")
+        elif kind == "string":
+            out[col] = out[col].astype("string")
+        elif kind.startswith("datetime64"):
+            out[col] = pd.to_datetime(out[col])
+        elif kind in ("int64", "int32", "int16", "int8", "uint64", "uint32", "uint16", "uint8"):
+            out[col] = out[col].astype(kind)
+        elif kind == "float64":
+            out[col] = out[col].astype("float64")
+        elif kind == "object":
+            out[col] = out[col].astype("object")
+    return out
+
+
+def _dtypes_equivalent(expected: Any, actual: Any) -> bool:
+    if isinstance(expected, pd.CategoricalDtype) and isinstance(actual, pd.CategoricalDtype):
+        return (
+            expected.ordered == actual.ordered
+            and len(expected.categories) == len(actual.categories)
+            and all(
+                (pd.isna(e) and pd.isna(a)) or e == a
+                for e, a in zip(expected.categories, actual.categories)
+            )
+        )
+    if pd.api.types.is_string_dtype(expected) and pd.api.types.is_string_dtype(actual):
+        return True
+    if expected == np.dtype("bool") or isinstance(expected, pd.BooleanDtype):
+        return actual == np.dtype("bool") or isinstance(actual, pd.BooleanDtype)
+    if pd.api.types.is_datetime64_any_dtype(expected) and pd.api.types.is_datetime64_any_dtype(actual):
+        return _datetime_unit(expected) == _datetime_unit(actual)
+    return expected == actual
+
+
+def _assert_frame_dtypes_match(
+    reference: pd.DataFrame,
+    frame: pd.DataFrame,
+    *,
+    context: str = "",
+) -> None:
+    """Assert every column dtype matches ``reference`` (for multivariate safety)."""
+    prefix = f"{context}: " if context else ""
+    assert list(frame.columns) == list(reference.columns), (
+        f"{prefix}column order mismatch"
+    )
+    mismatches: list[str] = []
+    for col in reference.columns:
+        expected = reference[col].dtype
+        actual = frame[col].dtype
+        if not _dtypes_equivalent(expected, actual):
+            mismatches.append(f"{col}: expected {expected!r}, got {actual!r}")
+    assert not mismatches, f"{prefix}dtype mismatch — " + "; ".join(mismatches)
+
+
+def _dtype_template(columns: Sequence[str], spec: dict[str, Any]) -> pd.DataFrame:
+    """Empty frame carrying the manifest dtypes for post-load validation."""
+    data: dict[str, pd.Series] = {}
+    for col in columns:
+        info = spec.get(col)
+        if not isinstance(info, dict):
+            data[col] = pd.Series([], dtype="object")
+            continue
+        kind = info.get("kind")
+        if kind == "categorical":
+            data[col] = pd.Categorical(
+                [],
+                categories=_deserialize_categories(info["categories"]),
+                ordered=bool(info.get("ordered", False)),
+            )
+        elif kind == "Float64":
+            data[col] = pd.Series([], dtype="Float64")
+        elif kind == "Int64":
+            data[col] = pd.Series([], dtype="Int64")
+        elif kind == "boolean":
+            data[col] = pd.Series([], dtype="boolean")
+        elif kind in ("datetime64",) or str(kind).startswith("datetime64"):
+            unit = info.get("unit", "ns")
+            data[col] = pd.Series([], dtype=f"datetime64[{unit}]")
+        elif kind == "string":
+            data[col] = pd.Series([], dtype="string")
+        else:
+            data[col] = pd.Series([], dtype=kind)
+    return pd.DataFrame(data)
+
+
+def save_imputed_frames(
+    frames: Sequence[pd.DataFrame],
+    output_root: Path | str = "output",
+    *,
+    source_df: pd.DataFrame | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Write MICE draws to ``output/missingness/mice/imputed_*.parquet``."""
+    if not frames:
+        raise ValueError("save_imputed_frames: no frames to save")
+
+    mice_dir = _mice_dataset_dir(output_root)
+    mice_dir.mkdir(parents=True, exist_ok=True)
+
+    for old in mice_dir.glob("imputed_*.parquet"):
+        old.unlink()
+
+    reference = source_df if source_df is not None else frames[0]
+    dtype_spec = _dtype_manifest(reference)
+    frame_names: list[str] = []
+    for i, frame in enumerate(frames, start=1):
+        name = f"imputed_{i:03d}.parquet"
+        path = mice_dir / name
+        _save_dataset_parquet(
+            frame,
+            path,
+            context=name,
+            dtype_reference=reference,
+        )
+        frame_names.append(name)
+
+    manifest: dict[str, Any] = {
+        "saved_at": datetime.now(UTC).isoformat(),
+        "m": len(frames),
+        "n_rows": len(frames[0]),
+        "columns": list(frames[0].columns),
+        "frames": frame_names,
+        "dtypes": dtype_spec,
+    }
+    if metadata:
+        manifest.update(metadata)
+
+    (mice_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str),
+        encoding="utf-8",
+    )
+    print(f"💾 Saved {len(frames)} imputed frames → {mice_dir}", flush=True)
+    return mice_dir
+
+
+def load_imputed_frames(output_root: Path | str = "output") -> list[pd.DataFrame]:
+    """Load MICE draws saved by ``mice_impute`` / ``save_imputed_frames``."""
+    mice_dir = _mice_dataset_dir(output_root)
+    manifest_path = mice_dir / "manifest.json"
+
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        frame_names = manifest.get("frames") or []
+        dtype_spec = manifest.get("dtypes") or {}
+        columns = manifest.get("columns") or []
+    else:
+        frame_names = sorted(p.name for p in mice_dir.glob("imputed_*.parquet"))
+        dtype_spec = {}
+        columns = []
+
+    if not frame_names:
+        raise FileNotFoundError(
+            f"No MICE parquet dataset at {mice_dir}. Run mice_impute() first."
+        )
+    if not dtype_spec:
+        raise FileNotFoundError(
+            f"Missing dtype manifest at {manifest_path}. Re-run mice_impute()."
+        )
+
+    dtype_template = _dtype_template(columns or list(dtype_spec), dtype_spec)
+    frames: list[pd.DataFrame] = []
+    for name in frame_names:
+        path = mice_dir / name
+        if not path.exists():
+            raise FileNotFoundError(f"Missing imputed frame: {path}")
+        frame = _apply_dtype_manifest(
+            pd.read_parquet(path, engine="pyarrow"),
+            dtype_spec,
+        )
+        _assert_frame_dtypes_match(dtype_template, frame, context=f"{name} post-load")
+        frames.append(frame)
+
+    return frames
+
+
 def _format_elapsed(seconds: float) -> str:
     """Human-readable duration for progress logs."""
     if seconds < 60:
@@ -541,6 +983,7 @@ def mice_impute(
     emergency_safe_mode: bool = False,
     enforce_macos_battery_safety: bool = True,
     suppress_convergence_warnings: bool = True,
+    save_imputed: bool = True,
 ) -> list[pd.DataFrame]:
     """
     Generate `m` imputed datasets via sklearn IterativeImputer with different
@@ -561,14 +1004,32 @@ def mice_impute(
       ``ConvergenceWarning`` per draw; a post-run summary still reports counts.
       Pass ``False`` to surface raw sklearn convergence warnings.
     """
+    stage_unimputed_dataset(df, output_root)
     figs, tabs = _ensure_dirs(Path(output_root))
 
     work, decoders, cat_cols, dropped = _encode_for_impute(df, schema)
+    mice_meta = {
+        "max_iter": max_iter,
+        "random_state": random_state,
+        "n_estimators": n_estimators,
+    }
+
     if work.isna().sum().sum() == 0:
         # nothing to impute -> return m copies
         print(f"✨ No missing values — returning {m} identical copies (no MICE run).")
         imputed_frames = [_restore_imputed_dtypes(df, df.copy()) for _ in range(m)]
         _validate_imputed_frames(df, imputed_frames)
+        pd.DataFrame([{"m": m, **mice_meta}]).to_csv(
+            tabs / "mice_config.csv", index=False,
+        )
+        if save_imputed:
+            save_imputed_frames(
+                imputed_frames,
+                output_root,
+                source_df=imputed_frames[0],
+                metadata={"m": m, **mice_meta},
+            )
+        save_modeling_dataset(imputed_frames[0], output_root, method="mice")
         return imputed_frames
 
     t_start = time.perf_counter()
@@ -717,8 +1178,17 @@ def mice_impute(
     ]
     _validate_imputed_frames(df, imputed_frames)
 
-    pd.DataFrame([{"m": m, "max_iter": max_iter, "random_state": random_state}]) \
-      .to_csv(tabs / "mice_config.csv", index=False)
+    pd.DataFrame([{"m": m, **mice_meta}]).to_csv(
+        tabs / "mice_config.csv", index=False,
+    )
+    if save_imputed:
+        save_imputed_frames(
+            imputed_frames,
+            output_root,
+            source_df=imputed_frames[0],
+            metadata={"m": m, **mice_meta},
+        )
+    save_modeling_dataset(imputed_frames[0], output_root, method="mice")
     return imputed_frames
 
 
@@ -761,6 +1231,23 @@ def simple_impute(
                 if len(mode):
                     out[col] = out[col].fillna(mode.iloc[0])
     return out
+
+
+def simple_impute_stage(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    output_root: Path | str = "output",
+    *,
+    impute_binary: bool = False,
+) -> pd.DataFrame:
+    """Stage ``output/datasets/``, impute once, save ``simple_imputed_df.parquet``."""
+    stage_unimputed_dataset(df, output_root)
+    mice_dir = _mice_dataset_dir(output_root)
+    if mice_dir.exists():
+        shutil.rmtree(mice_dir)
+    imputed = simple_impute(df, schema, impute_binary=impute_binary)
+    save_modeling_dataset(imputed, output_root, method="simple")
+    return imputed
 
 
 def imputation_audit(

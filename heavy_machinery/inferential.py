@@ -1,8 +1,9 @@
-"""Adjusted logistic models, Rubin-pooled over the MICE sets.
+"""Rubin-pooled multivariable logistic regression on MICE-imputed cohorts.
 
-VIF prune, forest plot, calculator json per variant — mine plus the literature
-copies from the notebook list. EPV counts in multivariable_cases.csv.
-output/inferential/.
+Fits one model per variant (literature + experimental lists from ``config/07``).
+VIF pruning, forest plots, calculator JSON, EPV / complete-case tables.
+Removes stale per-variant artifacts at the start of each run.
+Artifacts → ``output/inferential/``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,19 @@ class InferentialModelVariant:
     link: str
     target: str
     predictors: tuple[str, ...]
+
+
+EXPERIMENTAL_MODEL_ID = "experimental"
+LEGACY_EXPERIMENTAL_MODEL_IDS = frozenset({"experimental_model"})
+
+
+def is_experimental_model_id(model_id: str) -> bool:
+    mid = str(model_id or "")
+    if mid in LEGACY_EXPERIMENTAL_MODEL_IDS:
+        return True
+    if mid == EXPERIMENTAL_MODEL_ID:
+        return True
+    return mid.startswith(f"{EXPERIMENTAL_MODEL_ID}_")
 
 
 def _slug_model_id(model_id: str) -> str:
@@ -199,6 +213,23 @@ def _ensure_dirs(root: Path) -> tuple[Path, Path]:
     figs.mkdir(parents=True, exist_ok=True)
     tabs.mkdir(parents=True, exist_ok=True)
     return figs, tabs
+
+
+_PER_MODEL_TABLE_SUFFIXES = (
+    "__multivariable.csv",
+    "__vif.csv",
+    "__calculator.json",
+)
+
+
+def _clear_inferential_artifacts(figs_dir: Path, tabs_dir: Path) -> None:
+    """Drop per-variant inferential outputs so a re-run cannot leave stale models."""
+    for path in tabs_dir.iterdir():
+        if path.is_file() and any(path.name.endswith(s) for s in _PER_MODEL_TABLE_SUFFIXES):
+            path.unlink()
+    for path in figs_dir.glob("*__forest.svg"):
+        if path.is_file():
+            path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -668,7 +699,7 @@ def export_calculator_meta(
 
 
 def run_inferential(
-    imputed_frames: list[pd.DataFrame],
+    imputed_frames: list[pd.DataFrame] | None,
     schema: dict[str, ColSpec],
     *,
     targets: Sequence[str],
@@ -686,9 +717,18 @@ def run_inferential(
     Pass ``predictors=`` for a single model (legacy filenames), or ``variants=``
     for multiple named predictor sets (e.g. literature-based calculators).
     Each variant may set its own ``target``; otherwise all ``targets=`` are fit.
+
+    Pass ``imputed_frames=None`` to load draws from
+    ``output/missingness/mice/`` or ``output/datasets/`` (written by imputation).
     """
     output_root = Path(output_root)
+    if imputed_frames is None:
+        from missingness_resolution import load_modeling_frames
+
+        imputed_frames = load_modeling_frames(output_root)
+
     figs_dir, tabs_dir = _ensure_dirs(output_root)
+    _clear_inferential_artifacts(figs_dir, tabs_dir)
     positive_class = positive_class or {}
     model_variants = normalize_inferential_variants(predictors, variants)
 
@@ -769,3 +809,54 @@ def run_inferential(
     _format_inferential_table(combined).to_csv(
         tabs_dir / "inferential_summary.csv", index=False)
     return combined
+
+
+def preview_multivariable_cases(
+    schema: dict[str, ColSpec],
+    *,
+    targets: Sequence[str],
+    predictors: Sequence[str] | None = None,
+    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
+    positive_class: dict | None = None,
+    vif_threshold: float = 5.0,
+    output_root: Path | str = "output",
+) -> pd.DataFrame:
+    """EPV / complete-case preview table — loads modelling cohort from ``output/datasets/``."""
+    from missingness_resolution import load_modeling_frames
+
+    return summarize_multivariable_cases(
+        load_modeling_frames(output_root)[0],
+        schema,
+        targets=targets,
+        predictors=predictors,
+        variants=variants,
+        positive_class=positive_class,
+        vif_threshold=vif_threshold,
+    )
+
+
+def run_inferential_stage(
+    schema: dict[str, ColSpec],
+    *,
+    targets: Sequence[str],
+    predictors: Sequence[str] | None = None,
+    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
+    positive_class: dict | None = None,
+    vif_threshold: float = 5.0,
+    output_root: Path | str = "output",
+) -> pd.DataFrame:
+    """Notebook entry point: load MICE parquets, fit Rubin-pooled models, write artifacts."""
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning as SMConvergenceWarning
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", SMConvergenceWarning)
+        return run_inferential(
+            None,
+            schema,
+            targets=targets,
+            predictors=predictors,
+            variants=variants,
+            positive_class=positive_class,
+            vif_threshold=vif_threshold,
+            output_root=output_root,
+        )

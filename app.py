@@ -1,4 +1,8 @@
-"""Streamlit entry point. Loads high_grade_model.json by default. streamlit run app.py"""
+"""Streamlit calculator entry point for meningioma-atypier.
+
+Loads ``model_artifacts/high_grade_model.json`` by default via
+``render_model_calculator``. Run from repo root: ``streamlit run app.py``.
+"""
 
 from __future__ import annotations
 

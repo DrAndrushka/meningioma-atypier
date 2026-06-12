@@ -1,4 +1,4 @@
-"""pytest for config/04_row_filters.py"""
+"""Tests for config/04_row_filters.py — cohort inclusion masks."""
 
 from __future__ import annotations
 

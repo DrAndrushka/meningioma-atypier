@@ -1,12 +1,12 @@
-"""Heavy machinery — the meningioma analysis pipeline.
+"""Heavy machinery — meningioma-atypier analysis pipeline (PSKUS cohort).
 
-High-grade (WHO 2–3) from MRI + clinical stuff, PSKUS cohort. I run
-meningioma.ipynb top to bottom with flat imports (from cleaning import ...).
+Two notebooks (run from ``heavy_machinery/``):
 
-jupyter notebook meningioma.ipynb   # from this folder
-streamlit run app.py                # repo root
-python -m pytest                    # repo root
+1. ``meningioma-cleaning.ipynb`` — cohort cleaning, schema, MICE → ``output/datasets/``
+2. ``meningioma-modelling.ipynb`` — DDA, EDA, multivariable models, HTML report
 
-Tables and figures → output/. Calculator models → ../model_artifacts/.
-Research tool — don't use clinically without external validation.
+Also: ``streamlit run app.py`` (repo root), ``python -m pytest`` (repo root).
+
+Pipeline tables/figures → ``output/``. Calculator JSON → ``../model_artifacts/``.
+Research tool — not for clinical use without external validation.
 """

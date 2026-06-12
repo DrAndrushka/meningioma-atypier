@@ -1,7 +1,8 @@
-"""Glue output/ csvs and svgs into one report.html — no refitting, just rendering.
+"""Assemble ``output/report/report.html`` from existing pipeline artifacts.
 
-Figures embedded inline so the file travels alone. Missing inputs → warning box,
-rest still shows. CLI: python report.py --output-root output
+Reads CSV/SVG under ``output/`` (no refitting). Collapsible major sections;
+multivariable uses nested literature / experimental dropdowns per target.
+CLI: ``python report.py --output-root output``.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ import pandas as pd
 
 from inferential import (
     artifact_base,
+    is_experimental_model_id,
     model_key,
     parse_artifact_base,
     parse_model_key,
@@ -113,6 +115,12 @@ body {
 .container { max-width: 1180px; margin: 0 auto; padding: 32px 28px 80px; }
 
 h1 { font-size: 30px; margin: 0 0 4px; }
+.report-title-block { text-align: center; margin: 0 0 16px; }
+.report-title-block h1 { margin-bottom: 10px; }
+.report-authors {
+    font-size: 16px; color: #374151; margin: 0;
+    font-weight: 500; line-height: 1.5;
+}
 h2 { font-size: 22px; margin: 38px 0 12px; padding-bottom: 6px;
      border-bottom: 2px solid var(--border); }
 h3 { font-size: 17px; margin: 22px 0 8px; color: #111827; }
@@ -226,13 +234,43 @@ details.collapsible > summary {
     color: var(--accent);
 }
 details.collapsible.glossary-block {
-    margin: 28px 0 14px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border);
+    margin: 24px 0 8px;
+    padding: 10px 14px 6px;
+    border: none;
+    border-top: 1px dashed var(--border);
+    border-radius: 0;
+    background: transparent;
 }
 details.collapsible.glossary-block > summary {
-    font-size: 17px;
-    padding: 8px 0 10px;
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 13px;
+    font-weight: 500;
+    font-style: italic;
+    letter-spacing: 0.01em;
+    padding: 4px 0 6px;
+    color: #5b6b7c;
+}
+details.collapsible.glossary-block[open] > summary {
+    color: #4a5568;
+}
+details.collapsible.glossary-block h4 {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 14px 0 6px;
+}
+details.collapsible.glossary-block .stat-decoder dt {
+    font-size: 12px;
+    font-weight: 600;
+    margin-top: 10px;
+    color: #4b5563;
+}
+details.collapsible.glossary-block .stat-decoder dd {
+    font-size: 12.5px;
+    color: #6b7280;
+    line-height: 1.45;
 }
 
 /* Major report sections (top-level dropdowns) */
@@ -275,6 +313,18 @@ details.section-collapsible[open] > summary::after {
 details.section-collapsible > .section-body {
     padding: 4px 24px 28px;
 }
+/* Nested model-group dropdowns inside major sections */
+details.section-collapsible .section-body > details.collapsible:not(.glossary-block) {
+    margin: 12px 0 16px;
+    padding: 12px 16px 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--card);
+}
+details.section-collapsible .section-body > details.collapsible:not(.glossary-block) > summary {
+    font-size: 15px;
+    padding: 4px 0 8px;
+}
 details.section-collapsible > .section-body > h3:first-child,
 details.section-collapsible > .section-body > p:first-child {
     margin-top: 12px;
@@ -284,7 +334,7 @@ details.section-collapsible > .section-body > p:first-child {
 .tldr-list { padding-left: 22px; }
 .tldr-list li { margin: 4px 0; }
 
-/* Glossary dropdowns (DDA / EDA) */
+/* Glossary dropdowns (DDA / EDA / missingness / inferential) */
 .stat-decoder dt { font-weight: 600; margin-top: 12px; }
 .stat-decoder dd { margin-left: 0; color: #374151; }
 
@@ -325,6 +375,32 @@ def _esc(x: Any) -> str:
     if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
         return ""
     return _html.escape(str(x))
+
+
+def _parse_author_list(author: str) -> list[str]:
+    """Split a comma-separated author string into individual names."""
+    if not author or not author.strip():
+        return []
+    names: list[str] = []
+    for part in author.split(","):
+        name = part.strip()
+        if name.lower().startswith("and "):
+            name = name[4:].strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _format_authors(author: str) -> str:
+    """Format author names in standard academic byline style."""
+    names = _parse_author_list(author)
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
 
 
 def human_pool_df(val: Any) -> str:
@@ -763,6 +839,28 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     return art
 
 
+def _inferential_model_sort_key(model_key_str: str) -> tuple[int, str]:
+    """Literature variants first; experimental always last within a target."""
+    _, model_id = parse_model_key(model_key_str)
+    return (1 if is_experimental_model_id(model_id) else 0, model_key_str)
+
+
+def _sort_inferential_model_keys(keys: list[str]) -> list[str]:
+    return sorted(keys, key=_inferential_model_sort_key)
+
+
+def _sort_inferential_summary_df(df: pd.DataFrame) -> pd.DataFrame:
+    if "model_id" not in df.columns or df.empty:
+        return df
+    experimental = df["model_id"].astype(str).apply(is_experimental_model_id)
+    if not experimental.any():
+        return df
+    return pd.concat(
+        [df.loc[~experimental], df.loc[experimental]],
+        ignore_index=True,
+    )
+
+
 def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
     """Accept JSON (dict of ColSpec-like) or CSV with one row per column."""
     try:
@@ -908,7 +1006,6 @@ def render_header(cfg: ReportConfig, art: Artifacts) -> str:
 
     cards = [
         card("Generated", now),
-        card("Author", cfg.author or "—"),
         card("Rows", n_rows if n_rows is not None else "—"),
         card("Columns", n_cols if n_cols is not None else "—"),
         card("Targets", len(cfg.targets) or "—"),
@@ -924,9 +1021,18 @@ def render_header(cfg: ReportConfig, art: Artifacts) -> str:
              "descriptive data analysis, missingness assessment, exploratory "
              "association screening, and multivariable modelling.")
 
+    authors_html = _format_authors(cfg.author)
+    title_block = (
+        f'<div class="report-title-block">'
+        f'<h1>🧾 {_esc(cfg.title)}</h1>'
+    )
+    if authors_html:
+        title_block += f'<p class="report-authors">{_esc(authors_html)}</p>'
+    title_block += '</div>'
+
     return (
         f'<section class="report-section">'
-        f'<h1>🧾 {_esc(cfg.title)}</h1>'
+        f'{title_block}'
         f'<p class="muted">{blurb}</p>'
         f'<div class="cards">{"".join(cards)}</div>'
         f'<p><strong>Targets:</strong> {targets_html}</p>'
@@ -1799,69 +1905,92 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                + [t for t in by_target if t not in cfg.targets])
 
     for target in targets:
-        model_keys = by_target.get(target, [])
+        model_keys = _sort_inferential_model_keys(by_target.get(target, []))
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
 
-        for mkey in model_keys:
-            _, model_id = parse_model_key(mkey)
-            title = art.inferential_model_titles.get(mkey, "")
-            link = art.inferential_model_links.get(mkey, "")
-            heading = _inferential_model_heading(title, link=link, model_id=model_id)
-            if heading:
-                body.append(heading)
+        literature_keys = [
+            mkey for mkey in model_keys
+            if not is_experimental_model_id(parse_model_key(mkey)[1])
+        ]
+        experimental_keys = [
+            mkey for mkey in model_keys
+            if is_experimental_model_id(parse_model_key(mkey)[1])
+        ]
 
-            meta = _inferential_target_meta(art, target, model_key_name=mkey)
-            if meta:
-                body.append(meta)
+        def _render_model_blocks(keys: list[str]) -> str:
+            blocks: list[str] = []
+            for mkey in keys:
+                _, model_id = parse_model_key(mkey)
+                title = art.inferential_model_titles.get(mkey, "")
+                link = art.inferential_model_links.get(mkey, "")
+                heading = _inferential_model_heading(title, link=link, model_id=model_id)
+                if heading:
+                    blocks.append(heading)
 
-            stem = artifact_base(target, model_id)
-            forest = [p for p in art.inferential_figures if p.stem == f"{stem}__forest"]
-            if forest:
-                body.append(svg_grid(forest))
+                meta = _inferential_target_meta(art, target, model_key_name=mkey)
+                if meta:
+                    blocks.append(meta)
 
-            if mkey in art.inferential_vif:
-                body.append(details_block(
-                    "🔢 VIF diagnostics",
-                    table_to_html(art.inferential_vif[mkey])))
+                stem = artifact_base(target, model_id)
+                forest = [p for p in art.inferential_figures if p.stem == f"{stem}__forest"]
+                if forest:
+                    blocks.append(svg_grid(forest))
 
-            tbl = art.inferential_multivariable[mkey].copy()
-            tbl = tbl.drop(columns=["model_title"], errors="ignore")
-            if "model_id" in tbl.columns:
-                tbl = tbl[["model_id"] + [c for c in tbl.columns if c != "model_id"]]
-            col_or  = _first_present(tbl, ["or", "OR", "odds_ratio"])
-            col_lo  = _first_present(tbl, ["or_ci_lo", "ci_lo", "lower"])
-            col_hi  = _first_present(tbl, ["or_ci_hi", "ci_hi", "upper"])
-            col_p   = _first_present(tbl, ["p", "pvalue", "p_value"])
-            col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
+                if mkey in art.inferential_vif:
+                    blocks.append(details_block(
+                        "🔢 VIF diagnostics",
+                        table_to_html(art.inferential_vif[mkey])))
 
-            def _row_cls(r, _or=col_or, _lo=col_lo, _hi=col_hi):
-                if _or and _lo and _hi:
-                    return classify_or_direction(r.get(_or), r.get(_lo), r.get(_hi))
-                return ""
+                tbl = art.inferential_multivariable[mkey].copy()
+                tbl = tbl.drop(columns=["model_title"], errors="ignore")
+                if "model_id" in tbl.columns:
+                    tbl = tbl[["model_id"] + [c for c in tbl.columns if c != "model_id"]]
+                col_or  = _first_present(tbl, ["or", "OR", "odds_ratio"])
+                col_lo  = _first_present(tbl, ["or_ci_lo", "ci_lo", "lower"])
+                col_hi  = _first_present(tbl, ["or_ci_hi", "ci_hi", "upper"])
+                col_p   = _first_present(tbl, ["p", "pvalue", "p_value"])
+                col_pred = _first_present(tbl, ["predictor_col", "predictor", "term"])
 
-            if col_p:
-                tbl["_p_num"] = tbl[col_p].apply(_coerce_p)
-            if col_or:
-                tbl["_eff_abs"] = tbl[col_or].apply(
-                    lambda v: abs(math.log(v)) if (o := _coerce_float(v)) and o > 0 else -1)
-            sort_cols = [c for c in ("_p_num", "_eff_abs", col_pred) if c and c in tbl.columns]
-            if sort_cols:
-                tbl = tbl.sort_values(
-                    sort_cols,
-                    ascending=[True, False, True][: len(sort_cols)],
-                    na_position="last",
-                )
-            tbl = tbl.drop(columns=[c for c in ("_p_num", "_eff_abs") if c in tbl.columns])
+                def _row_cls(r, _or=col_or, _lo=col_lo, _hi=col_hi):
+                    if _or and _lo and _hi:
+                        return classify_or_direction(r.get(_or), r.get(_lo), r.get(_hi))
+                    return ""
 
-            if col_p and col_p in tbl.columns:
-                tbl[col_p] = tbl[col_p].apply(human_p)
-            if "df" in tbl.columns:
-                tbl["df"] = tbl["df"].apply(human_pool_df)
+                if col_p:
+                    tbl["_p_num"] = tbl[col_p].apply(_coerce_p)
+                if col_or:
+                    tbl["_eff_abs"] = tbl[col_or].apply(
+                        lambda v: abs(math.log(v)) if (o := _coerce_float(v)) and o > 0 else -1)
+                sort_cols = [c for c in ("_p_num", "_eff_abs", col_pred) if c and c in tbl.columns]
+                if sort_cols:
+                    tbl = tbl.sort_values(
+                        sort_cols,
+                        ascending=[True, False, True][: len(sort_cols)],
+                        na_position="last",
+                    )
+                tbl = tbl.drop(columns=[c for c in ("_p_num", "_eff_abs") if c in tbl.columns])
 
-            nowrap = ("model_id",) if "model_id" in tbl.columns else ()
-            body.append(table_to_html(tbl, row_class_fn=_row_cls, nowrap_cols=nowrap))
-            body.append(_render_inferential_interpretation(
-                target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
+                if col_p and col_p in tbl.columns:
+                    tbl[col_p] = tbl[col_p].apply(human_p)
+                if "df" in tbl.columns:
+                    tbl["df"] = tbl["df"].apply(human_pool_df)
+
+                nowrap = ("model_id",) if "model_id" in tbl.columns else ()
+                blocks.append(table_to_html(tbl, row_class_fn=_row_cls, nowrap_cols=nowrap))
+                blocks.append(_render_inferential_interpretation(
+                    target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
+            return "".join(blocks)
+
+        if literature_keys:
+            body.append(details_block(
+                "📚 Literature-based models",
+                _render_model_blocks(literature_keys),
+            ))
+        if experimental_keys:
+            body.append(details_block(
+                "🧪 Experimental model",
+                _render_model_blocks(experimental_keys),
+            ))
 
     body.append(glossary_block(_inferential_glossary()))
 
@@ -2548,7 +2677,7 @@ def render_appendix(cfg: ReportConfig, art: Artifacts) -> str:
     if art.inferential_summary is not None and not art.inferential_summary.empty:
         body.append(details_block(
             "🧾 Full inferential summary",
-            table_to_html(art.inferential_summary)))
+            table_to_html(_sort_inferential_summary_df(art.inferential_summary))))
 
     # Full VIF tables collapsed
     if art.inferential_vif:

@@ -1,4 +1,4 @@
-"""pytest for inferential.py"""
+"""Tests for inferential.py — Rubin pooling, variants, artifact cleanup."""
 
 from __future__ import annotations
 
@@ -225,3 +225,41 @@ def test_run_inferential(tiny_df, tiny_schema, tmp_output):
     assert "epv" in cases.columns
     meta_path = tmp_output / "inferential" / "tables" / "event__calculator.json"
     assert meta_path.exists()
+
+
+def test_run_inferential_clears_stale_artifacts(tiny_df, tiny_schema, tmp_output):
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    tabs = tmp_output / "inferential" / "tables"
+    figs = tmp_output / "inferential" / "figures"
+    tabs.mkdir(parents=True, exist_ok=True)
+    figs.mkdir(parents=True, exist_ok=True)
+    stale_table = tabs / "event__old_model__multivariable.csv"
+    stale_table.write_text("stale")
+    stale_fig = figs / "event__old_model__forest.svg"
+    stale_fig.write_text("<svg></svg>")
+
+    run_inferential(
+        frames, schema,
+        targets=["event"],
+        variants=[("new_model", "New model", "", "event", ["age"])],
+        positive_class={"event": True},
+        output_root=tmp_output,
+    )
+
+    assert not stale_table.exists()
+    assert not stale_fig.exists()
+    assert (tabs / "event__new_model__multivariable.csv").exists()
+
+
+def test_run_inferential_loads_from_disk(tiny_df, tiny_schema, tmp_output):
+    import missingness_resolution as mr
+
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    mr.save_imputed_frames(frames, tmp_output, source_df=frames[0])
+    out = run_inferential(
+        None, schema,
+        targets=["event"], predictors=["age"],
+        positive_class={"event": True},
+        output_root=tmp_output,
+    )
+    assert "target" in out.columns

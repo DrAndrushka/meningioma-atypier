@@ -1,7 +1,7 @@
-"""Guess what each column is, print a dict you edit in the notebook.
+"""Infer column types from data; produce editable ``ColSpec`` schema for the notebook.
 
-infer_schema → print_schema_template → tweak → cleaning.apply_schema.
-ColSpec is the object everything downstream actually reads.
+Workflow: ``infer_schema`` → ``print_schema_template`` → notebook overrides →
+``cleaning.apply_schema``. Preserves categorical level order on parquet reload.
 """
 
 from __future__ import annotations
@@ -129,10 +129,14 @@ def infer_schema(
         kind = overrides.get(col) or _infer_one(df[col], n_rows, ordinal_max_levels)
         spec = ColSpec(name=col, kind=kind)
         if kind == "ordinal":
-            try:
-                spec.ordered_levels = sorted(df[col].dropna().unique().tolist())
-            except TypeError:
-                spec.ordered_levels = list(df[col].dropna().unique())
+            s = df[col]
+            if isinstance(s.dtype, pd.CategoricalDtype) and s.dtype.ordered:
+                spec.ordered_levels = list(s.cat.categories)
+            else:
+                try:
+                    spec.ordered_levels = sorted(s.dropna().unique().tolist())
+                except TypeError:
+                    spec.ordered_levels = list(s.dropna().unique())
         out[col] = spec
     return out
 

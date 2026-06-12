@@ -47,9 +47,11 @@ meningioma-atypier/
 │   ├── high_grade_model.json       # 📦 Primary deployed calculator artifact
 │   └── high_grade__*_model.json    # 📦 One JSON per inferential model variant
 ├── heavy_machinery/
-│   ├── meningioma.ipynb            # 📓 Main pipeline notebook (run top → bottom)
+│   ├── meningioma-cleaning.ipynb   # 🧹 Cohort cleaning → datasets (run first)
+│   ├── meningioma-modelling.ipynb  # 🧠 EDA + multivariable + report (run second)
 │   ├── cleaning.py                 # 🧹 Schema application, derivations, export
 │   ├── schema_infer.py             # 🔎 Auto-detect column types + overrides
+│   ├── dataset_handoff.py          # 🔗 Parquet handoff validation (cleaning → modelling)
 │   ├── dda.py                      # 📊 Data discovery & distribution plots
 │   ├── eda.py                      # 🔗 Univariate association screening (+ ROC-AUC column)
 │   ├── diagnostic_accuracy.py      # 🎯 Paper-style 2×2 metrics (sensitivity, PPV, Wilson CIs…)
@@ -60,7 +62,7 @@ meningioma-atypier/
 │   ├── report.py                   # 📄 Collapsible HTML report builder
 │   ├── config/                     # ⚙️ Cohort, rename map, missingness policy, analysis
 │   └── output/                     # 📁 Generated tables, figures, report
-└── pytests_atypier/                # 🧪 140+ automated tests
+└── pytests_atypier/                # 🧪 200+ automated tests
 ```
 
 ---
@@ -95,14 +97,28 @@ flowchart LR
 
 ### 📚 Multiple multivariable models
 
-In the notebook (§07), define `INFERENTIAL_MODEL_VARIANTS` — a list of `(id, title, link, target, [predictors])` tuples or dicts. Each variant gets its own:
+In `meningioma-modelling.ipynb` (§03), configure three separate lists:
+
+| Cell | Variable | Purpose |
+|------|----------|---------|
+| EDA | `EDA_TARGETS`, `EDA_PREDICTORS` | Wide univariate screening pool |
+| Literature | `LITERATURE_MODEL_VARIANTS` | Published predictor sets to replicate |
+| Experimental | `EXPERIMENTAL_MODEL_VARIANTS` | Your own models (any count; each with its own target + predictors) |
+
+Each variant is `(id, title, link, target, [predictors])` or an equivalent dict. Experimental ids must be `experimental` or start with `experimental_` so the report groups them under 🧪.
+
+A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("07_analysis").print_copy_pasteable_columns(df)` in §03 to copy column names into your lists.
+
+Each variant gets its own:
 
 - EPV stability gauge (threshold marker at **EPV = 10**)
 - Rubin-pooled coefficient table + forest plot
 - VIF diagnostics (collapsed by default)
 - Per-variant `*__calculator.json` → `model_artifacts/<target>_<id>_model.json`
 
-Built-in examples mirror published meningioma grading models (Yao et al. 2022, Amano et al. 2021, Radeesri & Lekhavat 2020, Azeemuddin et al. 2018, Peng et al. 2021) alongside an experimental predictor set.
+Re-running §06 **deletes stale per-variant inferential files** before writing new ones (renamed or removed models no longer appear in the report).
+
+Built-in literature examples mirror published meningioma grading models (Yao et al. 2022, Amano et al. 2021, Radeesri & Lekhavat 2020, Azeemuddin et al. 2018, Peng et al. 2021).
 
 ---
 
@@ -180,14 +196,15 @@ cd meningioma-atypier
 pip install -r requirements.txt
 ```
 
-### 2️⃣ Run the full pipeline (notebook)
+### 2️⃣ Run the pipeline (notebooks)
 
 ```bash
 cd heavy_machinery
-jupyter notebook meningioma.ipynb
+jupyter notebook meningioma-cleaning.ipynb   # 1. cleaning → output/datasets/
+jupyter notebook meningioma-modelling.ipynb  # 2. analysis → output/report/
 ```
 
-Run all cells top to bottom. Outputs land in `heavy_machinery/output/`. Edit `INFERENTIAL_MODEL_VARIANTS` in §07 before the inferential cells to add or remove literature-aligned models.
+Run each notebook top to bottom. Cleaning writes handoff parquets under `output/datasets/`; modelling loads them and must **not** wipe `output/`. Edit `LITERATURE_MODEL_VARIANTS` and `EXPERIMENTAL_MODEL_VARIANTS` in modelling §03 before §06 multivariable cells.
 
 ### 3️⃣ Launch the calculator
 
@@ -224,13 +241,14 @@ python -m pytest
 
 `report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
-- **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, inferential, appendix)
+- **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
+- **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target
+- **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
 - **Interpretation dropdowns** per EDA target and per inferential model variant
-- **Inline formula glossaries** (FDR, EPV gauge, Rubin pooling, diagnostic metrics)
 - **Schema table** fades `keep=False` columns; long level lists collapse behind expanders
 
-Removed in the current report flow: standalone "variable of interest" and "final conclusions" sections — interpretation now lives next to each table.
+Interpretation lives next to each table; there is no standalone "final conclusions" section.
 
 ---
 
@@ -259,9 +277,9 @@ Removed in the current report flow: standalone "variable of interest" and "final
 
 ## 🔮 Status
 
-🟢 **Active research pipeline** — cleaning through validation, multi-variant inferential modelling, report, and calculator are implemented and tested.
+🟢 **Active research pipeline** — two-notebook workflow (cleaning → modelling), multi-variant inferential modelling, handoff validation, report, and calculator are implemented and tested.
 
-Primary deployed calculator (`high_grade_model.json`): experimental high-grade model with sex, max diameter, tumor margin, perifocal edema, and cystic component — bootstrap-shrunken with internal validation metrics embedded in the JSON. Additional literature-aligned variants are exported alongside it under `model_artifacts/`.
+Streamlit artifacts are exported per model variant under `model_artifacts/` (e.g. `high_grade_experimental_model_1_model.json`). The default app entry point still resolves `high_grade_model.json` when present; otherwise use the newest artifact or pass an explicit path to `render_model_calculator()`.
 
 ---
 

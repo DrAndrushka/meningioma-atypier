@@ -1,4 +1,4 @@
-"""pytest for model_calculator.py"""
+"""Tests for model_calculator.py — JSON artifact and Streamlit schema."""
 
 from __future__ import annotations
 

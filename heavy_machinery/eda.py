@@ -1,7 +1,7 @@
-"""Univariate screen — every predictor vs every target.
+"""Univariate association screening — every predictor vs every target.
 
-Picks the test from column kinds, FDR within each target. Good for hunting
-signals; not the adjusted model. output/eda/.
+Test choice follows schema column kinds; Benjamini–Hochberg FDR within each target.
+Exploratory only (not adjusted models). Artifacts → ``output/eda/``.
 """
 
 from __future__ import annotations

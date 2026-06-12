@@ -1,10 +1,12 @@
-"""Notebook config — one py file per section (01–08).
+"""Notebook config modules — one Python file per pipeline section (01–08).
+
+Usage from notebooks in ``heavy_machinery/``::
 
     from config import load
-    load('01_cohort').load_raw(...)
+    load("07_analysis").resolve_eda(...)
 
-01 load + year filter · 02 renames · 03 schema overrides · 04 row filters
-05 missingness policy · 06 derivations · 07 targets/models · 08 report
+01 cohort load · 02 renames · 03 schema overrides · 04 row filters ·
+05 missingness policy · 06 derivations · 07 EDA / model variants · 08 report
 """
 import importlib.util
 import sys

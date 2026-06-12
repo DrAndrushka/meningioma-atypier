@@ -1,7 +1,18 @@
 # Python
 __pycache__/
+*.py[cod]
+*.egg-info/
 .venv/
 venv/
+dist/
+build/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Secrets
 .env
@@ -13,13 +24,16 @@ venv/
 *.csv
 data/
 
-# Generated (output/ anywhere, e.g. heavy_machinery/output/)
+# Generated pipeline outputs (anywhere under the repo)
 output/
 outputs/
 model_artifacts/
-.ipynb_checkpoints/
-dupes.csv
+*.parquet
 *.tmp
+dupes.csv
+
+# Notebooks
+.ipynb_checkpoints/
 
 # OS / editor
 .DS_Store

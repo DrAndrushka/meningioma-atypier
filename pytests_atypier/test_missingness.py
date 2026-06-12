@@ -1,4 +1,4 @@
-"""pytest for missingness_resolution.py"""
+"""Tests for missingness_resolution.py — MICE and dtype restore."""
 
 from __future__ import annotations
 
@@ -13,7 +13,12 @@ from missingness_resolution import (
     imputation_audit,
     mark_structural_missing,
     mice_impute,
+    prepare_datasets_dir,
     simple_impute,
+    simple_impute_stage,
+    stage_unimputed_dataset,
+    load_unimputed_dataset,
+    load_modeling_frames,
 )
 from schema_infer import ColSpec
 
@@ -81,6 +86,68 @@ def test_mice_impute(tiny_df, tiny_schema, tmp_output):
     frames = mice_impute(tiny_df, tiny_schema, m=2, max_iter=2, random_state=0, output_root=tmp_output)
     assert len(frames) == 2
     assert len(frames[0]) == len(tiny_df)
+    mice_dir = tmp_output / "missingness" / "mice"
+    assert (mice_dir / "manifest.json").exists()
+    assert (mice_dir / "imputed_001.parquet").exists()
+    assert (mice_dir / "imputed_002.parquet").exists()
+    datasets_dir = tmp_output / "datasets"
+    assert (datasets_dir / "unimputed_df.parquet").exists()
+    assert (datasets_dir / "mice_imputed_df.parquet").exists()
+    assert not (datasets_dir / "simple_imputed_df.parquet").exists()
+    assert mr.load_unimputed_dataset(tmp_output).shape == tiny_df.shape
+    assert len(mr.load_modeling_frames(tmp_output)) == 2
+
+
+def test_save_load_imputed_frames_roundtrip(tiny_df, tmp_output):
+    df = tiny_df.copy()
+    df["age"] = df["age"].astype("Float64")
+    df["sex"] = pd.Categorical(df["sex"], categories=["F", "M"], ordered=False)
+    df["grade"] = pd.Categorical(df["grade"], categories=[1, 2, 3], ordered=True)
+    df["event"] = df["event"].astype("boolean")
+    frames = [df.copy(), df.copy()]
+    mr.save_imputed_frames(frames, tmp_output, source_df=df)
+    loaded = mr.load_imputed_frames(tmp_output)
+    assert len(loaded) == 2
+    mr._assert_frame_dtypes_match(df, loaded[0], context="load roundtrip")
+    assert list(loaded[0].columns) == list(df.columns)
+    assert len(loaded[0]) == len(df)
+
+
+def test_imputed_parquet_preserves_pipeline_dtypes(tmp_output):
+    df = pd.DataFrame({
+        "age": pd.array([45.0, 55.0, np.nan], dtype="Float64"),
+        "sex": pd.Categorical(["M", "F", "M"], categories=["F", "M"], ordered=False),
+        "grade": pd.Categorical([1, 2, 1], categories=[1, 2, 3], ordered=True),
+        "event": pd.Series([True, False, True], dtype="boolean"),
+        "entry_year": pd.to_datetime(["2018-01-01", "2019-06-01", "2020-03-01"]),
+        "note": pd.array(["x", "y", "z"], dtype="string"),
+    })
+    mr.save_imputed_frames([df], tmp_output, source_df=df)
+    loaded = mr.load_imputed_frames(tmp_output)[0]
+    mr._assert_frame_dtypes_match(df, loaded, context="pipeline dtypes")
+
+
+def test_prepare_datasets_dir_overwrites(tmp_output):
+    datasets_dir = tmp_output / "datasets"
+    datasets_dir.mkdir(parents=True)
+    stale = datasets_dir / "stale.txt"
+    stale.write_text("old", encoding="utf-8")
+    mr.prepare_datasets_dir(tmp_output)
+    assert datasets_dir.is_dir()
+    assert not stale.exists()
+
+
+def test_simple_impute_stage(tiny_df, tiny_schema, tmp_output):
+    out = simple_impute_stage(
+        tiny_df, tiny_schema, tmp_output, impute_binary=False,
+    )
+    assert out["age"].isna().sum() == 0
+    datasets_dir = tmp_output / "datasets"
+    assert (datasets_dir / "unimputed_df.parquet").exists()
+    assert (datasets_dir / "simple_imputed_df.parquet").exists()
+    assert not (datasets_dir / "mice_imputed_df.parquet").exists()
+    assert not (tmp_output / "missingness" / "mice").exists()
+    assert len(mr.load_modeling_frames(tmp_output)) == 1
 
 
 def test_simple_impute(tiny_df, tiny_schema):

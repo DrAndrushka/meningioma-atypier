@@ -1,7 +1,7 @@
-"""Step 01 — load the spreadsheet, optionally cut to ANALYSIS_YEARS.
+"""Step 01 — load raw cohort export and optional year filter.
 
-load_raw handles csv or xlsx. filter_cohort: None = all years, [2024, 2025] = subset.
-Empty list is an error — use None instead.
+``load_raw`` supports CSV or Excel. ``filter_cohort``: ``None`` = all years;
+``[2024, 2025]`` = subset. Empty list raises — use ``None`` instead.
 """
 from __future__ import annotations
 

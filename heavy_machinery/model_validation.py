@@ -1,4 +1,8 @@
-"""Bootstrap internal validation + shrink coefficients before they go in the json artifact."""
+"""Bootstrap internal validation and coefficient shrinkage for calculator export.
+
+Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients
+embedded in Streamlit-ready JSON artifacts.
+"""
 
 from __future__ import annotations
 

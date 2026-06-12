@@ -1,7 +1,7 @@
-"""Make a raw dataframe match the ColSpec schema — dtypes, null markers, replacements, dupes.
+"""Apply ``ColSpec`` schema to raw cohort data.
 
-The notebook also pulls binning / missing-flag / category helpers from here.
-No hardcoded column names. Artifacts go to output/cleaning/.
+Handles dtypes, null markers, replacements, duplicate audit, and derived-column
+helpers used from the cleaning notebook. Artifacts → ``output/cleaning/``.
 """
 
 from __future__ import annotations
