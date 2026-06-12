@@ -294,6 +294,19 @@ def _apply_mice_slot_guardrail(
     return n_jobs_imputations, n_jobs_rf
 
 
+def _print_macos_battery_safety_warning(max_iter: int, n_estimators: int) -> None:
+    """Warn when a heavy MICE config runs on macOS battery."""
+    if max_iter <= 25 and n_estimators <= 50:
+        return
+    print(
+        "⚠️  macOS battery safety warning:\n"
+        "You are running a heavy MICE configuration on battery.\n"
+        "Recommended maximum on battery: max_iter <= 25 and n_estimators <= 50.\n"
+        "Consider plugging in or using emergency_safe_mode=True.",
+        flush=True,
+    )
+
+
 def choose_mice_parallel_settings(
     m: int,
     os_profile: str = "auto",
@@ -332,8 +345,13 @@ def choose_mice_parallel_settings(
     available_cores = max(1, cpu_count - safety_margin_cores)
 
     effective_max_worker_slots = max_worker_slots
-    if effective_max_worker_slots is None and system == "Windows":
-        effective_max_worker_slots = 12
+    if effective_max_worker_slots is None:
+        if system == "Windows":
+            effective_max_worker_slots = 12
+        elif system == "Darwin":
+            effective_max_worker_slots = 2 if on_battery else 6
+        else:
+            effective_max_worker_slots = 2
 
     if not emergency_safe_mode:
         n_jobs_imputations, n_jobs_rf = _apply_mice_slot_guardrail(
@@ -467,8 +485,9 @@ def _run_single_mice_imputation(
     n_estimators: int,
     n_jobs_rf: int,
     m_total: int,
-) -> pd.DataFrame:
-    """Run one MICE imputation draw; mirrors the original per-iteration logic."""
+    suppress_convergence_warnings: bool = False,
+) -> tuple[pd.DataFrame, bool]:
+    """Run one MICE imputation draw; returns (decoded frame, convergence_warned)."""
     draw = i + 1
     t0 = time.perf_counter()
     print(
@@ -487,7 +506,13 @@ def _run_single_mice_imputation(
         sample_posterior=False,  # RF estimator doesn't support posterior
         random_state=random_state + i,
     )
-    arr = imputer.fit_transform(work)
+    with warnings.catch_warnings(record=True) as caught:
+        if suppress_convergence_warnings:
+            warnings.simplefilter("ignore", category=ConvergenceWarning)
+        arr = imputer.fit_transform(work)
+    convergence_warned = any(
+        issubclass(w.category, ConvergenceWarning) for w in caught
+    )
     imp = pd.DataFrame(arr, columns=work.columns, index=work.index)
     decoded = _decode_after_impute(imp, decoders, cat_cols, schema)
     for c in dropped:
@@ -496,7 +521,7 @@ def _run_single_mice_imputation(
     decoded = decoded.reindex(columns=df.columns)
     elapsed = time.perf_counter() - t0
     print(f"✅ Imputation {draw}/{m_total} done ({_format_elapsed(elapsed)})", flush=True)
-    return decoded
+    return decoded, convergence_warned
 
 
 def mice_impute(
@@ -514,6 +539,8 @@ def mice_impute(
     safety_margin_cores: int = 2,
     max_worker_slots: int | None = None,
     emergency_safe_mode: bool = False,
+    enforce_macos_battery_safety: bool = True,
+    suppress_convergence_warnings: bool = True,
 ) -> list[pd.DataFrame]:
     """
     Generate `m` imputed datasets via sklearn IterativeImputer with different
@@ -528,6 +555,11 @@ def mice_impute(
     - If macOS is detected on battery power, a much safer low-power profile is used.
     - Imputations run in parallel; random forest parallelism is capped to avoid
       CPU oversubscription.
+    - ``enforce_macos_battery_safety`` (default True) caps worker slots to 2 on
+      macOS battery and warns on heavy ``max_iter`` / ``n_estimators``.
+    - ``suppress_convergence_warnings`` (default True) hides only
+      ``ConvergenceWarning`` per draw; a post-run summary still reports counts.
+      Pass ``False`` to surface raw sklearn convergence warnings.
     """
     figs, tabs = _ensure_dirs(Path(output_root))
 
@@ -554,6 +586,12 @@ def mice_impute(
         emergency_safe_mode=emergency_safe_mode,
     )
 
+    if (
+        settings["os_detected"] == "Darwin"
+        and settings["macos_on_battery"]
+    ):
+        _print_macos_battery_safety_warning(max_iter, n_estimators)
+
     if emergency_safe_mode:
         settings["n_jobs_imputations"] = 1
         settings["n_jobs_rf"] = 1
@@ -562,6 +600,26 @@ def mice_impute(
             settings["n_jobs_imputations"] = n_jobs_imputations
         if n_jobs_rf is not None:
             settings["n_jobs_rf"] = n_jobs_rf
+
+    if (
+        enforce_macos_battery_safety
+        and settings["os_detected"] == "Darwin"
+        and settings["macos_on_battery"]
+        and not emergency_safe_mode
+    ):
+        settings["max_worker_slots"] = 2
+        if max_iter > 25:
+            print(
+                "⚠️  macOS battery safety (enforce_macos_battery_safety=True): "
+                f"max_iter={max_iter} exceeds recommended 25 on battery.",
+                flush=True,
+            )
+        if n_estimators > 50:
+            print(
+                "⚠️  macOS battery safety (enforce_macos_battery_safety=True): "
+                f"n_estimators={n_estimators} exceeds recommended 50 on battery.",
+                flush=True,
+            )
 
     if not emergency_safe_mode:
         settings["n_jobs_imputations"], settings["n_jobs_rf"] = _apply_mice_slot_guardrail(
@@ -607,6 +665,7 @@ def mice_impute(
         n_estimators=n_estimators,
         n_jobs_rf=settings["n_jobs_rf"],
         m_total=m,
+        suppress_convergence_warnings=suppress_convergence_warnings,
     )
 
     if settings["n_jobs_imputations"] == 1:
@@ -617,23 +676,32 @@ def mice_impute(
             f"{settings['n_jobs_imputations']} parallel workers…"
         )
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", category=ConvergenceWarning)
-        warnings.filterwarnings("ignore", module=r"sklearn\.utils\.parallel")
+    if settings["n_jobs_imputations"] == 1:
+        run_results = [
+            _run_single_mice_imputation(i=i, **impute_kwargs)
+            for i in range(m)
+        ]
+    else:
+        run_results = Parallel(
+            n_jobs=settings["n_jobs_imputations"],
+            backend=settings["backend"],
+        )(
+            delayed(_run_single_mice_imputation)(i=i, **impute_kwargs)
+            for i in range(m)
+        )
 
-        if settings["n_jobs_imputations"] == 1:
-            imputed_frames = [
-                _run_single_mice_imputation(i=i, **impute_kwargs)
-                for i in range(m)
-            ]
-        else:
-            imputed_frames = Parallel(
-                n_jobs=settings["n_jobs_imputations"],
-                backend=settings["backend"],
-            )(
-                delayed(_run_single_mice_imputation)(i=i, **impute_kwargs)
-                for i in range(m)
-            )
+    imputed_frames = [frame for frame, _ in run_results]
+    n_convergence_warnings = sum(1 for _, warned in run_results if warned)
+    if n_convergence_warnings > 0:
+        print(
+            f"⚠️  ConvergenceWarning occurred in "
+            f"{n_convergence_warnings}/{m} imputations.\n"
+            "Meaning: IterativeImputer reached max_iter before early-stopping "
+            "criterion was satisfied.\n"
+            "This is common with RandomForestRegressor-based MICE.\n"
+            "Check downstream stability rather than chasing max_iter blindly.",
+            flush=True,
+        )
 
     elapsed = time.perf_counter() - t_start
     nan_first = int(imputed_frames[0].isna().sum().sum())
