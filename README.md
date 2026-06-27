@@ -209,10 +209,20 @@ pip install -r requirements.txt
 Rscript -e 'install.packages(c("mice","jsonlite"), repos="https://cloud.r-project.org")'
 ```
 
+**Versions (developed & tested with):**
+
+| Component | Tested | Minimum |
+|-----------|--------|---------|
+| R         | 4.6.1  | ≥ 4.1   |
+| `mice`    | 3.19.0 | ≥ 3.16  |
+| `jsonlite`| 2.0.0  | ≥ 1.8   |
+
+The exact R/package versions used for a run are recorded automatically in `output/missingness/mice/r_session.json` and in the MICE manifest (`r_version`, `mice_version`).
+
 Verify both are available (Python runs this check automatically before imputing):
 
 ```bash
-Rscript -e 'cat("mice:", requireNamespace("mice", quietly=TRUE), "jsonlite:", requireNamespace("jsonlite", quietly=TRUE), "\n")'
+Rscript -e 'cat("R:", as.character(getRversion()), "| mice:", as.character(packageVersion("mice")), "| jsonlite:", as.character(packageVersion("jsonlite")), "\n")'
 ```
 
 > The RF sensitivity method (`rf_chained_impute`) is pure Python and needs no R.
@@ -277,9 +287,11 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 | Layer | Tools |
 |-------|-------|
-| Data | pandas, numpy, openpyxl |
+| Data | pandas, numpy, openpyxl, pyarrow |
 | Statistics | scipy, statsmodels |
-| Imputation & metrics | scikit-learn, joblib |
+| Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
+| Imputation (sensitivity) & metrics | scikit-learn, joblib |
+| Validation | pandera (schema checks) |
 | Visualization | matplotlib, seaborn |
 | Deployment | Streamlit |
 | Quality | pytest |

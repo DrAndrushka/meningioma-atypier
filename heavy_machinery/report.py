@@ -36,6 +36,7 @@ from inferential import (
 )
 
 from cleaning import format_number, format_table_for_display
+from plot_style import prettify_caption
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +366,7 @@ def _figure_img_html(path: Path) -> str:
     src = _embed_svg_src(path)
     if src is None:
         return ""
-    return f'<img src="{src}" alt="{_esc(path.stem)}" loading="lazy"/>'
+    return f'<img src="{src}" alt="{_esc(prettify_caption(path.stem))}" loading="lazy"/>'
 
 
 def _esc(x: Any) -> str:
@@ -639,7 +640,7 @@ def svg_grid(svg_paths: Iterable[Path], max_n: int | None = None) -> str:
         cards.append(
             f'<div class="figure-card">'
             f'{img}'
-            f'<div class="caption">{_esc(p.stem)}</div>'
+            f'<div class="caption">{_esc(prettify_caption(p.stem))}</div>'
             f'</div>'
         )
     if not cards:
@@ -709,6 +710,7 @@ class Artifacts:
     missingness_summary: pd.DataFrame | None = None
     top_missing: pd.DataFrame | None = None
     missingness_figures: list[Path] = field(default_factory=list)
+    mice_manifest: dict[str, Any] | None = None
 
     # EDA
     associations: pd.DataFrame | None = None
@@ -791,6 +793,13 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
         flat = root / "missingness"
         if flat.exists():
             art.missingness_figures = sorted(flat.glob("*.svg"))
+    # Formal-MICE manifest (engine + R/package versions, m, max_iter, seed).
+    mice_manifest_path = root / "missingness" / "mice" / "manifest.json"
+    if mice_manifest_path.exists():
+        try:
+            art.mice_manifest = json.loads(mice_manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:  # pragma: no cover - defensive
+            art.warnings.append(f"Failed to read MICE manifest: {e}")
 
     # EDA
     art.associations = _maybe_read_csv(root / "eda" / "tables" / "associations.csv", art.warnings)
@@ -1634,6 +1643,47 @@ def _missingness_glossary() -> str:
     return "".join(parts)
 
 
+def _mice_engine_block(art: Artifacts) -> str:
+    """Compact table of the imputation engine + R / package versions.
+
+    Reads ``output/missingness/mice/manifest.json`` so the report records the
+    exact R, mice, and jsonlite versions used for the run (reproducibility).
+    """
+    m = art.mice_manifest
+    if not m:
+        return ""
+
+    def _val(key: str, default: str = "—") -> str:
+        v = m.get(key)
+        return _esc(str(v)) if v not in (None, "") else default
+
+    sha = m.get("input_sha256")
+    sha_short = f"{str(sha)[:12]}…" if sha else "—"
+    rows = [
+        ("Engine", f"{_val('engine', 'R mice')} — {_val('method')}"),
+        ("R version", _val("r_version")),
+        ("mice version", _val("mice_version")),
+        ("jsonlite version", _val("jsonlite_version")),
+        ("Completed datasets (m)", _val("m")),
+        ("Iterations (max_iter)", _val("max_iter")),
+        ("Seed", _val("seed")),
+        ("Rubin pooling supported", _val("rubin_pooling_supported")),
+        ("Logged events", _val("logged_events_count")),
+        ("Input SHA-256", sha_short),
+    ]
+    cells = "".join(
+        f"<tr><th style='text-align:left;white-space:nowrap'>{label}</th>"
+        f"<td>{value}</td></tr>"
+        for label, value in rows
+    )
+    return (
+        '<h3>Imputation engine &amp; versions</h3>'
+        '<div class="info-box">ℹ️ Recorded automatically from the MICE run '
+        '(<code>r_session.json</code> → manifest) for reproducibility.</div>'
+        f'<div class="table-wrap"><table class="report">{cells}</table></div>'
+    )
+
+
 def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     """🕳️ Missingness story."""
     body = [
@@ -1651,6 +1701,7 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
         '(<code>rf_chained_impute()</code>) is retained only as a labelled '
         'sensitivity analysis and does not support Rubin pooling.</p>',
     ]
+    body.append(_mice_engine_block(art))
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
         body.append(glossary_block(_missingness_glossary()))
@@ -2678,18 +2729,59 @@ def _package_version_rows() -> list[dict[str, str]]:
     ]
 
 
-def _render_environment_appendix() -> str:
-    """Computer specs and Python package versions for reproducibility."""
+def _r_module_rows(art: Artifacts) -> list[tuple[str, str]]:
+    """R interpreter + package versions, taken from the formal-MICE manifest.
+
+    R packages are not pip-discoverable, so their versions are recorded by
+    ``scripts/run_mice.R`` into the manifest at imputation time.
+    """
+    m = art.mice_manifest or {}
+    r_ver = m.get("r_version")
+    if r_ver:
+        # "R version 4.6.1 (2026-06-24)" -> "4.6.1 (2026-06-24)"
+        r_ver = str(r_ver).replace("R version ", "")
+    return [
+        ("R", r_ver or "not recorded (run formal MICE)"),
+        ("mice", str(m.get("mice_version") or "not recorded")),
+        ("jsonlite", str(m.get("jsonlite_version") or "not recorded")),
+    ]
+
+
+def _grouped_versions_table(groups: list[tuple[str, list[tuple[str, str]]]]) -> str:
+    """Render package versions grouped by language, child rows indented."""
+    parts = ['<div class="table-wrap"><table class="report">',
+             "<tr><th>Module</th><th>Version</th></tr>"]
+    for header, rows in groups:
+        parts.append(
+            f'<tr><th colspan="2" style="text-align:left">{_esc(header)}</th></tr>'
+        )
+        for name, ver in rows:
+            parts.append(
+                f'<tr><td style="padding-left:1.8em">{_esc(name)}</td>'
+                f"<td>{_esc(ver)}</td></tr>"
+            )
+    parts.append("</table></div>")
+    return "".join(parts)
+
+
+def _render_environment_appendix(art: Artifacts) -> str:
+    """Computer specs + Python and R module versions for reproducibility."""
+    py_rows = [(r["package"], r["version"]) for r in _package_version_rows()]
+    versions = _grouped_versions_table([
+        ("🐍 Python modules", py_rows),
+        ("📊 R modules (formal MICE engine)", _r_module_rows(art)),
+    ])
     return (
         "<p>Environment at the time this report was built (not read from "
         "saved artifacts).</p>"
         "<h4>Computer / runtime</h4>"
         f"{table_to_html(pd.DataFrame(_system_specs_rows()))}"
         "<h4>Package versions</h4>"
-        "<p>Third-party libraries declared in "
-        "<code>requirements.txt</code> or imported anywhere under the "
-        "project repository (analysis pipeline, Streamlit app, tests, config).</p>"
-        f"{table_to_html(pd.DataFrame(_package_version_rows()))}"
+        "<p>Python libraries are declared in <code>requirements.txt</code> or "
+        "imported anywhere in the repo. R modules run the formal MICE engine "
+        "(<code>scripts/run_mice.R</code>) and their versions are recorded in "
+        "the MICE manifest at imputation time.</p>"
+        f"{versions}"
     )
 
 
@@ -2725,7 +2817,7 @@ def render_appendix(cfg: ReportConfig, art: Artifacts) -> str:
 
     body.append(details_block(
         "🖥️ Environment & package versions",
-        _render_environment_appendix(),
+        _render_environment_appendix(art),
     ))
 
     return f'<section class="report-section">{"".join(body)}</section>'

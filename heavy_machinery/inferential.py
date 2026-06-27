@@ -26,6 +26,9 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
+from plot_style import apply_plot_style, prettify_label
+
+apply_plot_style()
 
 
 @dataclass(frozen=True)
@@ -533,17 +536,30 @@ def _forest_plot(
     if plot_df.empty:
         return
     plot_df = plot_df.sort_values("or")
-    fig, ax = plt.subplots(figsize=(7, max(3, 0.35 * len(plot_df))))
-    y = np.arange(len(plot_df))
+    n = len(plot_df)
+    fig, ax = plt.subplots(figsize=(8.5, max(3.2, 0.55 * n + 1.2)))
+    y = np.arange(n)
     ax.errorbar(plot_df["or"], y,
                 xerr=[plot_df["or"] - plot_df["or_ci_lo"],
                       plot_df["or_ci_hi"] - plot_df["or"]],
-                fmt="o", color="#264653", ecolor="#2a9d8f", capsize=3)
-    ax.axvline(1.0, color="grey", linestyle="--", linewidth=1)
-    ax.set_yticks(y); ax.set_yticklabels(plot_df["predictor_col"])
+                fmt="o", color="#264653", ecolor="#2a9d8f", capsize=3,
+                markersize=6, linewidth=0, elinewidth=1.4, zorder=3)
+    ax.axvline(1.0, color="grey", linestyle="--", linewidth=1, zorder=1)
+    ax.set_yticks(y)
+    ax.set_yticklabels([prettify_label(c) for c in plot_df["predictor_col"]])
+    ax.set_ylim(-0.6, n - 0.4)
     ax.set_xscale("log")
-    ax.set_xlabel("Adjusted Odds Ratio (95% CI, log scale)")
-    title = f"Multivariable logistic — {target}"
+    ax.grid(axis="x", alpha=0.25)
+    ax.grid(axis="y", visible=False)
+    ax.set_xlabel("Adjusted odds ratio (95% CI, log scale)")
+    # OR (95% CI) annotation at the right margin — no overlap with points.
+    x_text = plot_df["or_ci_hi"].max() * 1.25
+    for yi, (_, r) in zip(y, plot_df.iterrows()):
+        ax.annotate(f"{r['or']:.2f} ({r['or_ci_lo']:.2f}–{r['or_ci_hi']:.2f})",
+                    xy=(x_text, yi), va="center", ha="left", fontsize=8.5,
+                    color="#444444", annotation_clip=False)
+    ax.set_xlim(right=x_text)
+    title = f"Multivariable logistic regression — {prettify_label(target)}"
     if model_title:
         title += f"\n{model_title}"
     ax.set_title(title)

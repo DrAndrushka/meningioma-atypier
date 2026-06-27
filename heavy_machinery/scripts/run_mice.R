@@ -198,6 +198,7 @@ dev.off()
 session <- list(
   r_version = R.version.string,
   mice_version = as.character(utils::packageVersion("mice")),
+  jsonlite_version = as.character(utils::packageVersion("jsonlite")),
   methods = as.list(methods),
   m = m,
   maxit = as.integer(spec$max_iter),

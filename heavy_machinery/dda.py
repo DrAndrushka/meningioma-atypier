@@ -15,6 +15,9 @@ import seaborn as sns
 from scipy.stats import skew, kurtosis, trim_mean
 
 from schema_infer import ColSpec
+from plot_style import PALETTE, apply_plot_style, prettify_label
+
+apply_plot_style()
 
 
 # ---------------------------------------------------------------------------
@@ -205,17 +208,18 @@ def _plot_continuous(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     if nn.empty:
         return paths
 
-    fig, ax = plt.subplots(figsize=(7, 4))
-    sns.histplot(nn, kde=True, ax=ax, color="#3b7ddd")
-    ax.set_title(f"Distribution — {name}")
-    ax.set_xlabel(name)
+    label = prettify_label(name)
+    fig, ax = plt.subplots(figsize=(7, 4.2))
+    sns.histplot(nn, kde=True, ax=ax, color=PALETTE["primary"])
+    ax.set_title(f"{label} — distribution")
+    ax.set_xlabel(label); ax.set_ylabel("Count")
     p = out_dir / f"{name}__hist.svg"
     _save_fig(fig, p); paths.append(p)
 
-    fig, ax = plt.subplots(figsize=(6, 3))
-    sns.boxplot(x=nn, ax=ax, color="#3b7ddd")
-    ax.set_title(f"Boxplot — {name}")
-    ax.set_xlabel(name)
+    fig, ax = plt.subplots(figsize=(6.5, 3.2))
+    sns.boxplot(x=nn, ax=ax, color=PALETTE["primary"])
+    ax.set_title(f"{label} — box plot")
+    ax.set_xlabel(label)
     p = out_dir / f"{name}__box.svg"
     _save_fig(fig, p); paths.append(p)
     return paths
@@ -241,11 +245,16 @@ def _plot_ordinal(
     if nn.empty:
         return []
     order = _ordinal_bar_order(nn, ordered_levels)
-    fig, ax = plt.subplots(figsize=(7, 4))
-    sns.countplot(x=nn.astype(str), order=[str(o) for o in order], ax=ax, color="#3b7ddd")
-    ax.set_title(f"Ordinal distribution — {name}")
-    ax.set_xlabel(name); ax.set_ylabel("count")
-    plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
+    label = prettify_label(name)
+    fig, ax = plt.subplots(figsize=(max(7, 0.9 * len(order) + 2), 4.2))
+    sns.countplot(x=nn.astype(str), order=[str(o) for o in order], ax=ax,
+                  color=PALETTE["primary"])
+    ax.set_title(f"{label} — distribution")
+    ax.set_xlabel(label); ax.set_ylabel("Count")
+    ax.bar_label(ax.containers[0], fontsize=9, padding=2)
+    long_labels = any(len(str(o)) > 6 for o in order)
+    plt.setp(ax.get_xticklabels(), rotation=35 if long_labels else 0,
+             ha="right" if long_labels else "center")
     p = out_dir / f"{name}__bar.svg"
     _save_fig(fig, p)
     return [p]
@@ -260,9 +269,12 @@ def _plot_nominal(s: pd.Series, name: str, out_dir: Path, top_n: int = 15) -> li
         top = vc.head(top_n)
         top["(other)"] = vc.iloc[top_n:].sum()
         vc = top
-    fig, ax = plt.subplots(figsize=(7, max(3, 0.35 * len(vc))))
-    sns.barplot(x=vc.values, y=vc.index.astype(str), ax=ax, color="#3b7ddd")
-    ax.set_title(f"Nominal counts — {name}"); ax.set_xlabel("count")
+    label = prettify_label(name)
+    fig, ax = plt.subplots(figsize=(7.5, max(3, 0.45 * len(vc) + 0.8)))
+    sns.barplot(x=vc.values, y=vc.index.astype(str), ax=ax, color=PALETTE["primary"])
+    ax.set_title(f"{label} — counts"); ax.set_xlabel("Count"); ax.set_ylabel("")
+    ax.bar_label(ax.containers[0], fontsize=9, padding=3)
+    ax.margins(x=0.12)  # headroom so value labels don't clip the right edge
     p = out_dir / f"{name}__bar.svg"
     _save_fig(fig, p)
     return [p]
@@ -273,11 +285,15 @@ def _plot_binary(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     if nn.empty:
         return []
     counts = nn.value_counts().reindex([True, False]).fillna(0).astype(int)
-    fig, ax = plt.subplots(figsize=(5, 3.5))
+    label = prettify_label(name)
+    fig, ax = plt.subplots(figsize=(5, 3.8))
     bar_df = pd.DataFrame({"value": ["True", "False"], "count": counts.values})
     sns.barplot(data=bar_df, x="value", y="count", hue="value",
-                palette=["#2a9d8f", "#e76f51"], legend=False, ax=ax)
-    ax.set_title(f"Binary — {name}"); ax.set_ylabel("count")
+                palette=[PALETTE["good"], PALETTE["bad"]], legend=False, ax=ax)
+    ax.set_title(f"{label} — present vs absent")
+    ax.set_xlabel(""); ax.set_ylabel("Count")
+    ax.bar_label(ax.containers[0], fontsize=10, padding=3)
+    ax.margins(y=0.12)
     p = out_dir / f"{name}__bar.svg"
     _save_fig(fig, p)
     return [p]
@@ -288,10 +304,17 @@ def _plot_datetime(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     if nn.empty:
         return []
     monthly = nn.dt.to_period("M").value_counts().sort_index()
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    ax.plot(monthly.index.astype(str), monthly.values, marker="o", color="#3b7ddd")
-    ax.set_title(f"Records per month — {name}")
-    ax.set_xlabel("month"); ax.set_ylabel("count")
+    label = prettify_label(name)
+    fig, ax = plt.subplots(figsize=(max(8, 0.28 * len(monthly) + 2), 3.8))
+    ax.plot(monthly.index.astype(str), monthly.values, marker="o",
+            color=PALETTE["primary"])
+    ax.set_title(f"{label} — records over time")
+    ax.set_xlabel("Month"); ax.set_ylabel("Count")
+    # Thin x ticks so dense monthly axes don't overlap.
+    step = max(1, len(monthly) // 18)
+    ticks = list(range(0, len(monthly), step))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([str(monthly.index[i]) for i in ticks])
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
     p = out_dir / f"{name}__timeline.svg"
     _save_fig(fig, p)

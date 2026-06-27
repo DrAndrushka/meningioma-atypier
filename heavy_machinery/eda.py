@@ -22,6 +22,9 @@ from statsmodels.stats.proportion import proportion_confint
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
+from plot_style import apply_plot_style, prettify_label
+
+apply_plot_style()
 
 
 # ---------------------------------------------------------------------------
@@ -421,9 +424,9 @@ def _plot_binary_target_rates(
         rotation=30 if n_lv > 4 else 0,
         ha="center" if n_lv <= 4 else "right",
     )
-    ax.set_xlabel(predictor)
-    ax.set_ylabel(f"P({target}={pos_label})")
-    ax.set_title(f"{predictor} → P({target})", pad=14)
+    ax.set_xlabel(prettify_label(predictor))
+    ax.set_ylabel(f"P({prettify_label(target)} = {pos_label})")
+    ax.set_title(f"{prettify_label(target)} rate by {prettify_label(predictor)}", pad=14)
 
 
 def _plot_pair(
@@ -439,6 +442,8 @@ def _plot_pair(
     figs_dir: Path,
 ) -> None:
     safe = f"{target}__{predictor}"
+    tlabel = prettify_label(target)
+    plabel = prettify_label(predictor)
     sub = df[[target, predictor]].dropna()
     if sub.empty:
         return
@@ -451,11 +456,11 @@ def _plot_pair(
             t = pd.to_datetime(sub[predictor], errors="coerce")
             sub = sub.assign(_x=(t - t.min()).dt.days.astype(float))
             xcol = "_x"
-            xlabel = f"{predictor} (days since min)"
+            xlabel = f"{plabel} (days since first)"
         else:
             sub = sub.assign(_x=sub[predictor].astype(float))
             xcol = "_x"
-            xlabel = predictor
+            xlabel = plabel
         groups = _level_order(sub[target], target_spec)
         n_g = len(groups)
         fig.set_size_inches(_categorical_fig_width(n_g), 4)
@@ -469,9 +474,9 @@ def _plot_pair(
             color="#333333", size=2.5, alpha=0.35, jitter=0.22,
         )
         _polish_ax(ax)
-        ax.set_xlabel(target)
+        ax.set_xlabel(tlabel)
         ax.set_ylabel(xlabel)
-        ax.set_title(f"{xlabel} by {target}")
+        ax.set_title(f"{xlabel} by {tlabel}")
 
     elif target_mode == "binary" and pred_kind in ("ordinal", "nominal", "binary"):
         fig.set_size_inches(_categorical_fig_width(
@@ -490,9 +495,9 @@ def _plot_pair(
             width=0.55, linewidth=1.2, fliersize=3,
         )
         _polish_ax(ax)
-        ax.set_xlabel(predictor)
-        ax.set_ylabel(target)
-        ax.set_title(f"{target} by {predictor}")
+        ax.set_xlabel(plabel)
+        ax.set_ylabel(tlabel)
+        ax.set_title(f"{tlabel} by {plabel}")
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in (
         "ordinal", "nominal", "binary",
@@ -502,19 +507,22 @@ def _plot_pair(
         ct = pd.crosstab(sub[predictor], sub[target], normalize="index")
         ct = ct.reindex(index=pred_order, columns=target_order, fill_value=0.0)
         fig.set_size_inches(max(5, 0.9 * ct.shape[1] + 2), max(3.5, 0.5 * ct.shape[0] + 2))
-        sns.heatmap(ct, annot=True, fmt=".0%", cmap="Blues", ax=ax, vmin=0, vmax=1)
-        ax.set_xlabel(target)
-        ax.set_ylabel(predictor)
-        ax.set_title(f"{target} share within {predictor}")
+        annot_fs = 9 if max(ct.shape) <= 8 else 7
+        sns.heatmap(ct, annot=True, fmt=".0%", cmap="Blues", ax=ax, vmin=0, vmax=1,
+                    annot_kws={"fontsize": annot_fs}, linewidths=0.5,
+                    linecolor="white", cbar_kws={"label": "row share"})
+        ax.set_xlabel(tlabel)
+        ax.set_ylabel(plabel)
+        ax.set_title(f"{tlabel} share within {plabel}")
 
     elif target_mode == "continuous" and pred_kind in ("continuous", "count"):
         sub = sub.assign(_x=sub[predictor].astype(float), _y=sub[target].astype(float))
         sns.regplot(data=sub, x="_x", y="_y", ax=ax,
                     scatter_kws={"alpha": 0.25, "s": 12}, line_kws={"color": "#e76f51"})
         _polish_ax(ax)
-        ax.set_xlabel(predictor)
-        ax.set_ylabel(target)
-        ax.set_title(f"{target} vs {predictor}")
+        ax.set_xlabel(plabel)
+        ax.set_ylabel(tlabel)
+        ax.set_title(f"{tlabel} vs {plabel}")
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in ("continuous", "count"):
         groups = _level_order(sub[target], target_spec)
@@ -524,9 +532,9 @@ def _plot_pair(
             ax=ax, palette="Set2", legend=False,
         )
         _polish_ax(ax)
-        ax.set_xlabel(target)
-        ax.set_ylabel(predictor)
-        ax.set_title(f"{predictor} by {target}")
+        ax.set_xlabel(tlabel)
+        ax.set_ylabel(plabel)
+        ax.set_title(f"{plabel} by {tlabel}")
 
     else:
         plt.close(fig)

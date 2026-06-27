@@ -46,6 +46,9 @@ from sklearn.impute import IterativeImputer
 from sklearn.ensemble import RandomForestRegressor
 
 from schema_infer import ColSpec
+from plot_style import PALETTE, apply_plot_style, prettify_label
+
+apply_plot_style()
 
 
 def _ensure_dirs(root: Path) -> tuple[Path, Path]:
@@ -83,10 +86,15 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
 
     # Bar chart
     if (per_col["pct_missing"] > 0).any():
-        plot_df = per_col[per_col["pct_missing"] > 0]
-        fig, ax = plt.subplots(figsize=(7, max(3, 0.35 * len(plot_df))))
-        sns.barplot(x="pct_missing", y="column", data=plot_df, ax=ax, color="#e76f51")
-        ax.set_title("Missing % per column"); ax.set_xlabel("% missing")
+        plot_df = per_col[per_col["pct_missing"] > 0].copy()
+        plot_df["label"] = plot_df["column"].map(prettify_label)
+        fig, ax = plt.subplots(figsize=(8, max(3, 0.45 * len(plot_df) + 0.8)))
+        sns.barplot(x="pct_missing", y="label", data=plot_df, ax=ax,
+                    color=PALETTE["accent"])
+        ax.set_title("Missing values per column")
+        ax.set_xlabel("% missing"); ax.set_ylabel("")
+        ax.bar_label(ax.containers[0], fmt="%.1f%%", fontsize=8.5, padding=3)
+        ax.margins(x=0.12)
         fig.tight_layout()
         fig.savefig(figs / "missing_per_column.svg", format="svg", bbox_inches="tight")
         plt.close(fig)
@@ -102,12 +110,22 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
             index=cols_with_miss, columns=cols_with_miss,
         )
         jacc.to_csv(tabs / "co_missingness_jaccard.csv")
-        fig, ax = plt.subplots(figsize=(0.6 * len(cols_with_miss) + 2,
-                                        0.6 * len(cols_with_miss) + 2))
+        pretty = [prettify_label(c) for c in cols_with_miss]
+        jacc_disp = jacc.copy()
+        jacc_disp.index = pretty
+        jacc_disp.columns = pretty
+        nlab = len(cols_with_miss)
+        fig, ax = plt.subplots(figsize=(0.75 * nlab + 3, 0.75 * nlab + 3))
         # Lower triangle only — hide upper mirror and diagonal (self = always 1.00).
-        tri_mask = np.triu(np.ones_like(jacc.values, dtype=bool), k=0)
-        sns.heatmap(jacc, annot=True, fmt=".2f", cmap="Reds", ax=ax, cbar=True, mask=tri_mask)
-        ax.set_title("Co-missingness (Jaccard)")
+        tri_mask = np.triu(np.ones_like(jacc_disp.values, dtype=bool), k=0)
+        annot_fs = 8 if nlab <= 12 else 6.5
+        sns.heatmap(jacc_disp, annot=True, fmt=".2f", cmap="Reds", ax=ax, cbar=True,
+                    mask=tri_mask, annot_kws={"fontsize": annot_fs},
+                    linewidths=0.5, linecolor="white",
+                    cbar_kws={"label": "Jaccard overlap", "shrink": 0.6})
+        ax.set_title("Co-missingness overlap (Jaccard)")
+        plt.setp(ax.get_xticklabels(), rotation=40, ha="right")
+        plt.setp(ax.get_yticklabels(), rotation=0)
         fig.tight_layout()
         fig.savefig(figs / "co_missingness_heatmap.svg", format="svg", bbox_inches="tight")
         plt.close(fig)
@@ -2082,6 +2100,7 @@ def proper_mice_impute(
         "seed": random_state,
         "r_version": r_session.get("r_version"),
         "mice_version": r_session.get("mice_version"),
+        "jsonlite_version": r_session.get("jsonlite_version"),
         "input_sha256": input_sha256,
         "logged_events_count": logged_events_count,
     }

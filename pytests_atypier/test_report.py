@@ -454,11 +454,23 @@ def test_render_appendix(report_cfg, report_art):
 
 
 def test_render_environment_appendix():
-    html = rp._render_environment_appendix()
+    art = rp.Artifacts(output_root=Path("output"))
+    art.mice_manifest = {
+        "r_version": "R version 4.6.1 (2026-06-24)",
+        "mice_version": "3.19.0",
+        "jsonlite_version": "2.0.0",
+    }
+    html = rp._render_environment_appendix(art)
     assert "Computer / runtime" in html
     assert "Package versions" in html
     assert "pandas" in html
     assert "numpy" in html
+    # Python vs R modules are explicitly separated, with R versions present.
+    assert "Python modules" in html
+    assert "R modules" in html
+    assert "mice" in html
+    assert "jsonlite" in html
+    assert "3.19.0" in html
 
 
 def test_system_specs_processor_and_graphics(monkeypatch):
