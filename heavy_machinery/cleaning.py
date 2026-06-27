@@ -213,8 +213,10 @@ def apply_schema(
             out[col] = pd.Categorical(s, categories=levels, ordered=True)
         elif spec.kind == "nominal":
             out[col] = pd.Categorical(s, ordered=False)
-        elif spec.kind in ("continuous", "count"):
-            out[col] = pd.to_numeric(s.astype('string').str.replace(",", ".", regex=False), errors="coerce").astype('float64')
+        elif spec.kind in ("continuous"):
+            out[col] = pd.to_numeric(s.astype('string').str.replace(",", ".", regex=False), errors="coerce").astype('Float64')
+        elif spec.kind in ("count"):
+            out[col] = pd.to_numeric(s.astype('string').str.replace(",", ".", regex=False), errors="coerce").astype('Int64')
         elif spec.kind == "datetime":
             if spec.datetime_bin and spec.datetime_bin not in _DATETIME_BINS:
                 raise ValueError(

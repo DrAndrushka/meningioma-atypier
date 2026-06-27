@@ -78,7 +78,10 @@ def test_encode_for_impute(tiny_df, tiny_schema):
 def test_decode_after_impute(tiny_df, tiny_schema):
     work, decoders, cat_cols, _ = mr._encode_for_impute(tiny_df, tiny_schema)
     work = work.fillna(work.median(numeric_only=True))
-    out = mr._decode_after_impute(work, decoders, cat_cols, tiny_schema)
+    out = mr._decode_after_impute(
+        work, decoders, cat_cols, tiny_schema,
+        original=tiny_df, rng=np.random.default_rng(0),
+    )
     assert len(out) == len(tiny_df)
 
 

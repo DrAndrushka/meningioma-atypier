@@ -1539,7 +1539,7 @@ def _eda_glossary() -> str:
     return "".join(parts)
 
 
-# Missingness audit + MICE imputation (missingness_resolution.py).
+# Missingness audit + formal MICE imputation (missingness_resolution.py).
 _MICE_GLOSSARY_GROUPS = [
     ("Missingness audit", [
         ("missing_pct / pct_missing",
@@ -1550,60 +1550,77 @@ _MICE_GLOSSARY_GROUPS = [
          "together, 1 = always together). Reveals structural gaps — e.g. ADC "
          "missing when DWI was not performed."),
     ]),
-    ("MICE settings", [
+    ("Formal MICE settings (R mice)", [
         ("m",
-         "Number of full imputed datasets (default 10 for publication; 3 for "
-         "fast iteration). Each draw uses seed random_state + i."),
-        ("max_iter",
-         "IterativeImputer rounds per draw until equations stabilise. "
-         "Publication runs typically use 25; quick dev runs use 10."),
-        ("n_estimators",
-         "Trees per random-forest column equation inside each draw (50 for "
-         "publication; 20 for fast iteration)."),
-        ("n_jobs_imputations",
-         "Parallel MICE draws via joblib — one imputation per worker slot. "
-         "Capped by OS defaults and CPU guardrails."),
-        ("n_jobs_rf",
-         "Random-forest threads inside each draw. Kept small to avoid nested "
-         "parallelism oversubscribing the CPU."),
-        ("max_worker_slots",
-         "Optional hard cap on imputations × RF threads (e.g. 4 on a laptop). "
-         "Windows defaults to 12 when not overridden."),
-        ("emergency_safe_mode",
-         "Forces serial execution (1 imputation, 1 RF job) for debugging."),
+         "Number of completed datasets (20 for publication; 3 for fast "
+         "iteration). All m share one mice() chain so uncertainty is preserved."),
+        ("max_iter (maxit)",
+         "Fully-conditional-specification cycles through the incomplete "
+         "variables until the chain stabilises (20 publication; 5 quick)."),
+        ("seed",
+         "Single RNG seed passed to mice() for reproducible draws."),
+        ("method by variable type",
+         "continuous/count → pmm, binary → logreg, nominal → polyreg, "
+         "ordinal → polr. Each incomplete variable gets a model matched to its "
+         "declared kind — recorded in methods.csv."),
+        ("analysis_outcome",
+         "The observed outcome (e.g. high_grade) predicts missing predictors "
+         "but is never imputed; its source column is excluded as a duplicate. "
+         "Not valid for deployment where the outcome is unknown."),
+        ("derived_dependencies",
+         "Parent→child map (e.g. multiple_meningiomas←meningioma_count). "
+         "Non-outcome derived columns are dropped before R and recreated from "
+         "their imputed sources to avoid contradictions."),
     ]),
-    ("Parallel execution", [
-        ("OS-aware defaults",
-         "Windows: up to 4 parallel imputations, 3 RF jobs, 12 slot cap. "
-         "macOS plugged in: up to 3 imputations, 2 RF jobs. macOS on battery: "
-         "up to 2 imputations, 1 RF job. Other OS: safe fallback."),
-        ("CPU guardrail",
-         "Total worker slots (imputations × RF jobs) cannot exceed available "
-         "cores minus a safety margin. RF jobs are reduced first, then "
-         "parallel imputations."),
-        ("dtype restoration",
-         "After imputation, each frame is recast to match the original cohort: "
-         "Categorical columns keep original categories/order; nullable Float64 "
-         "columns stay Float64. Column order and values are unchanged."),
-        ("post-imputation validation",
-         "Asserts identical columns and row count, and that no new categorical "
-         "levels appeared in any imputed frame."),
+    ("Imputation engine", [
+        ("R mice via subprocess",
+         "proper_mice_impute() writes input.csv + mice_spec.json, calls "
+         "Rscript scripts/run_mice.R, then reloads the completed datasets. No "
+         "rpy2; the notebook experience is unchanged."),
+        ("predictor matrix",
+         "Built explicitly in R (predictor_matrix.csv): row id, IDs, text, "
+         "datetime, skipped, derived, and excluded columns are zeroed so they "
+         "never silently drive imputations."),
+        ("proper multiple imputation",
+         "The manifest marks proper_multiple_imputation=True and "
+         "rubin_pooling_supported=True only when the R run and all validation "
+         "succeed — required before Rubin pooling."),
+        ("dtype restoration + validation",
+         "Each completed frame is recast to the original cohort (Categorical "
+         "levels/order, nullable Float64/Int64/boolean), then checked for row "
+         "identity, unchanged observed cells, filled missing cells, legal "
+         "categories, and derived consistency. Pandera runs on every frame."),
+        ("imputed_cell_variation.csv",
+         "Per originally-missing cell, how the imputed value varies across the "
+         "m draws (mean/sd or level counts). A diagnostic, not a confidence "
+         "interval."),
     ]),
-    ("Python modules", [
+    ("Sensitivity method — RF chained (not formal MICE)", [
+        ("rf_chained_impute()",
+         "Random-forest IterativeImputer with post-hoc Bernoulli sampling for "
+         "binary cells (legacy alias: mice_impute). Manifest marks "
+         "proper_multiple_imputation=False — Rubin pooling is NOT supported."),
+        ("joblib parallel / OS-aware",
+         "RF draws run in parallel (loky), capped per OS/CPU and macOS "
+         "battery. Used only for the optional sensitivity analysis."),
+    ]),
+    ("Python / R modules", [
         ("missingness_resolution.py",
-         "Project module: missingness audit, MICE imputation, simple_impute "
-         "screening fill, structural-missing handling."),
+         "Project module: missingness audit, formal R-mice orchestration, RF "
+         "sensitivity, simple_impute screening, structural-missing handling."),
+        ("R: mice / jsonlite",
+         "mice runs the mixed-type FCS chain; jsonlite reads the spec. "
+         "Install once: install.packages(c(\"mice\", \"jsonlite\"))."),
         ("pandas / numpy",
-         "Tabular encoding/decoding, missing-cell counts, dtype restoration."),
-        ("scikit-learn",
-         "IterativeImputer + RandomForestRegressor (chained equations). "
-         "ConvergenceWarning suppressed during fit."),
-        ("joblib",
-         "Parallel(n_jobs=…) across the m imputation draws (loky backend)."),
+         "Exchange-file I/O, missing-cell counts, dtype restoration, "
+         "cell-variation diagnostics."),
+        ("scikit-learn / joblib",
+         "IterativeImputer + RandomForestRegressor for the RF sensitivity "
+         "method only (parallel via loky)."),
         ("matplotlib / seaborn",
          "Missing-% bar chart and co-missingness heatmap figures."),
-        ("platform / os / subprocess (stdlib)",
-         "OS detection and macOS battery check for conservative parallelism."),
+        ("subprocess / hashlib / shutil (stdlib)",
+         "Launch Rscript, hash the exchange input, manage the run directory."),
     ]),
 ]
 
@@ -1620,14 +1637,19 @@ def _missingness_glossary() -> str:
 def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     """🕳️ Missingness story."""
     body = [
-        '<p>Missingness was assessed per variable and globally. Multiple '
-        'imputation (MICE) generated m full datasets via '
-        '<code>missingness_resolution.mice_impute()</code> — imputations run '
-        'in parallel with OS-aware CPU limits, dtypes are restored afterward, '
-        'and results feed Rubin-pooled logistic regression. Variables with '
-        'high missingness should be interpreted cautiously. Binary imaging '
-        'variables were not imputed because missing values represented '
-        'unrecorded/unknown findings rather than confirmed absence.</p>',
+        '<p>Missingness was assessed per variable and globally. Formal '
+        'mixed-type multiple imputation (MICE) generated m completed datasets '
+        'via <code>missingness_resolution.proper_mice_impute()</code>, which '
+        'runs one <code>mice()</code> fully-conditional-specification chain in '
+        'R (continuous/count → PMM, binary → logistic, nominal → polytomous, '
+        'ordinal → proportional-odds). Between-imputation uncertainty is '
+        'preserved and pooled with Rubin\u2019s rules in the inferential '
+        'stage. Dtypes are restored and every frame is validated (including '
+        'Pandera) before use. Variables with high missingness should be '
+        'interpreted cautiously, and imputation assumes MAR conditional on the '
+        'included predictors. A random-forest chained method '
+        '(<code>rf_chained_impute()</code>) is retained only as a labelled '
+        'sensitivity analysis and does not support Rubin pooling.</p>',
     ]
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
@@ -1776,11 +1798,12 @@ _INFERENTIAL_GLOSSARY_GROUPS = [
          "≥ 10 = stable; 5–10 = borderline; < 5 = underpowered. Flags when too many "
          "predictors chase too few high-grade cases."),
         ("n_complete_cases",
-         "Patients with outcome and all retained predictors recorded. 🧩 Binary imaging "
-         "signs left missing (unknown ≠ absent) shrink this — models using them fit on "
-         "complete cases only."),
+         "Patients available to the model. 🧩 After formal MICE every retained "
+         "predictor is filled, so this is effectively the full cohort; the "
+         "complete-case preview (pre-imputation) is shown only as a stability "
+         "sanity check."),
         ("n_outcome_events",
-         "Count of positive outcomes in those complete cases. 🎯 Drives EPV and how "
+         "Count of positive outcomes among those patients. 🎯 Drives EPV and how "
          "trustworthy each adjusted OR is."),
         ("n_design_columns",
          "Predictor columns in the final design matrix after encoding and VIF pruning. "
@@ -1850,18 +1873,20 @@ _INFERENTIAL_GLOSSARY_GROUPS = [
          "Binary outcome model: linear combination of predictors → probability via "
          "logistic curve. 📈 Standard for adjusted ORs in clinical papers — transparent "
          "vs black-box ML that hides independent effects."),
-        ("MICE + Rubin pooling",
-         "Model fit on each of m imputed datasets; coefficients averaged and SEs "
-         "combined (within + between imputation variance). 🎲 Valid inference with "
-         "missing data — single imputation or complete-case-only would ignore "
-         "uncertainty or drop patients."),
+        ("formal MICE + Rubin pooling",
+         "Model fit on each of m datasets from one mixed-type mice() chain "
+         "(proper_mice_impute); coefficients averaged and SEs combined (within "
+         "+ between imputation variance). 🎲 Valid inference with missing data — "
+         "single imputation or complete-case-only would ignore uncertainty or "
+         "drop patients."),
         ("Barnard–Rubin df",
          "Small-sample correction for pooled p-values and CIs when m is modest. "
          "Preferable to a plain z-test after MI, which can be anti-conservative."),
-        ("complete-case binary imaging",
-         "Binary MRI signs not imputed — missing = unrecorded, not confirmed absent. "
-         "Models including them use only patients with those fields filled. 🛡️ Avoids "
-         "treating 'unknown' as 'negative,' which would bias ORs."),
+        ("binary imaging signs (logreg)",
+         "Missing binary MRI signs are imputed by logistic regression within the "
+         "MICE chain (MAR conditional on the other predictors), so patients are "
+         "not dropped. 🛡️ Imputation uncertainty propagates through Rubin pooling; "
+         "if missingness is informative (MNAR), add a sensitivity analysis."),
     ]),
 ]
 
@@ -1889,11 +1914,15 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
         'each predictor-set variant you defined. Predictors were encoded '
         'according to schema type, continuous/count variables were standardized, '
         'nominal variables were one-hot encoded, and high-VIF predictors were '
-        'pruned. Multiple imputation was pooled with Rubin\u2019s rules.</p>'
-        '<p>Binary imaging variables were not imputed because missing values '
-        'represented unrecorded/unknown findings rather than confirmed absence. '
-        'Models using these variables were therefore fitted on complete cases '
-        'for those predictors.</p>'
+        'pruned. Estimates were pooled across the formal mixed-type MICE '
+        'datasets with Rubin\u2019s rules.</p>'
+        '<p>Missing values — including binary imaging signs — were imputed '
+        'within the MICE chain (binary signs via logistic regression) under a '
+        'MAR assumption conditional on the included predictors, so patients '
+        'are retained and imputation uncertainty propagates into the pooled '
+        'confidence intervals. If a sign\u2019s missingness is likely '
+        'informative (MNAR), interpret it with a separate sensitivity '
+        'analysis.</p>'
     )
 
     by_target: dict[str, list[str]] = {}

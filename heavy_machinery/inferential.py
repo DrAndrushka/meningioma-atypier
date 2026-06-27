@@ -281,6 +281,11 @@ def _build_design(
             mapping[p] = list(dummies.columns)
         # other kinds skipped
     X = pd.concat(pieces, axis=1) if pieces else pd.DataFrame(index=df.index)
+    # Coerce to plain numpy float64: MICE-imputed frames carry nullable
+    # extension dtypes (Float64/Int64/boolean) which statsmodels rejects
+    # (np.asarray on an extension array yields object dtype). pd.NA -> np.nan.
+    if len(X.columns):
+        X = X.astype("float64")
     return X, mapping, z_params
 
 
@@ -723,9 +728,24 @@ def run_inferential(
     """
     output_root = Path(output_root)
     if imputed_frames is None:
-        from missingness_resolution import load_modeling_frames
+        from missingness_resolution import load_modeling_frames, read_mice_manifest
 
         imputed_frames = load_modeling_frames(output_root)
+        # Rubin pooling is only valid on proper multiple imputation. RF chained
+        # imputation is a labelled sensitivity method — warn loudly so pooled ORs
+        # from it are never reported as formal MI without acknowledgement.
+        manifest = read_mice_manifest(output_root)
+        if manifest and not (
+            manifest.get("proper_multiple_imputation")
+            and manifest.get("rubin_pooling_supported")
+        ):
+            warnings.warn(
+                "Rubin pooling on a sensitivity-analysis imputation "
+                f"(method={manifest.get('method')!r}); these draws do not "
+                "support formal multiple imputation. Use proper_mice_impute() "
+                "for inferential results.",
+                stacklevel=2,
+            )
 
     figs_dir, tabs_dir = _ensure_dirs(output_root)
     _clear_inferential_artifacts(figs_dir, tabs_dir)

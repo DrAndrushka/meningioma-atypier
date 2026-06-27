@@ -12,7 +12,7 @@ The workflow is deliberately **statistics-first, not black-box ML**:
 
 1. 🧹 Clean and type clinical data with an explicit schema (row filters, derivations, pre-schema category cleanup)
 2. 🔍 Screen univariate associations (EDA + paper-style diagnostic accuracy)
-3. 🧩 Impute missing values with MICE, then pool uncertainty with Rubin's rules
+3. 🧩 Impute missing values with formal mixed-type MICE (R `mice`), then pool uncertainty with Rubin's rules
 4. 📐 Fit **one or more** multivariable logistic models — your experimental predictor set plus published predictor sets from the literature
 5. ✅ Validate internally (bootstrap optimism correction + shrinkage) per model variant
 6. 🌐 Ship a **Streamlit calculator** driven by portable JSON model artifacts
@@ -55,7 +55,8 @@ meningioma-atypier/
 │   ├── dda.py                      # 📊 Data discovery & distribution plots
 │   ├── eda.py                      # 🔗 Univariate association screening (+ ROC-AUC column)
 │   ├── diagnostic_accuracy.py      # 🎯 Paper-style 2×2 metrics (sensitivity, PPV, Wilson CIs…)
-│   ├── missingness_resolution.py   # 🧩 MICE (OS-aware parallel imputation + dtype restore)
+│   ├── missingness_resolution.py   # 🧩 Formal mixed-type MICE (R mice) + RF sensitivity + dtype restore
+│   ├── scripts/run_mice.R           # 🧬 Standalone R mice engine (called via subprocess)
 │   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression (multi-variant)
 │   ├── model_validation.py         # ✅ Bootstrap internal validation + shrinkage
 │   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI + artifact export
@@ -75,7 +76,7 @@ flowchart LR
     B --> C[📊 DDA]
     C --> D[🔗 EDA Screen]
     D --> D2[🎯 Diagnostic Accuracy]
-    D2 --> E[🧩 MICE m=10]
+    D2 --> E[🧩 Formal MICE m=20 · R mice]
     E --> F[📐 Logistic + Rubin Pool]
     F --> F2[📚 Literature model variants]
     F2 --> G[✅ Bootstrap Validate]
@@ -87,7 +88,7 @@ flowchart LR
 |-------|--------|------------------|
 | 01–06 | `config/` + `cleaning.py` | Typed cohort, cleaning log, derived columns |
 | 07 | `dda.py` | Per-column distribution stats + SVG histograms |
-| 08 | `missingness_resolution.py` | Missingness heatmap, MICE imputed frames |
+| 08 | `missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
 | 09–10 | `eda.py` | Association table + per-pair plots (FDR-corrected) |
 | 09b | `diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
 | 11–12 | `inferential.py` | Adjusted ORs, VIF, forest plot — **one block per model variant** |
@@ -149,21 +150,26 @@ The HTML report renders this as a collapsible **"Like in that research"** table 
 
 ### 🧩 Missing data (`missingness_resolution.py`)
 
-- **MICE** (default m = 10 imputations): chained equations fill missing values while preserving relationships between variables.
-- **Parallel execution:** imputations run in parallel via `joblib` (one draw per worker); random-forest `n_jobs` is capped per OS to avoid CPU oversubscription, overheating, and nested parallelism stalls on Windows/macOS.
-- **OS-aware defaults:** Windows uses conservative settings (up to 4 parallel imputations, 3 RF jobs, 12 worker-slot cap); macOS is thermals/battery-conscious (fewer slots on battery).
-- **Post-imputation:** dtypes restored to match the original cohort (`Categorical`, nullable `Float64`); categorical level integrity validated before return.
-- **Why multiple imputations?** Single imputation treats imputed values as known → **standard errors are too small**. Rubin pooling fixes that.
-- **Binary imaging signs** are generally **not imputed** — missing means unrecorded/unknown, not confirmed absence. Models using them fit on complete cases.
+- **Primary method — formal mixed-type MICE** (`proper_mice_impute`): one R `mice()` fully-conditional-specification chain imputes each incomplete variable with a model matched to its declared type — continuous/count → **PMM**, binary → **logistic**, nominal → **polytomous**, ordinal → **proportional-odds**. Python calls `Rscript scripts/run_mice.R` automatically via `subprocess` (no `rpy2`, no RStudio).
+- **Proper uncertainty:** all `m` datasets come from one chain, so between-imputation variance is preserved and the manifest is marked `proper_multiple_imputation=True` / `rubin_pooling_supported=True` — required before Rubin pooling.
+- **Derived columns:** non-outcome derived columns are dropped before R and **recreated from their imputed sources** via the notebook's own derivation function (single source of truth); a `DERIVED_DEPENDENCIES` map records the parent→child relationships. The analysis outcome may predict missing predictors but is never imputed, and its source column is excluded as a duplicate.
+- **Post-imputation:** dtypes restored to match the original cohort (`Categorical` levels/order, nullable `Float64`/`Int64`/`boolean`); every frame is validated for row identity, unchanged observed cells, legal categories, derived consistency, and **Pandera** — not just the first draw.
+- **Diagnostics:** `methods.csv`, `predictor_matrix.csv`, `logged_events.csv`, `chain_diagnostics.png`, `r_session.json`, and `imputed_cell_variation.csv` (how each originally-missing cell varies across draws — a diagnostic, not a CI).
+- **Binary imaging signs are now imputed** by logistic regression inside the MICE chain under MAR (conditional on the other predictors), so patients are retained and imputation uncertainty propagates through Rubin pooling. If a sign's missingness is likely informative (MNAR), interpret it with a separate sensitivity analysis.
+- **Sensitivity method — RF chained imputation** (`rf_chained_impute`, legacy alias `mice_impute`): random-forest `IterativeImputer` with post-hoc Bernoulli sampling for binary cells, run in parallel via `joblib` with OS-aware CPU/battery limits. Marked `proper_multiple_imputation=False` — **not** valid for Rubin pooling; kept only as a labelled sensitivity analysis.
 
-**Notebook profiles** (§11 `mice_impute` cell):
+**Requires R** with the `mice` and `jsonlite` packages (one-time):
 
-| Profile | `m` | `max_iter` | `n_estimators` |
-|---------|-----|------------|----------------|
-| Fast iteration | 3 | 10 | 20 |
-| Publication | 10 | 25 | 50 |
+```r
+install.packages(c("mice", "jsonlite"))
+```
 
-Optional: `max_worker_slots=4` (safer laptop), `emergency_safe_mode=True` (serial debug).
+**Notebook profiles** (§10 `proper_mice_impute` cell):
+
+| Profile | `m` | `max_iter` |
+|---------|-----|------------|
+| Smoke / fast iteration | 3 | 5 |
+| Publication | 20 | 20 |
 
 ### 📐 Multivariable model (`inferential.py`)
 
@@ -177,7 +183,7 @@ Optional: `max_worker_slots=4` (safer laptop), `emergency_safe_mode=True` (seria
 
 **Sample-size guard:** EPV = events ÷ design columns. Report flags **≥ 10 stable**, **5–10 borderline**, **< 5 underpowered**.
 
-**Rubin pooling** across m = 10 imputed fits with **Barnard–Rubin** degrees of freedom.
+**Rubin pooling** across the m formal-MICE fits with **Barnard–Rubin** degrees of freedom (only manifests marked `proper_multiple_imputation=True` are pooled; RF sensitivity draws are rejected/flagged).
 
 ### ✅ Internal validation (`model_validation.py`)
 
@@ -195,6 +201,21 @@ Optional: `max_worker_slots=4` (safer laptop), `emergency_safe_mode=True` (seria
 cd meningioma-atypier
 pip install -r requirements.txt
 ```
+
+**R is required for formal MICE** (`proper_mice_impute`). Install R, then the two R packages once:
+
+```bash
+# macOS: brew install r   (or download from https://cran.r-project.org)
+Rscript -e 'install.packages(c("mice","jsonlite"), repos="https://cloud.r-project.org")'
+```
+
+Verify both are available (Python runs this check automatically before imputing):
+
+```bash
+Rscript -e 'cat("mice:", requireNamespace("mice", quietly=TRUE), "jsonlite:", requireNamespace("jsonlite", quietly=TRUE), "\n")'
+```
+
+> The RF sensitivity method (`rf_chained_impute`) is pure Python and needs no R.
 
 ### 2️⃣ Run the pipeline (notebooks)
 
@@ -270,7 +291,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 - **Clean data before clever models** — schema, missingness policy, and audit logs are first-class outputs, not afterthoughts.
 - **Interpretability over complexity** — pooled logistic regression with explicit ORs beats opaque ensembles for a manuscript and for clinicians.
 - **Compare against the literature** — replicate published predictor sets on your cohort before trusting a bespoke model.
-- **Honest uncertainty** — MICE + Rubin pooling + bootstrap correction acknowledge that N is modest and data is incomplete.
+- **Honest uncertainty** — formal mixed-type MICE (R `mice`) + Rubin pooling + bootstrap correction acknowledge that N is modest and data is incomplete.
 - **Reproducible artifacts** — JSON model files decouple statistical fitting from the Streamlit UI.
 
 ---
@@ -340,26 +361,28 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 🧩 MICE — Multiple Imputation (`missingness_resolution.py`)
+### 🧩 MICE — Formal Mixed-Type Multiple Imputation (`missingness_resolution.py` + `scripts/run_mice.R`)
 
-**Purpose:** fill missing MRI/clinical values **without pretending we know the true value exactly**, then carry that uncertainty into the regression.
+**Purpose:** fill missing MRI/clinical values **without pretending we know the true value exactly**, using a model appropriate to each variable type, then carry that uncertainty into the regression via Rubin pooling.
 
 | Formula / step | How it works (brief) | Why here (vs alternatives) |
 |----------------|----------------------|----------------------------|
 | **Missingness heatmap** (co-missing %) | Shows which columns tend to go missing together. | Reveals structural patterns (e.g. ADC missing when DWI wasn't done) — informs the missingness policy. **Alternative:** column-wise % only — miss correlated gaps. |
-| **MICE** (m = 10 datasets) | Each missing value is predicted from the other columns, round by round, until stable. Repeat with 10 different random seeds → 10 full datasets. | Preserves relationships between variables (tumor size ↔ edema, location ↔ skull-base signs). **Alternative:** fill everything with the column median — fast, but destroys correlations and makes downstream models overconfident. |
-| **Parallel imputations (`joblib`)** | The m draws run in parallel; each draw uses a capped `RandomForestRegressor(n_jobs=…)` so total worker slots stay within OS/CPU limits. | **Alternative:** serial imputations with `n_jobs=-1` inside one RF — imputations wait in line while one forest hogs all cores; nested parallelism can slow Windows/macOS laptops. |
-| **OS-aware parallelism** | `platform.system()` picks conservative defaults; macOS on battery uses a low-power profile; optional `max_worker_slots` / `emergency_safe_mode`. | Protects thermals and battery without hand-tuning every machine. **Alternative:** hostname-specific profiles — brittle and not portable. |
-| **Iterative imputer + random forest** | Inner engine: a small random forest predicts each column from the rest, iteratively updating all missing cells. | Handles **mixed types** (numeric + categorical) in one pass. **Alternative:** linear regression imputation — assumes linearity; poor for binary signs and skewed volumes. |
-| **Categorical encode → impute → decode** | Nominal/ordinal levels become integer codes for imputation, then mapped back to labels; dtypes restored (`Categorical`, `Float64`) before return. | Keeps "skull base" as a category, not a meaningless number. **Alternative:** imputing raw strings — most algorithms cannot; imputing as free numeric codes — invents nonsense levels. |
-| **Binary left NaN in screening** (`simple_impute`) | Fast single-fill for EDA only: median/mode; binaries stay missing unless explicitly allowed. | "Unknown" ≠ "absent" for imaging signs. **Alternative:** imputing binary as 0 — treats "not recorded" as "definitely negative," which biases association screens. |
-| **Why m = 10?** | Rubin: efficiency ≈ (1 + fmi/m)⁻¹. At ~30% missing info, m = 10 recovers ~97% of full efficiency. | Enough copies for stable pooled SEs without 10× runtime cost. **Alternative:** m = 1 (single imputation) — SEs too narrow, invalid inference; m = 50 — diminishing returns for this cohort size. |
+| **Formal MICE** (`proper_mice_impute`, one `mice()` FCS chain) | Temporarily initialises missing cells, then imputes each incomplete variable in turn using the latest values of the others, cycling `maxit` times to produce `m` completed datasets that share the chain. | Preserves relationships **and** between-imputation uncertainty for valid Rubin pooling. **Alternative:** independent single-pass imputers — not true MICE, understate uncertainty. |
+| **Type-matched models** | continuous/count → **PMM**, binary → **logreg**, nominal → **polyreg**, ordinal → **polr** (recorded in `methods.csv`). | One model per declared kind; PMM draws real donor values so counts stay integer and continuous stay plausible. **Alternative:** one regression for all types, or numeric-code + round for categoricals — invents impossible categories. |
+| **Explicit predictor matrix** | Built in R (`predictor_matrix.csv`): row id, IDs, text, datetime, skipped, derived, and excluded columns are zeroed. | Nothing silently drives the imputations; fully auditable. **Alternative:** let `mice` auto-pick predictors — opaque and can leak IDs/derived leakage. |
+| **Derived-column handling** | Non-outcome derived columns (e.g. `age_bins`, `ki67_group`) are dropped before R and **recreated from imputed sources** by the notebook's own derivation function via a `DERIVED_DEPENDENCIES` map. | Avoids contradictions like `meningioma_count=1` with `multiple_meningiomas=True`. **Alternative:** copy clinical thresholds into R — duplicates logic and drifts out of sync. |
+| **R engine via `subprocess`** | Python writes `input.csv` + `mice_spec.json`, runs `Rscript scripts/run_mice.R`, reloads completed datasets, restores dtypes, validates (incl. Pandera) every frame. | Uses the gold-standard `mice` package without `rpy2`; the notebook call is unchanged. **Alternative:** reimplement MICE in Python — error-prone and non-standard. |
+| **Cell-variation diagnostic** | `imputed_cell_variation.csv` summarises how each originally-missing cell varies across the `m` draws (mean/sd or level counts). | Honest view of imputation spread. **Alternative:** reporting a single draw — hides uncertainty; **not** a confidence interval. |
+| **Binary left NaN in screening** (`simple_impute`) | Fast single-fill for EDA only: median/mode; binaries stay missing unless explicitly allowed. | "Unknown" ≠ "absent" during exploratory screening. **Alternative:** imputing binary as 0 — treats "not recorded" as "definitely negative." |
+| **RF chained (sensitivity only)** (`rf_chained_impute`) | Random-forest `IterativeImputer` + post-hoc Bernoulli for binaries, parallel via `joblib`. | Retained as a labelled robustness check. **Alternative (and the old default):** treating it as formal MI — it is **not** (`proper_multiple_imputation=False`, no Rubin pooling). |
+| **Why m = 20?** | Rubin: efficiency ≈ (1 + fmi/m)⁻¹. At moderate missing-information fractions, m = 20 recovers nearly full efficiency and stabilises CIs. | Enough copies for stable pooled SEs. **Alternative:** m = 1 — SEs too narrow, invalid inference; m = 3 is for smoke runs only. |
 
 ---
 
 ### 📐 Inferential — Multivariable Logistic Regression (`inferential.py`)
 
-**Purpose:** estimate **adjusted** odds ratios — "if we hold all other MRI signs constant, what does this one contribute to high-grade risk?" Results are **Rubin-pooled** across the 10 imputed datasets. Run multiple **variants** to compare your cohort against published predictor sets.
+**Purpose:** estimate **adjusted** odds ratios — "if we hold all other MRI signs constant, what does this one contribute to high-grade risk?" Results are **Rubin-pooled** across the m formal-MICE datasets. Run multiple **variants** to compare your cohort against published predictor sets.
 
 | Formula | How it works (brief) | Why here (vs alternatives) |
 |---------|----------------------|----------------------------|

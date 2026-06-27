@@ -252,8 +252,8 @@ def test_inferential_glossary():
 
 def test_missingness_glossary():
     html = rp._missingness_glossary()
-    assert "joblib" in html
-    assert "n_jobs_imputations" in html
+    assert "mice" in html
+    assert "method by variable type" in html
     assert "missingness_resolution.py" in html
 
 

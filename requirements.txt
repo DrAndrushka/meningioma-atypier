@@ -7,6 +7,13 @@
 # Install (repo root):
 #   pip install -r requirements.txt
 #
+# ⚠️ NON-PYTHON DEPENDENCY — formal MICE (proper_mice_impute) runs the R `mice`
+# package via subprocess (scripts/run_mice.R). These are NOT pip-installable.
+# One-time setup:
+#   1. Install R         (macOS: `brew install r`, or https://cran.r-project.org)
+#   2. Install packages: Rscript -e 'install.packages(c("mice","jsonlite"))'
+# The pure-Python RF sensitivity method (rf_chained_impute) needs no R.
+#
 # Notebooks (run from heavy_machinery/):
 #   jupyter notebook meningioma-cleaning.ipynb
 #   jupyter notebook meningioma-modelling.ipynb
@@ -39,10 +46,11 @@ statsmodels>=0.14
 # Multivariable logistic regression (Logit), VIF, Wilson-style proportion CIs, calibration.
 
 scikit-learn>=1.4
-# MICE (IterativeImputer + RandomForestRegressor), bootstrap metrics (AUC, Brier, ROC).
+# RF chained imputation sensitivity method (IterativeImputer + RandomForestRegressor)
+# and bootstrap metrics (AUC, Brier, ROC). Formal MICE itself runs in R, not sklearn.
 
 joblib>=1.3
-# Parallel MICE imputations across m draws (missingness_resolution.py).
+# Parallel RF sensitivity-imputation draws (missingness_resolution.py).
 
 matplotlib>=3.8
 # Distribution plots (DDA), forest plots, validation charts, missingness bars.
