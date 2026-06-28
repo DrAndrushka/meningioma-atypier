@@ -393,15 +393,11 @@ def _parse_author_list(author: str) -> list[str]:
 
 
 def _format_authors(author: str) -> str:
-    """Format author names in standard academic byline style."""
+    """Format author names as a comma-separated byline."""
     names = _parse_author_list(author)
     if not names:
         return ""
-    if len(names) == 1:
-        return names[0]
-    if len(names) == 2:
-        return f"{names[0]} and {names[1]}"
-    return ", ".join(names[:-1]) + f", and {names[-1]}"
+    return ", ".join(names)
 
 
 def human_pool_df(val: Any) -> str:
@@ -856,18 +852,6 @@ def _inferential_model_sort_key(model_key_str: str) -> tuple[int, str]:
 
 def _sort_inferential_model_keys(keys: list[str]) -> list[str]:
     return sorted(keys, key=_inferential_model_sort_key)
-
-
-def _sort_inferential_summary_df(df: pd.DataFrame) -> pd.DataFrame:
-    if "model_id" not in df.columns or df.empty:
-        return df
-    experimental = df["model_id"].astype(str).apply(is_experimental_model_id)
-    if not experimental.any():
-        return df
-    return pd.concat(
-        [df.loc[~experimental], df.loc[experimental]],
-        ignore_index=True,
-    )
 
 
 def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
@@ -2786,34 +2770,13 @@ def _render_environment_appendix(art: Artifacts) -> str:
 
 
 def render_appendix(cfg: ReportConfig, art: Artifacts) -> str:
-    """📎 Appendix — warnings, artifact paths, anything not embedded earlier."""
+    """📎 Appendix — warnings and runtime environment."""
     body = ['<h2>📎 Appendix</h2>']
 
     if art.warnings:
         body.append("<h3>Warnings during artifact load</h3>")
         body.append("<ul>" + "".join(f"<li>{_esc(w)}</li>" for w in art.warnings)
                     + "</ul>")
-
-    # Full inferential summary (if not already shown)
-    if art.inferential_summary is not None and not art.inferential_summary.empty:
-        body.append(details_block(
-            "🧾 Full inferential summary",
-            table_to_html(_sort_inferential_summary_df(art.inferential_summary))))
-
-    # Full VIF tables collapsed
-    if art.inferential_vif:
-        for target, vif in art.inferential_vif.items():
-            body.append(details_block(
-                f"🔢 VIF — {target}", table_to_html(vif)))
-
-    # Artifact path listing
-    paths = sorted(p.relative_to(cfg.output_root)
-                   for p in cfg.output_root.rglob("*")
-                   if p.is_file() and p.suffix.lower() in {".csv", ".svg"})
-    if paths:
-        lst = "".join(f"<li><code>{_esc(p)}</code></li>" for p in paths)
-        body.append(details_block(
-            f"📂 Artifact files used ({len(paths)})", f"<ul>{lst}</ul>"))
 
     body.append(details_block(
         "🖥️ Environment & package versions",

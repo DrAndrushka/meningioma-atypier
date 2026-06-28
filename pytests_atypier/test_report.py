@@ -168,11 +168,11 @@ def test_load_artifacts(report_cfg, tmp_output):
 def test_format_authors():
     assert rp._format_authors("") == ""
     assert rp._format_authors("Jane Doe") == "Jane Doe"
-    assert rp._format_authors("Jane Doe, John Smith") == "Jane Doe and John Smith"
-    assert rp._format_authors("A, B, C") == "A, B, and C"
-    assert rp._format_authors("A, B, and C") == "A, B, and C"
+    assert rp._format_authors("Jane Doe, John Smith") == "Jane Doe, John Smith"
+    assert rp._format_authors("A, B, C") == "A, B, C"
+    assert rp._format_authors("A, B, and C") == "A, B, C"
     six = "Arturs Balodis, Sigita Zālīte, Roberts Tumeļkāns, Valērija Aksjonova, Elizabete Stankeviča, Andris Zaguzovs"
-    assert rp._format_authors(six).endswith(", and Andris Zaguzovs")
+    assert rp._format_authors(six).endswith(", Andris Zaguzovs")
 
 
 def test_render_header(report_cfg, report_art):
@@ -181,7 +181,7 @@ def test_render_header(report_cfg, report_art):
     report_cfg.author = "Alice, Bob, Carol"
     html = render_header(report_cfg, report_art)
     assert 'class="report-authors"' in html
-    assert "Alice, Bob, and Carol" in html
+    assert "Alice, Bob, Carol" in html
     assert "Author" not in html or 'class="label">Author<' not in html
 
 

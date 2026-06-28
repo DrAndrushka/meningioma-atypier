@@ -270,7 +270,8 @@ python -m pytest
 | `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
 | `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
 | `output/inferential/tables/<target>__<model_id>__multivariable.csv` | Adjusted ORs with 95% CI per variant |
-| `output/inferential/tables/inferential_summary.csv` | All variants combined |
+| `output/inferential/tables/<target>__<model_id>__vif.csv` | VIF diagnostics per variant (also in report multivariable section) |
+| `output/inferential/tables/inferential_summary.csv` | All variants combined (CSV only; not duplicated in the HTML report) |
 | `output/inferential/tables/multivariable_cases.csv` | EPV / complete-case counts per variant |
 | `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot (log-scale OR axis) |
 | `output/report/report.html` | Full narrative report — major sections collapse/expand |
@@ -282,18 +283,19 @@ python -m pytest
 
 `report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
+- **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §07)
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
 - **Publication-style figures** via `plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
-- **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target
+- **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target; per-variant VIF diagnostics (collapsed by default)
 - **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
 - **Interpretation dropdowns** per EDA target and per inferential model variant
 - **Schema table** fades `keep=False` columns; long level lists collapse behind expanders
-- **Environment appendix:** Python packages (pip) plus R interpreter and package versions from the formal-MICE manifest
+- **Appendix:** artifact-load warnings (when present) and 🖥️ environment / package versions (Python pip packages plus R interpreter and package versions from the formal-MICE manifest)
 
-Interpretation lives next to each table; there is no standalone "final conclusions" section.
+Interpretation lives next to each table; there is no standalone "final conclusions" section. CSV artifacts such as `inferential_summary.csv` and `*__vif.csv` remain on disk under `output/inferential/tables/` but are not repeated in the appendix.
 
 ---
 
@@ -326,7 +328,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 🟢 **Active research pipeline** — two-notebook workflow (cleaning → modelling), formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-style figures, report, and calculator are implemented and tested.
 
-Recent work: notebook split with validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report.
+Recent work: notebook split with validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report; slimmer report appendix (environment + warnings only).
 
 Streamlit artifacts are exported per model variant under `model_artifacts/` (e.g. `high_grade_experimental_model_1_model.json`). The default app entry point still resolves `high_grade_model.json` when present; otherwise use the newest artifact or pass an explicit path to `render_model_calculator()`.
 
