@@ -23,6 +23,13 @@ if (length(args) < 1) {
 }
 run_dir <- args[[1]]
 
+# Live progress: write to stderr (unbuffered) so the Python orchestrator can
+# stream each step in real time rather than dumping everything at the end.
+progress <- function(...) {
+  cat(sprintf(...), "\n", sep = "", file = stderr())
+  flush(stderr())
+}
+
 input_path <- file.path(run_dir, "input.csv")
 spec_path <- file.path(run_dir, "mice_spec.json")
 if (!file.exists(input_path)) stop(paste("missing input.csv in", run_dir))
@@ -52,6 +59,7 @@ if (length(missing_in_csv) > 0) {
   stop(paste("input.csv missing columns:", paste(missing_in_csv, collapse = ", ")))
 }
 mice_data <- raw[, ordered_cols, drop = FALSE]
+progress("📥 Loaded input: %d rows x %d cols", nrow(mice_data), ncol(mice_data))
 
 # ---- Type conversion per declared kind ----------------------------------
 get_levels <- function(col) {
@@ -94,6 +102,7 @@ for (col in columns) {
 
 # Row id stays numeric, never imputed, never a predictor.
 mice_data[[row_id_col]] <- suppressWarnings(as.numeric(mice_data[[row_id_col]]))
+progress("🔧 Types set for %d declared columns", length(columns))
 
 # ---- Methods vector ------------------------------------------------------
 all_cols <- names(mice_data)
@@ -142,9 +151,12 @@ write.csv(
   file.path(run_dir, "predictor_matrix.csv"),
   row.names = TRUE
 )
+progress("🧮 Predictor matrix built (%d predictors)", ncol(predictor_matrix))
 
 # ---- Run formal mixed-type MICE -----------------------------------------
 # Surface a method change as a hard error rather than silently continuing.
+progress("🧬 Running MICE: %d draws x %d iterations…",
+         as.integer(spec$m), as.integer(spec$max_iter))
 imp <- withCallingHandlers(
   mice::mice(
     data = mice_data,
@@ -164,6 +176,7 @@ imp <- withCallingHandlers(
     invokeRestart("muffleWarning")
   }
 )
+progress("✅ MICE converged (no method overrides)")
 
 # ---- Logged events -------------------------------------------------------
 logged <- imp$loggedEvents
@@ -182,6 +195,7 @@ for (i in seq_len(m)) {
   out_path <- file.path(run_dir, sprintf("imputed_%03d.csv", i))
   write.csv(completed, out_path, row.names = FALSE, na = "")
 }
+progress("💾 Wrote %d completed dataset(s)", m)
 
 # ---- Chain diagnostics ---------------------------------------------------
 png(file.path(run_dir, "chain_diagnostics.png"), width = 1000, height = 800)
@@ -192,7 +206,8 @@ tryCatch(
     title(paste("chain diagnostics unavailable:", conditionMessage(e)))
   }
 )
-dev.off()
+invisible(dev.off())
+progress("📈 Chain diagnostics saved")
 
 # ---- Session metadata ----------------------------------------------------
 session <- list(
@@ -211,6 +226,6 @@ writeLines(
 )
 
 cat(sprintf(
-  "run_mice.R OK — m=%d maxit=%d incomplete_vars=%d logged_events=%d\n",
+  "🏁 run_mice.R OK | m=%d maxit=%d incomplete_vars=%d logged_events=%d\n",
   m, as.integer(spec$max_iter), length(vars_with_missing), nrow(logged)
 ))

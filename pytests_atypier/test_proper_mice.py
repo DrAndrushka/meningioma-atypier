@@ -335,7 +335,7 @@ def test_mice_impute_alias_is_rf():
 # ---------------------------------------------------------------------------
 
 def _r_available() -> bool:
-    rscript = shutil.which("Rscript")
+    rscript = mr._find_rscript()
     if rscript is None:
         return False
     try:

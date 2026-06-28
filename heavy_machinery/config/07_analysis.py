@@ -63,31 +63,6 @@ def resolve_eda(
     return eda_targets, eda_predictors, eda_positive_class
 
 
-def resolve_analysis(
-    df: pd.DataFrame,
-    eda_targets: list,
-    eda_predictors: list,
-    inferential_targets: list,
-    inferential_predictors: list,
-):
-    """Legacy wrapper — prefer ``resolve_eda`` + ``resolve_inferential_targets``."""
-    eda_targets, eda_predictors, eda_positive_class = resolve_eda(
-        df, eda_targets, eda_predictors,
-    )
-    inferential_predictors = [c for c in inferential_predictors if c in df.columns]
-    inferential_positive_class = {
-        t: True for t in inferential_targets if t in _BINARY_POSITIVE_TARGETS
-    }
-    return (
-        eda_targets,
-        eda_predictors,
-        inferential_targets,
-        inferential_predictors,
-        eda_positive_class,
-        inferential_positive_class,
-    )
-
-
 def inferential_targets_from_variants(
     variants: list[InferentialModelVariant],
 ) -> list[str]:

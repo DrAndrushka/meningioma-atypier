@@ -134,167 +134,6 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
 
 
 # ---------------------------------------------------------------------------
-# 2a. Structural-missing handling (NOT to be imputed)
-# ---------------------------------------------------------------------------
-
-def mark_structural_missing(
-    df: pd.DataFrame,
-    schema: dict[str, ColSpec],
-    groups: dict[str, dict],
-    ) -> pd.DataFrame:
-    """Separate "blank because it doesn't exist" from "blank because unrecorded".
-
-    Some blanks are not really missing — e.g. ``lesion_2`` is empty because there
-    was only one lesion. Filling those would be nonsense. This marks such columns
-    ``kind='skip'`` so they are left out of imputation, screening, and the model.
-
-    In their place it can build two real, countable features per group:
-
-      • ``<group_name>``      → how many slots were filled (e.g. n_lesions = 0..3)
-      • ``<group_name>_max``  → the largest value across the slots (the dominant
-                                lesion; only meaningful for numeric/ordinal slots)
-
-    Parameters
-    ----------
-    groups : dict like ::
-
-        {
-          'n_lesions_MRI': {
-              'cols':         ['lesion_1_MRI_PIRADS',
-                               'lesion_2_MRI_PIRADS',
-                               'lesion_3_MRI_PIRADS'],
-              'derive_count': True,
-              'derive_max':   True,
-              'count_levels': [0, 1, 2, 3],
-              'max_levels':   [1, 2, 3, 4, 5],
-              'skip_after':   ['lesion_2_MRI_PIRADS',
-                               'lesion_3_MRI_PIRADS'],
-          },
-        }
-
-    Returns
-    -------
-    The dataframe with the count/max columns added. ``schema`` is updated in
-    place: new entries added, and ``skip_after`` columns flipped to ``'skip'``.
-    """
-    out = df.copy()
-    for group_name, cfg in groups.items():
-        cols = [c for c in cfg.get('cols', []) if c in out.columns]
-        if not cols:
-            continue
-
-        if cfg.get('derive_count', True):
-            out[group_name] = out[cols].notna().sum(axis=1).astype('Int64')
-            levels = cfg.get('count_levels')
-            schema[group_name] = ColSpec(
-                name=group_name,
-                kind='ordinal',
-                ordered_levels=levels if levels is not None
-                else sorted(out[group_name].dropna().unique().tolist()),
-                note=f'structural count over {cols}',
-            )
-
-        if cfg.get('derive_max', True):
-            max_name = f"{group_name}_max"
-            try:
-                numeric_view = out[cols].apply(pd.to_numeric, errors='coerce')
-                out[max_name] = numeric_view.max(axis=1)
-                levels = cfg.get('max_levels')
-                schema[max_name] = ColSpec(
-                    name=max_name,
-                    kind='ordinal',
-                    ordered_levels=levels if levels is not None
-                    else sorted(out[max_name].dropna().unique().tolist()),
-                    note=f'structural max over {cols}',
-                )
-            except Exception:
-                pass  # non-numeric group — skip the max
-
-        for c in cfg.get('skip_after', []):
-            if c in schema:
-                schema[c].kind = 'skip'
-                schema[c].note = (schema[c].note or '') + ' [structural-missing, derived above]'
-
-    return out
-
-
-# ---------------------------------------------------------------------------
-# 2b. Missing flags (for true MNAR columns)
-# ---------------------------------------------------------------------------
-
-def add_missing_flags(
-    df: pd.DataFrame,
-    cols: Sequence[str],
-    schema: dict[str, ColSpec] | None = None,
-    ) -> pd.DataFrame:
-    """Add a yes/no ``<col>_missing`` flag when *being blank* may itself matter.
-
-    Sometimes a test isn't ordered precisely because the patient looked low-risk
-    (or high-risk). There the blank carries information. This adds a column
-    recording "was this value present?" so the model can use that signal.
-    If ``schema`` is passed, each flag is registered as a binary column.
-    """
-    out = df.copy()
-    for c in cols:
-        if c not in out.columns:
-            continue
-        flag = f"{c}_missing"
-        out[flag] = out[c].isna().astype("boolean")
-        if schema is not None and flag not in schema:
-            schema[flag] = ColSpec(name=flag, kind='binary',
-                                   note=f'MNAR flag for {c}')
-    return out
-
-
-def drop_rows(
-    df: pd.DataFrame,
-    *,
-    mask: "pd.Series | None" = None,
-    where: "str | None" = None,
-    reason: str = '',
-    log: "list | None" = None,
-    ) -> pd.DataFrame:
-    """Remove patients (rows) on purpose, and keep a paper trail of why.
-
-    Use this to exclude records by rule — e.g. paediatric cases or impossible
-    values — so the exclusions are documented, not silent.
-
-    Give EITHER a boolean ``mask`` (True = drop) OR a ``where`` query string
-    (rows matching it are dropped). If ``log`` (a list) is passed, one entry is
-    appended per call — ready to paste into the methods section.
-
-    Example::
-
-        drop_log = []
-        df = drop_rows(df, where='age < 18', reason='paediatric record',
-                       log=drop_log)
-        df = drop_rows(df, mask=df['preop_PSA'] < 0,
-                       reason='negative PSA = data entry error',
-                       log=drop_log)
-        pd.DataFrame(drop_log)
-    """
-    if mask is None and where is None:
-        raise ValueError("Pass either mask= or where=")
-    if where is not None:
-        drop_mask = df.eval(where)
-    else:
-        drop_mask = mask.reindex(df.index, fill_value=False).astype(bool)
-
-    n_before = len(df)
-    out = df.loc[~drop_mask].copy()
-    n_after = len(out)
-    if log is not None:
-        log.append({
-            'reason': reason,
-            'criterion': where if where is not None else 'mask',
-            'n_before': n_before,
-            'n_dropped': n_before - n_after,
-            'n_remaining': n_after,
-        })
-    return out
-
-
-# ---------------------------------------------------------------------------
 # 3. MICE imputation (multiple imputation)
 # ---------------------------------------------------------------------------
 
@@ -1676,9 +1515,33 @@ def _write_r_input_csv(df: pd.DataFrame, r_columns: list[str], path: Path) -> st
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _find_rscript() -> str | None:
+    """Resolve Rscript; tolerate stale PATH (common on Windows after R install)."""
+    env = os.environ.get("RSCRIPT")
+    if env:
+        path = Path(env)
+        if path.is_file():
+            return str(path)
+
+    found = shutil.which("Rscript")
+    if found:
+        return found
+
+    if platform.system() == "Windows":
+        for base in (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "R",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "R",
+        ):
+            if not base.is_dir():
+                continue
+            for candidate in sorted(base.glob("R-*/bin/Rscript.exe"), reverse=True):
+                return str(candidate)
+    return None
+
+
 def _check_r_environment() -> str:
     """Verify Rscript + ``mice`` + ``jsonlite`` are available; return Rscript path."""
-    rscript = shutil.which("Rscript")
+    rscript = _find_rscript()
     install_hint = (
         "\n\nFormal MICE requires R and the R packages mice and jsonlite.\n\n"
         "Install in R:\n"
@@ -1707,20 +1570,36 @@ def _check_r_environment() -> str:
 
 
 def _run_r_mice(rscript: str, run_dir: Path) -> None:
-    """Invoke ``run_mice.R`` on ``run_dir``; surface stdout+stderr on failure."""
+    """Invoke ``run_mice.R`` on ``run_dir``, streaming its progress live.
+
+    R writes per-step progress to stderr (unbuffered) and a final summary to
+    stdout; both are merged and printed line by line so the notebook shows each
+    phase in real time. UTF-8 decoding keeps the emoji/em-dash glyphs intact.
+    """
     if not _R_SCRIPT.exists():
         raise FileNotFoundError(f"Missing R engine script: {_R_SCRIPT}")
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         [rscript, str(_R_SCRIPT), str(run_dir)],
-        capture_output=True, text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
     )
-    if proc.returncode != 0:
+    captured: list[str] = []
+    assert proc.stdout is not None
+    for raw_line in proc.stdout:
+        line = raw_line.rstrip("\n")
+        captured.append(line)
+        if line.strip():
+            print(f"   {line}", flush=True)
+    returncode = proc.wait()
+    if returncode != 0:
         raise RuntimeError(
-            f"run_mice.R failed (exit {proc.returncode}).\n\n"
-            f"--- stdout ---\n{proc.stdout}\n\n--- stderr ---\n{proc.stderr}"
+            f"run_mice.R failed (exit {returncode}).\n\n--- output ---\n"
+            + "\n".join(captured)
         )
-    if proc.stdout:
-        print(proc.stdout, flush=True)
 
 
 def _restore_r_frame(

@@ -60,6 +60,7 @@ meningioma-atypier/
 │   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression (multi-variant)
 │   ├── model_validation.py         # ✅ Bootstrap internal validation + shrinkage
 │   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI + artifact export
+│   ├── plot_style.py               # 🎨 Shared matplotlib style + clinician-friendly axis/caption labels
 │   ├── report.py                   # 📄 Collapsible HTML report builder
 │   ├── config/                     # ⚙️ Cohort, rename map, missingness policy, analysis
 │   └── output/                     # 📁 Generated tables, figures, report
@@ -87,7 +88,7 @@ flowchart LR
 | Stage | Module | What it produces |
 |-------|--------|------------------|
 | 01–06 | `config/` + `cleaning.py` | Typed cohort, cleaning log, derived columns |
-| 07 | `dda.py` | Per-column distribution stats + SVG histograms |
+| 07 | `dda.py` | Per-column distribution stats + publication-style SVG histograms |
 | 08 | `missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
 | 09–10 | `eda.py` | Association table + per-pair plots (FDR-corrected) |
 | 09b | `diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
@@ -197,6 +198,8 @@ install.packages(c("mice", "jsonlite"))
 
 ### 1️⃣ Install
 
+**Python 3.11+** recommended (devcontainer uses 3.11; tested on 3.12).
+
 ```bash
 cd meningioma-atypier
 pip install -r requirements.txt
@@ -257,6 +260,13 @@ python -m pytest
 
 | Path | Contents |
 |------|----------|
+| `output/datasets/unimputed_df.parquet` | Typed cohort after cleaning — DDA / EDA / diagnostic accuracy |
+| `output/datasets/mice_imputed_df.parquet` | Representative formal-MICE draw for quick modelling checks |
+| `output/datasets/simple_imputed_df.parquet` | Simple-impute cohort (EDA shortcut only; not for Rubin pooling) |
+| `output/datasets/manifest.json` | Dtype manifest for parquet roundtrip validation (`dataset_handoff.py`) |
+| `output/missingness/mice/imputed_*.parquet` | All `m` formal-MICE draws used for Rubin pooling |
+| `output/missingness/mice/manifest.json` | MICE engine metadata (R / package versions, `m`, seed, Rubin flag) |
+| `output/missingness/mice/r_session.json` | R session snapshot recorded at imputation time |
 | `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
 | `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
 | `output/inferential/tables/<target>__<model_id>__multivariable.csv` | Adjusted ORs with 95% CI per variant |
@@ -273,11 +283,15 @@ python -m pytest
 `report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
+- **Publication-style figures** via `plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
+- **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
+- **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
 - **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target
 - **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
 - **Interpretation dropdowns** per EDA target and per inferential model variant
 - **Schema table** fades `keep=False` columns; long level lists collapse behind expanders
+- **Environment appendix:** Python packages (pip) plus R interpreter and package versions from the formal-MICE manifest
 
 Interpretation lives next to each table; there is no standalone "final conclusions" section.
 
@@ -292,7 +306,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 | Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
 | Imputation (sensitivity) & metrics | scikit-learn, joblib |
 | Validation | pandera (schema checks) |
-| Visualization | matplotlib, seaborn |
+| Visualization | matplotlib, seaborn, `plot_style.py` (shared theme + label prettifier) |
 | Deployment | Streamlit |
 | Quality | pytest |
 
@@ -310,7 +324,9 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 ## 🔮 Status
 
-🟢 **Active research pipeline** — two-notebook workflow (cleaning → modelling), multi-variant inferential modelling, handoff validation, report, and calculator are implemented and tested.
+🟢 **Active research pipeline** — two-notebook workflow (cleaning → modelling), formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-style figures, report, and calculator are implemented and tested.
+
+Recent work: notebook split with validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report.
 
 Streamlit artifacts are exported per model variant under `model_artifacts/` (e.g. `high_grade_experimental_model_1_model.json`). The default app entry point still resolves `high_grade_model.json` when present; otherwise use the newest artifact or pass an explicit path to `render_model_calculator()`.
 
@@ -403,7 +419,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **VIF** = 1 / (1 − R²ⱼ); drop if > 5 | Measures how much predictor j overlaps with the others. High VIF → unstable coefficients. | MRI signs cluster (e.g. necrosis + heterogeneous enhancement). **Alternative:** keep all collinear terms — huge CIs and uninterpretable ORs; **LASSO** — drops variables but hides *why* they left. |
 | **Logistic model** P = 1 / (1 + e^(−linear sum)) | Linear combination of predictors squeezed into a 0–1 probability. | Standard for binary outcomes in clinical research — ORs are directly publishable. **Alternative:** random forest / XGBoost — may score better but offers no transparent adjusted OR for the manuscript or calculator. |
 | **Adjusted OR** = e^β | Multiplicative change in odds per unit of encoded predictor, others held fixed. | Clinicians think in "odds of high-grade if sign present vs absent." **Alternative:** reporting only raw coefficients — not intuitive at the bedside. |
-| **Rubin pooling** θ̄ = mean(θᵢ); T = W + (1 + 1/m)·B | Average coefficient across 10 imputations; total variance = within-model noise + between-imputation noise. | Only statistically valid way to merge MI results. **Alternative:** fit on one imputed set — ignores imputation uncertainty; **complete-case** — throws away ~30% of patients and can bias if missing is not random. |
-| **Barnard–Rubin df** | Small-sample correction for p-values and CIs when m is modest (here m = 10). | Original Rubin df → ∞ too easily when between-variance is small. **Alternative:** normal z-test after MI — anti-conservative with small m. |
+| **Rubin pooling** θ̄ = mean(θᵢ); T = W + (1 + 1/m)·B | Average coefficient across the m formal-MICE datasets; total variance = within-model noise + between-imputation noise. | Only statistically valid way to merge MI results. **Alternative:** fit on one imputed set — ignores imputation uncertainty; **complete-case** — throws away ~30% of patients and can bias if missing is not random. |
+| **Barnard–Rubin df** | Small-sample correction for p-values and CIs when m is modest (publication profile m = 20). | Original Rubin df → ∞ too easily when between-variance is small. **Alternative:** normal z-test after MI — anti-conservative with small m. |
 | **Forest plot (log-scale OR)** | OR = 1 is null; CI crossing 1 means "not clearly different." Log axis keeps symmetric CIs readable. | Standard visual for multivariable clinical papers. **Alternative:** linear OR axis — squashes large ORs and stretches small ones, harder to read. |
 | **EPV check** (events per variable) | Events ÷ number of design columns in the final model. | With ~100 high-grade cases and many MRI features, overfitting is a real risk. Report marks **≥ 10 stable**, **5–10 borderline**, **< 5 underpowered**. **Alternative:** throwing in 30 predictors — apparent fit, nonsense coefficients. |
