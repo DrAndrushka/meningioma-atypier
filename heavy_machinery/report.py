@@ -29,7 +29,6 @@ import pandas as pd
 
 from inferential import (
     artifact_base,
-    is_experimental_model_id,
     model_key,
     parse_artifact_base,
     parse_model_key,
@@ -720,6 +719,7 @@ class Artifacts:
     inferential_vif: dict[str, pd.DataFrame] = field(default_factory=dict)
     inferential_model_titles: dict[str, str] = field(default_factory=dict)
     inferential_model_links: dict[str, str] = field(default_factory=dict)
+    inferential_model_experimental: dict[str, bool] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
 
     # Warnings accumulated during load (rendered in appendix)
@@ -827,6 +827,8 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
                     art.inferential_model_titles[key] = title
                 if link:
                     art.inferential_model_links[key] = link
+                if "experimental" in row and pd.notna(row["experimental"]):
+                    art.inferential_model_experimental[key] = _parse_bool(row["experimental"])
         for f in sorted(inf_tab.glob("*__multivariable.csv")):
             base = f.stem.replace("__multivariable", "")
             target, model_id = parse_artifact_base(base, known_targets)
@@ -844,14 +846,48 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     return art
 
 
-def _inferential_model_sort_key(model_key_str: str) -> tuple[int, str]:
-    """Literature variants first; experimental always last within a target."""
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "t"}
+
+
+def _legacy_experimental_from_model_id(model_id: str) -> bool:
+    """Fallback for older runs whose ``multivariable_cases.csv`` lacks ``experimental``."""
+    mid = str(model_id or "")
+    if mid in {"experimental", "experimental_model"}:
+        return True
+    return mid.startswith("experimental_")
+
+
+def _inferential_model_is_experimental(
+    model_key_str: str,
+    experimental_flags: dict[str, bool],
+) -> bool:
+    if model_key_str in experimental_flags:
+        return experimental_flags[model_key_str]
     _, model_id = parse_model_key(model_key_str)
-    return (1 if is_experimental_model_id(model_id) else 0, model_key_str)
+    return _legacy_experimental_from_model_id(model_id)
 
 
-def _sort_inferential_model_keys(keys: list[str]) -> list[str]:
-    return sorted(keys, key=_inferential_model_sort_key)
+def _inferential_model_sort_key(
+    model_key_str: str,
+    experimental_flags: dict[str, bool],
+) -> tuple[int, str]:
+    """Literature variants first; experimental always last within a target."""
+    return (
+        1 if _inferential_model_is_experimental(model_key_str, experimental_flags) else 0,
+        model_key_str,
+    )
+
+
+def _sort_inferential_model_keys(
+    keys: list[str],
+    experimental_flags: dict[str, bool],
+) -> list[str]:
+    return sorted(keys, key=lambda k: _inferential_model_sort_key(k, experimental_flags))
 
 
 def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
@@ -1969,16 +2005,19 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                + [t for t in by_target if t not in cfg.targets])
 
     for target in targets:
-        model_keys = _sort_inferential_model_keys(by_target.get(target, []))
+        model_keys = _sort_inferential_model_keys(
+            by_target.get(target, []),
+            art.inferential_model_experimental,
+        )
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
 
         literature_keys = [
             mkey for mkey in model_keys
-            if not is_experimental_model_id(parse_model_key(mkey)[1])
+            if not _inferential_model_is_experimental(mkey, art.inferential_model_experimental)
         ]
         experimental_keys = [
             mkey for mkey in model_keys
-            if is_experimental_model_id(parse_model_key(mkey)[1])
+            if _inferential_model_is_experimental(mkey, art.inferential_model_experimental)
         ]
 
         def _render_model_blocks(keys: list[str]) -> str:

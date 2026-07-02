@@ -1,7 +1,8 @@
 """Step 07 — EDA config, literature/experimental model variants, resolve helpers.
 
 ``resolve_eda`` filters EDA predictors and sets binary positive-class defaults.
-``resolve_inferential_variants`` keeps only targets/predictors present in ``df``.
+``resolve_inferential_variants`` keeps only targets/predictors present in ``df`` and tags
+variants as literature or experimental from the list they came from.
 ``print_copy_pasteable_columns`` prints a Python list of column names for §03.
 ``resolve_inferential_targets`` collects outcome columns from merged variants.
 """
@@ -9,7 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from inferential import InferentialModelVariant, is_experimental_model_id, normalize_inferential_variants
+from inferential import InferentialModelVariant, normalize_inferential_variants
 
 _BINARY_POSITIVE_TARGETS = frozenset(
     {
@@ -86,22 +87,33 @@ def resolve_inferential_targets(
 
 def resolve_inferential_variants(
     df: pd.DataFrame,
-    variants: list,
+    literature: list,
+    experimental: list | None = None,
     *,
     default_target: str = "",
 ) -> list[InferentialModelVariant]:
-    """Keep only targets/predictors present in ``df`` for each multivariable model variant."""
+    """Keep only targets/predictors present in ``df`` for each multivariable model variant.
+
+    Literature vs experimental grouping follows which list each variant came from,
+    not the model id string.
+    """
     resolved: list[InferentialModelVariant] = []
-    for var in normalize_inferential_variants(variants=variants, default_target=default_target):
-        if var.target and var.target not in df.columns:
-            continue
-        preds = tuple(c for c in var.predictors if c in df.columns)
-        if not preds:
-            continue
-        resolved.append(InferentialModelVariant(
-            var.model_id, var.title, var.link, var.target, preds,
-        ))
+
+    def _resolve_one(variants: list, *, is_experimental: bool) -> None:
+        for var in normalize_inferential_variants(variants=variants, default_target=default_target):
+            if var.target and var.target not in df.columns:
+                continue
+            preds = tuple(c for c in var.predictors if c in df.columns)
+            if not preds:
+                continue
+            resolved.append(InferentialModelVariant(
+                var.model_id, var.title, var.link, var.target, preds,
+                experimental=is_experimental,
+            ))
+
+    _resolve_one(literature, is_experimental=False)
+    _resolve_one(experimental or [], is_experimental=True)
     resolved.sort(
-        key=lambda var: (1 if is_experimental_model_id(var.model_id) else 0, var.model_id),
+        key=lambda var: (1 if var.experimental else 0, var.model_id),
     )
     return resolved

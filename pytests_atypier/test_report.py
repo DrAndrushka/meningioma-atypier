@@ -393,6 +393,49 @@ def test_render_inferential_experimental_last(report_cfg, report_art):
         {
             "target": "high_grade", "model_id": "experimental",
             "model_title": "meningioma_atypier experimental",
+            "experimental": True,
+            "n_complete_cases": 40, "n_outcome_events": 12,
+            "n_design_columns": 3, "epv": 4.0,
+        },
+        {
+            "target": "high_grade", "model_id": "yao_et_al_2022",
+            "model_title": "Yao et al. 2022",
+            "experimental": False,
+            "n_complete_cases": 38, "n_outcome_events": 12,
+            "n_design_columns": 2, "epv": 6.0,
+        },
+    ])
+    report_art.inferential_model_experimental = {
+        "high_grade::experimental": True,
+        "high_grade::yao_et_al_2022": False,
+    }
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+    assert html.index("Yao et al. 2022") < html.index("meningioma_atypier experimental")
+    assert "Literature-based models" in html
+    assert "Experimental model" in html
+    assert html.index("Literature-based models") < html.index("Experimental model")
+
+
+def test_render_inferential_legacy_id_fallback_without_experimental_column(report_cfg, report_art):
+    report_art.inferential_multivariable = {
+        "high_grade::experimental_model_1": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+        "high_grade::yao_et_al_2022": pd.DataFrame({
+            "predictor_col": ["sex"], "or": [1.5], "or_ci_lo": [1.0],
+            "or_ci_hi": [2.0], "p": [0.04],
+        }),
+    }
+    report_art.inferential_model_titles = {
+        "high_grade::experimental_model_1": "Custom model",
+        "high_grade::yao_et_al_2022": "Yao et al. 2022",
+    }
+    report_art.inferential_cases = pd.DataFrame([
+        {
+            "target": "high_grade", "model_id": "experimental_model_1",
+            "model_title": "Custom model",
             "n_complete_cases": 40, "n_outcome_events": 12,
             "n_design_columns": 3, "epv": 4.0,
         },
@@ -405,10 +448,8 @@ def test_render_inferential_experimental_last(report_cfg, report_art):
     ])
     report_cfg.targets = ("high_grade",)
     html = render_inferential(report_cfg, report_art)
-    assert html.index("Yao et al. 2022") < html.index("meningioma_atypier experimental")
-    assert "Literature-based models" in html
+    assert html.index("Yao et al. 2022") < html.index("Custom model")
     assert "Experimental model" in html
-    assert html.index("Literature-based models") < html.index("Experimental model")
 
 
 def test_to_int_or_none():

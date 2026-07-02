@@ -157,6 +157,25 @@ def test_summarize_multivariable_cases(tiny_df, tiny_schema):
     assert summary.iloc[0]["n_outcome_events"] >= 1
 
 
+def test_summarize_multivariable_cases_experimental_flag(tiny_df, tiny_schema):
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    variants = [
+        inf.InferentialModelVariant(
+            "lit", "Literature", "", "event", ("age",), experimental=False,
+        ),
+        inf.InferentialModelVariant(
+            "try_hard_model", "Try hard", "", "event", ("sex",), experimental=True,
+        ),
+    ]
+    summary = inf.summarize_multivariable_cases(
+        frames[0], schema, targets=["event"], variants=variants,
+        positive_class={"event": True},
+    )
+    by_id = dict(zip(summary["model_id"], summary["experimental"]))
+    assert by_id["lit"] is False
+    assert by_id["try_hard_model"] is True
+
+
 def test_normalize_inferential_variants_tuple():
     vars_ = normalize_inferential_variants(
         variants=[("bondo_et_al", "Bondo et al.", "https://example.com/bondo", "high_grade", ["age", "sex"])],

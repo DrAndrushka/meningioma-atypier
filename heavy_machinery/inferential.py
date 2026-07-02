@@ -40,19 +40,7 @@ class InferentialModelVariant:
     link: str
     target: str
     predictors: tuple[str, ...]
-
-
-EXPERIMENTAL_MODEL_ID = "experimental"
-LEGACY_EXPERIMENTAL_MODEL_IDS = frozenset({"experimental_model"})
-
-
-def is_experimental_model_id(model_id: str) -> bool:
-    mid = str(model_id or "")
-    if mid in LEGACY_EXPERIMENTAL_MODEL_IDS:
-        return True
-    if mid == EXPERIMENTAL_MODEL_ID:
-        return True
-    return mid.startswith(f"{EXPERIMENTAL_MODEL_ID}_")
+    experimental: bool = False
 
 
 def _slug_model_id(model_id: str) -> str:
@@ -101,6 +89,7 @@ def normalize_inferential_variants(
                     link=str(getattr(v, "link", "") or "").strip(),
                     target=str(getattr(v, "target", "") or default_target).strip(),
                     predictors=tuple(v.predictors),
+                    experimental=bool(getattr(v, "experimental", False)),
                 ))
             elif isinstance(v, dict):
                 out.append(InferentialModelVariant(
@@ -109,6 +98,7 @@ def normalize_inferential_variants(
                     link=str(v.get("link") or "").strip(),
                     target=str(v.get("target") or default_target).strip(),
                     predictors=tuple(v["predictors"]),
+                    experimental=bool(v.get("experimental", False)),
                 ))
             elif isinstance(v, (tuple, list)) and len(v) >= 5 and isinstance(v[4], (list, tuple)):
                 out.append(InferentialModelVariant(
@@ -618,6 +608,7 @@ def summarize_multivariable_cases(
                 "model_id": variant.model_id,
                 "model_title": variant.title,
                 "model_link": variant.link,
+                "experimental": variant.experimental,
                 "n_rows_total": n_total,
                 "n_complete_cases": n_used,
                 "n_rows_dropped": n_total - n_used,
@@ -791,6 +782,7 @@ def run_inferential(
             pooled_df["model_id"] = variant.model_id
             pooled_df["model_title"] = variant.title
             pooled_df["model_link"] = variant.link
+            pooled_df["experimental"] = variant.experimental
             stem = artifact_base(target, variant.model_id)
             table_df = pooled_df.drop(columns=["model_title", "model_link"], errors="ignore")
             _format_inferential_table(table_df).to_csv(
@@ -804,6 +796,7 @@ def run_inferential(
             meta["model_id"] = variant.model_id
             meta["model_title"] = variant.title
             meta["model_link"] = variant.link
+            meta["experimental"] = variant.experimental
             (tabs_dir / f"{stem}__calculator.json").write_text(
                 json.dumps(meta, indent=2), encoding="utf-8",
             )

@@ -107,7 +107,7 @@ In `meningioma-modelling.ipynb` (§03), configure three separate lists:
 | Literature | `LITERATURE_MODEL_VARIANTS` | Published predictor sets to replicate |
 | Experimental | `EXPERIMENTAL_MODEL_VARIANTS` | Your own models (any count; each with its own target + predictors) |
 
-Each variant is `(id, title, link, target, [predictors])` or an equivalent dict. Experimental ids must be `experimental` or start with `experimental_` so the report groups them under 🧪.
+Each variant is `(id, title, link, target, [predictors])` or an equivalent dict. Put custom models in `EXPERIMENTAL_MODEL_VARIANTS` — the report groups by list, not by id prefix.
 
 A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("07_analysis").print_copy_pasteable_columns(df)` in §03 to copy column names into your lists.
 
