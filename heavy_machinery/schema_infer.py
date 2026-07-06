@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal, Optional
 import re
+import unicodedata
 
 import numpy as np
 import pandas as pd
@@ -19,7 +20,7 @@ import pandas as pd
 Kind = Literal[
     "id", "binary", "ordinal", "nominal",
     "continuous", "count", "datetime", "text", "skip",
-]
+    ]
 
 DatetimeBin = Literal["year", "month", "day", "hour", "full"]
 
@@ -46,16 +47,30 @@ class ColSpec:
 # ---------------------------------------------------------------------------
 # Heuristics
 # ---------------------------------------------------------------------------
+_TRUE_LV = {"ja", "jā", "pozitīvs", "pozitivs", "poz"}
+_FALSE_LV = {"ne", "nē", "negatīvs", "negativs", "neg"}
+_TRUE_ENG = {"true", "t", "yes", "y", "positive", "pos", }
+_FALSE_ENG = {"false", "f", "no", "n", "negative", "neg",}
+_TRUE_UNIVERSAL = {"1", "1.0",}
+_FALSE_UNIVERSAL = {"0", "0.0",}
 
-_BINARY_TRUE = {"true", "t", "yes", "y", "1", "1.0", "positive", "pos"}
-_BINARY_FALSE = {"false", "f", "no", "n", "0", "0.0", "negative", "neg"}
+
+_BINARY_TRUE = _TRUE_LV | _TRUE_ENG | _TRUE_UNIVERSAL
+_BINARY_FALSE = _FALSE_LV | _FALSE_ENG | _FALSE_UNIVERSAL
+
+
+def _normalize_latvian(s: str):
+    normalized = unicodedata.normalize('NFKD', str(s))
+    no_diacritics = ''.join(c for c in normalized if not unicodedata.combining(c))
+    return no_diacritics.strip().lower()
 
 
 def _looks_binary(s: pd.Series) -> bool:
+    """Robust binary detection for bilingual (LV/EN) clinical flags."""
     vals = s.dropna().unique()
     if len(vals) != 2:
         return False
-    as_str = {str(v).strip().lower() for v in vals}
+    as_str = {_normalize_latvian(v) for v in vals}
     if as_str <= (_BINARY_TRUE | _BINARY_FALSE):
         return True
     return set(vals) <= {0, 1} or set(vals) <= {True, False}
@@ -64,12 +79,12 @@ def _looks_binary(s: pd.Series) -> bool:
 def _looks_datetime(s: pd.Series) -> bool:
     if pd.api.types.is_datetime64_any_dtype(s):
         return True
-    if not pd.api.types.is_object_dtype(s):
+    if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
         return False
-    sample = s.dropna().astype(str).head(50)
+    sample = s.dropna().astype(str).str.strip(" .").str.replace(",", ".", regex=False).head(50)
     if sample.empty:
         return False
-    parsed = pd.to_datetime(sample, errors="coerce", format="mixed")
+    parsed = pd.to_datetime(sample, errors="coerce", format="mixed", dayfirst=True)
     return parsed.notna().mean() > 0.9
 
 
@@ -78,7 +93,7 @@ def _looks_id(s: pd.Series, n_rows: int) -> bool:
     if nu < 0.95 * n_rows:
         return False
     name = (s.name or "").lower()
-    return bool(re.search(r"(^|_)(id|pk|uuid|guid|code|nr|num)(_|$)", name))
+    return bool(re.search(r"(^|_)(id|pk|uuid|guid|code|nr|num|no)(_|$)", name))
 
 
 def _infer_one(s: pd.Series, n_rows: int, ordinal_max_levels: int) -> Kind:
@@ -120,7 +135,7 @@ def infer_schema(
     *,
     ordinal_max_levels: int = 15,
     overrides: dict[str, Kind] | None = None,
-) -> dict[str, ColSpec]:
+    ) -> dict[str, ColSpec]:
     """Return {col_name: ColSpec} with inferred kind for every column."""
     overrides = overrides or {}
     out: dict[str, ColSpec] = {}
