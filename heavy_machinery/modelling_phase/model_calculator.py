@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 _REQUIRED_ARTIFACT_KEYS = (
     "model_name",
@@ -597,8 +597,8 @@ def calculator_meta_to_streamlit_artifact(
 
 
 def _default_streamlit_artifact_dir(output_root: Path) -> Path:
-    """``heavy_machinery/output`` → repo-root ``model_artifacts/``."""
-    return output_root.resolve().parent.parent / "model_artifacts"
+    """``output/`` at repo root → sibling ``model_artifacts/``."""
+    return output_root.resolve().parent / "model_artifacts"
 
 
 def write_streamlit_artifacts(

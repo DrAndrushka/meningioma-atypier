@@ -1,12 +1,10 @@
 """Heavy machinery — meningioma-atypier analysis pipeline (PSKUS cohort).
 
-Two notebooks (run from ``heavy_machinery/``):
+Notebooks and ``output/`` live at the repo root. Library code lives here:
 
-1. ``meningioma-cleaning.ipynb`` — cohort cleaning, schema, MICE → ``output/datasets/``
-2. ``meningioma-modelling.ipynb`` — DDA, EDA, multivariable models, HTML report
+- ``cleaning_phase/`` — schema, cleaning, DDA, MICE, handoff
+- ``modelling_phase/`` — EDA, inferential, validation, report, calculator
+- ``config/`` — numbered pipeline steps 01–08
 
-Also: ``streamlit run app.py`` (repo root), ``python -m pytest`` (repo root).
-
-Pipeline tables/figures → ``output/``. Calculator JSON → ``../model_artifacts/``.
-Research tool — not for clinical use without external validation.
+Also: ``streamlit run app.py``, ``python -m pytest`` (from repo root).
 """

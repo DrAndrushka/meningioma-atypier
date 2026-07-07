@@ -1,7 +1,7 @@
 """Step 04 — cohort inclusion row filters.
 
 ``RowFilter`` list with ``keep(df)`` masks. ``active=False`` skips but still logs.
-``brain_meningioma_row_filter`` drops spinal cases. ``finalize_row_drops`` feeds the report.
+``finalize_row_drops`` feeds the report.
 """
 from __future__ import annotations
 
@@ -14,8 +14,6 @@ from IPython.display import display
 
 from cleaning import export_cleaning_artifacts
 
-SPINAL_MENINGIOMA_LABEL = "Mugurkaula meningioma"
-
 
 @dataclass
 class RowFilter:
@@ -27,29 +25,11 @@ class RowFilter:
     active: bool = True
 
 
-def keep_brain_meningioma(df: pd.DataFrame) -> pd.Series:
-    """Keep intracranial cases; drop rows flagged as spinal meningioma."""
-    side = df["side"].astype("string")
-    mri = df["mri_date"].astype("string")
-    flagged = (side == SPINAL_MENINGIOMA_LABEL) | (mri == SPINAL_MENINGIOMA_LABEL)
-    return ~flagged.fillna(False)
-
-
-def brain_meningioma_row_filter(*, active: bool = True) -> RowFilter:
-    """Pre-schema inclusion filter — run before ``apply_schema``."""
-    return RowFilter(
-        name="Meningioma location - brain",
-        keep=keep_brain_meningioma,
-        note="inclusion criteria - brain meningioma",
-        active=active,
-    )
-
-
 def apply_row_filter(
     df: pd.DataFrame,
     log: list[dict],
     row_filter: RowFilter,
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     """Apply one filter; append a log entry to ``log``."""
     rows_before = len(df)
 
@@ -87,20 +67,12 @@ def apply_row_filter(
 def apply_row_filters(
     df: pd.DataFrame,
     filters: list[RowFilter],
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Apply filters in order; return filtered df and a log DataFrame."""
     log: list[dict] = []
     for row_filter in filters:
         df = apply_row_filter(df, log, row_filter)
     return df, pd.DataFrame(log)
-
-
-def combine_row_filter_logs(*logs: pd.DataFrame) -> pd.DataFrame:
-    """Concatenate pre- and post-schema filter logs in run order."""
-    frames = [log for log in logs if log is not None and not log.empty]
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
 
 
 def _drop_log_for_export(row_filter_log: pd.DataFrame) -> list[dict]:
@@ -125,12 +97,11 @@ def finalize_row_drops(
     *,
     output_root: Path,
     df_raw: pd.DataFrame,
-    n_rows_pre_schema: int | None = None,
     n_rows_after_schema: int,
     schema,
     dupes,
     schema_log,
-) -> pd.DataFrame:
+    ) -> pd.DataFrame:
     if row_filter_log.empty:
         print(f"Row filters applied — {len(df)} rows remaining")
     else:
@@ -140,7 +111,6 @@ def finalize_row_drops(
         output_root,
         df=df,
         n_rows_raw=len(df_raw),
-        n_rows_pre_schema=n_rows_pre_schema,
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=len(df),
         schema=schema,

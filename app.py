@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from heavy_machinery.model_calculator import render_model_calculator
+from heavy_machinery.modelling_phase.model_calculator import render_model_calculator
 
 st.set_page_config(page_title="Meningioma Atypier", layout="wide")
 

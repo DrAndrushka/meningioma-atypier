@@ -500,7 +500,6 @@ def _build_cleaning_summary(
     schema: dict[str, ColSpec],
     drop_log: list[dict[str, Any]] | None,
     dupes: pd.DataFrame | None,
-    n_rows_pre_schema: int | None = None,
 ) -> pd.DataFrame:
     n_skip = sum(1 for sp in schema.values() if sp.kind == "skip")
     n_excluded = sum(1 for sp in schema.values() if not sp.keep and sp.kind != "skip")
@@ -509,9 +508,7 @@ def _build_cleaning_summary(
         apply_detail += f"; dropped {n_skip} skip column(s)"
     if n_excluded:
         apply_detail += f"; excluded {n_excluded} keep=False column(s) from cleaned.csv"
-    rows_before_schema = (
-        n_rows_pre_schema if n_rows_pre_schema is not None else n_rows_raw
-    )
+    rows_before_schema = n_rows_raw
     rows: list[dict[str, Any]] = [
         {
             "step": "raw_data",
@@ -609,7 +606,6 @@ def export_cleaning_artifacts(
     *,
     df: pd.DataFrame,
     n_rows_raw: int,
-    n_rows_pre_schema: int | None = None,
     n_rows_after_schema: int,
     n_rows_final: int,
     schema: dict[str, ColSpec],
@@ -627,7 +623,6 @@ def export_cleaning_artifacts(
 
     summary = _build_cleaning_summary(
         n_rows_raw=n_rows_raw,
-        n_rows_pre_schema=n_rows_pre_schema,
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=n_rows_final,
         schema=schema,

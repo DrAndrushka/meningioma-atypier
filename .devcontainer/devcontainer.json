@@ -6,7 +6,9 @@
     "codespaces": {
       "openFiles": [
         "README.md",
-        "app.py"
+        "app.py",
+        "meningioma-cleaning.ipynb",
+        "meningioma-modelling.ipynb"
       ]
     },
     "vscode": {

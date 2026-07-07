@@ -15,7 +15,7 @@ import seaborn as sns
 from scipy.stats import skew, kurtosis, trim_mean
 
 from schema_infer import ColSpec
-from plot_style import PALETTE, apply_plot_style, prettify_label
+from heavy_machinery.modelling_phase.plot_style import PALETTE, apply_plot_style, prettify_label
 
 apply_plot_style()
 

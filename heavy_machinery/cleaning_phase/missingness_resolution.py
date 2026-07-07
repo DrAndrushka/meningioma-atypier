@@ -33,7 +33,7 @@ import time
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,7 +46,7 @@ from sklearn.impute import IterativeImputer
 from sklearn.ensemble import RandomForestRegressor
 
 from schema_infer import ColSpec
-from plot_style import PALETTE, apply_plot_style, prettify_label
+from heavy_machinery.modelling_phase.plot_style import PALETTE, apply_plot_style, prettify_label
 
 apply_plot_style()
 
@@ -1338,7 +1338,7 @@ _MICE_IMPUTABLE_KINDS = frozenset(_MICE_METHOD_BY_KIND)
 _MICE_EXCLUDED_KINDS = frozenset({"id", "text", "datetime", "skip"})
 
 MICE_ROW_ID = "__mice_row_id__"
-_R_SCRIPT = Path(__file__).resolve().parent / "scripts" / "run_mice.R"
+_R_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "run_mice.R"
 _MICE_RUN_SUBDIR = "r_run"
 
 
@@ -1379,7 +1379,7 @@ def _classify_mice_columns(
     schema: dict[str, ColSpec],
     *,
     analysis_outcome: str | None,
-    derived_dependencies: dict[str, Sequence[str]],
+    derived_dependencies: Mapping[str, Sequence[str]],
     predictor_exclusions: Sequence[str],
 ) -> dict[str, Any]:
     """Partition columns into the R imputation matrix vs reattached extras.
@@ -1435,7 +1435,7 @@ def _build_mice_spec(
     max_iter: int,
     random_state: int,
     analysis_outcome: str | None,
-    derived_dependencies: dict[str, Sequence[str]],
+    derived_dependencies: Mapping[str, Sequence[str]],
     predictor_exclusions: Sequence[str],
     input_sha256: str,
 ) -> dict[str, Any]:
@@ -1653,7 +1653,7 @@ def _validate_proper_mice_frame(
     idx: int,
     r_columns: list[str],
     vars_with_missing: list[str],
-    derived_dependencies: dict[str, Sequence[str]],
+    derived_dependencies: Mapping[str, Sequence[str]],
 ) -> None:
     """Structural checks per completed frame (Pandera is run separately)."""
     tag = f"proper MICE frame {idx}"
@@ -1792,7 +1792,7 @@ def proper_mice_impute(
     random_state: int = 42,
     output_root: Path | str = "output",
     analysis_outcome: str | None = None,
-    derived_dependencies: dict[str, Sequence[str]] | None = None,
+    derived_dependencies: Mapping[str, Sequence[str]] | None = None,
     post_impute_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     predictor_exclusions: Sequence[str] = (),
     save_imputed: bool = True,

@@ -8,7 +8,7 @@
 #   pip install -r requirements.txt
 #
 # ⚠️ NON-PYTHON DEPENDENCY — formal MICE (proper_mice_impute) runs the R `mice`
-# package via subprocess (scripts/run_mice.R). These are NOT pip-installable.
+# package via subprocess (heavy_machinery/scripts/run_mice.R). These are NOT pip-installable.
 # One-time setup:
 #   1. Install R         (macOS: `brew install r`, or https://cran.r-project.org)
 #   2. Install packages: Rscript -e 'install.packages(c("mice","jsonlite"))'
@@ -17,7 +17,7 @@
 # (the exact versions of each run are recorded in output/missingness/mice/r_session.json)
 # The pure-Python RF sensitivity method (rf_chained_impute) needs no R.
 #
-# Notebooks (run from heavy_machinery/):
+# Notebooks (run from repo root — same folder as app.py):
 #   jupyter notebook meningioma-cleaning.ipynb
 #   jupyter notebook meningioma-modelling.ipynb
 #
@@ -89,12 +89,12 @@ streamlit>=1.28
 # ───────────────────────────────────────────────────────────────────────────────
 
 pytest>=8.0
-# Unit and integration tests for heavy_machinery modules.
+# Unit and integration tests for cleaning_phase/ and modelling_phase/ modules.
 
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 📓 Notebook workflow (optional — not needed for Streamlit or pytest alone)
-#    heavy_machinery/meningioma-cleaning.ipynb + meningioma-modelling.ipynb
+#    meningioma-cleaning.ipynb + meningioma-modelling.ipynb (repo root)
 # ───────────────────────────────────────────────────────────────────────────────
 
 ipython>=8.0

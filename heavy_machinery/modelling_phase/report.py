@@ -2400,7 +2400,7 @@ _IMPORT_TO_DIST: dict[str, str] = {
 
 def _repo_root() -> Path:
     """meningioma-atypier project root (parent of heavy_machinery/)."""
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parent.parent.parent
 
 
 def _collect_local_module_names(repo_root: Path) -> set[str]:

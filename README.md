@@ -10,7 +10,7 @@
 
 The workflow is deliberately **statistics-first, not black-box ML**:
 
-1. 🧹 Clean and type clinical data with an explicit schema (row filters, derivations, pre-schema category cleanup)
+1. 🧹 Clean and type clinical data with an explicit schema (row filters, derivations)
 2. 🔍 Screen univariate associations (EDA + paper-style diagnostic accuracy)
 3. 🧩 Impute missing values with formal mixed-type MICE (R `mice`), then pool uncertainty with Rubin's rules
 4. 📐 Fit **one or more** multivariable logistic models — your experimental predictor set plus published predictor sets from the literature
@@ -43,29 +43,45 @@ Raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`
 ```
 meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
+├── meningioma-cleaning.ipynb       # 🧹 Cohort cleaning → output/datasets/ (run first)
+├── meningioma-modelling.ipynb      # 🧠 EDA + multivariable + report (run second)
+├── output/                         # 📁 Generated tables, figures, report
 ├── model_artifacts/
 │   ├── high_grade_model.json       # 📦 Primary deployed calculator artifact
 │   └── high_grade__*_model.json    # 📦 One JSON per inferential model variant
-├── heavy_machinery/
-│   ├── meningioma-cleaning.ipynb   # 🧹 Cohort cleaning → datasets (run first)
-│   ├── meningioma-modelling.ipynb  # 🧠 EDA + multivariable + report (run second)
-│   ├── cleaning.py                 # 🧹 Schema application, derivations, export
-│   ├── schema_infer.py             # 🔎 Auto-detect column types + overrides
-│   ├── dataset_handoff.py          # 🔗 Parquet handoff validation (cleaning → modelling)
-│   ├── dda.py                      # 📊 Data discovery & distribution plots
-│   ├── eda.py                      # 🔗 Univariate association screening (+ ROC-AUC column)
-│   ├── diagnostic_accuracy.py      # 🎯 Paper-style 2×2 metrics (sensitivity, PPV, Wilson CIs…)
-│   ├── missingness_resolution.py   # 🧩 Formal mixed-type MICE (R mice) + RF sensitivity + dtype restore
-│   ├── scripts/run_mice.R           # 🧬 Standalone R mice engine (called via subprocess)
-│   ├── inferential.py              # 📐 Rubin-pooled multivariable logistic regression (multi-variant)
-│   ├── model_validation.py         # ✅ Bootstrap internal validation + shrinkage
-│   ├── model_calculator.py         # 🧮 JSON artifact → Streamlit UI + artifact export
-│   ├── plot_style.py               # 🎨 Shared matplotlib style + clinician-friendly axis/caption labels
-│   ├── report.py                   # 📄 Collapsible HTML report builder
-│   ├── config/                     # ⚙️ Cohort, rename map, missingness policy, analysis
-│   └── output/                     # 📁 Generated tables, figures, report
+├── heavy_machinery/                # 📚 Pipeline library code
+│   ├── cleaning_phase/             # 🧹 Schema, cleaning, DDA, MICE, handoff
+│   │   ├── cleaning.py
+│   │   ├── schema_infer.py
+│   │   ├── dda.py
+│   │   ├── missingness_resolution.py
+│   │   └── dataset_handoff.py
+│   ├── modelling_phase/            # 🧠 EDA screen, inferential, validation, report
+│   │   ├── eda.py
+│   │   ├── diagnostic_accuracy.py
+│   │   ├── inferential.py
+│   │   ├── model_validation.py
+│   │   ├── model_calculator.py
+│   │   ├── plot_style.py
+│   │   └── report.py
+│   ├── config/                     # ⚙️ Steps 01–08 · `load("NN_name")`
+│   └── scripts/run_mice.R          # 🧬 Standalone R mice engine (called via subprocess)
+├── pyrightconfig.json              # 🔍 basedpyright extraPaths for phase imports
 └── pytests_atypier/                # 🧪 200+ automated tests
 ```
+
+### 📦 Import paths
+
+Run notebooks and commands from the **repo root** (`meningioma-atypier/`, same folder as `app.py`).
+
+| Context | How imports work |
+|---------|------------------|
+| **Notebooks** | `from heavy_machinery.config import load` and `from heavy_machinery.cleaning_phase…` / `heavy_machinery.modelling_phase…` |
+| **Library modules** | Flat sibling imports (`from schema_infer import ColSpec`, `from plot_style import …`) — `heavy_machinery.config` prepends `cleaning_phase/` and `modelling_phase/` to `sys.path` |
+| **pytest** | `pytest.ini` mirrors the same paths via `pythonpath` |
+| **Type checking** | `pyrightconfig.json` adds the two phase folders to `extraPaths` so basedpyright resolves the flat imports |
+
+`output/` also lives at the repo root (not under `heavy_machinery/`).
 
 ---
 
@@ -87,14 +103,14 @@ flowchart LR
 
 | Stage | Module | What it produces |
 |-------|--------|------------------|
-| 01–06 | `config/` + `cleaning.py` | Typed cohort, cleaning log, derived columns |
-| 07 | `dda.py` | Per-column distribution stats + publication-style SVG histograms |
-| 08 | `missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
-| 09–10 | `eda.py` | Association table + per-pair plots (FDR-corrected) |
-| 09b | `diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
-| 11–12 | `inferential.py` | Adjusted ORs, VIF, forest plot — **one block per model variant** |
-| 12b | `model_validation.py` | Optimism-corrected AUC, Brier, calibration slope |
-| 13 | `report.py` | `output/report/report.html` (collapsible sections) |
+| 01–06 | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log, derived columns |
+| 07 | `cleaning_phase/dda.py` | Per-column distribution stats + publication-style SVG histograms |
+| 08 | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
+| 09–10 | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) |
+| 09b | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
+| 11–12 | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot — **one block per model variant** |
+| 12b | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope |
+| 13 | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
 | 🌐 | `app.py` | Interactive risk calculator |
 
 ### 📚 Multiple multivariable models
@@ -128,7 +144,7 @@ Built-in literature examples mirror published meningioma grading models (Yao et 
 
 Each choice exists because clinical data is **small-N, missing, and multi-tested** — not because it sounds impressive.
 
-### 🔗 Univariate screening (`eda.py`)
+### 🔗 Univariate screening (`modelling_phase/eda.py`)
 
 | Comparison | Test | Why |
 |------------|------|-----|
@@ -138,7 +154,7 @@ Each choice exists because clinical data is **small-N, missing, and multi-tested
 | Multiple predictors per target | **Benjamini–Hochberg FDR** | Controls false discoveries across dozens of MRI features: qᵢ = min_{k≥i} p₍ₖ₎·m/k. |
 | Binary predictor vs binary outcome | **ROC-AUC** (`auc_univariate`) | Proper rank-based discrimination for the EDA table (distinct from the diagnostic-accuracy shortcut below). |
 
-### 🎯 Diagnostic accuracy (`diagnostic_accuracy.py`)
+### 🎯 Diagnostic accuracy (`modelling_phase/diagnostic_accuracy.py`)
 
 Separate from multivariable modelling. For each binary MRI sign vs binary outcome:
 
@@ -149,9 +165,9 @@ Separate from multivariable modelling. For each binary MRI sign vs binary outcom
 
 The HTML report renders this as a collapsible **"Like in that research"** table per target.
 
-### 🧩 Missing data (`missingness_resolution.py`)
+### 🧩 Missing data (`cleaning_phase/missingness_resolution.py`)
 
-- **Primary method — formal mixed-type MICE** (`proper_mice_impute`): one R `mice()` fully-conditional-specification chain imputes each incomplete variable with a model matched to its declared type — continuous/count → **PMM**, binary → **logistic**, nominal → **polytomous**, ordinal → **proportional-odds**. Python calls `Rscript scripts/run_mice.R` automatically via `subprocess` (no `rpy2`, no RStudio).
+- **Primary method — formal mixed-type MICE** (`proper_mice_impute`): one R `mice()` fully-conditional-specification chain imputes each incomplete variable with a model matched to its declared type — continuous/count → **PMM**, binary → **logistic**, nominal → **polytomous**, ordinal → **proportional-odds**. Python calls `Rscript heavy_machinery/scripts/run_mice.R` automatically via `subprocess` (no `rpy2`, no RStudio).
 - **Proper uncertainty:** all `m` datasets come from one chain, so between-imputation variance is preserved and the manifest is marked `proper_multiple_imputation=True` / `rubin_pooling_supported=True` — required before Rubin pooling.
 - **Derived columns:** non-outcome derived columns are dropped before R and **recreated from their imputed sources** via the notebook's own derivation function (single source of truth); a `DERIVED_DEPENDENCIES` map records the parent→child relationships. The analysis outcome may predict missing predictors but is never imputed, and its source column is excluded as a duplicate.
 - **Post-imputation:** dtypes restored to match the original cohort (`Categorical` levels/order, nullable `Float64`/`Int64`/`boolean`); every frame is validated for row identity, unchanged observed cells, legal categories, derived consistency, and **Pandera** — not just the first draw.
@@ -172,7 +188,7 @@ install.packages(c("mice", "jsonlite"))
 | Smoke / fast iteration | 3 | 5 |
 | Publication | 20 | 20 |
 
-### 📐 Multivariable model (`inferential.py`)
+### 📐 Multivariable model (`modelling_phase/inferential.py`)
 
 **Design matrix:**
 - Continuous / count → **z-score**: z = (x − μ) / σ → OR is "per 1 SD increase"
@@ -186,7 +202,7 @@ install.packages(c("mice", "jsonlite"))
 
 **Rubin pooling** across the m formal-MICE fits with **Barnard–Rubin** degrees of freedom (only manifests marked `proper_multiple_imputation=True` are pooled; RF sensitivity draws are rejected/flagged).
 
-### ✅ Internal validation (`model_validation.py`)
+### ✅ Internal validation (`modelling_phase/model_validation.py`)
 
 - **Bootstrap optimism correction** (1000 resamples)
 - **AUC**, **Brier score**, **calibration slope**
@@ -233,12 +249,12 @@ Rscript -e 'cat("R:", as.character(getRversion()), "| mice:", as.character(packa
 ### 2️⃣ Run the pipeline (notebooks)
 
 ```bash
-cd heavy_machinery
+cd meningioma-atypier
 jupyter notebook meningioma-cleaning.ipynb   # 1. cleaning → output/datasets/
 jupyter notebook meningioma-modelling.ipynb  # 2. analysis → output/report/
 ```
 
-Run each notebook top to bottom. Cleaning writes handoff parquets under `output/datasets/`; modelling loads them and must **not** wipe `output/`. Edit `LITERATURE_MODEL_VARIANTS` and `EXPERIMENTAL_MODEL_VARIANTS` in modelling §03 before §06 multivariable cells.
+Run each notebook top to bottom from the **repo root** (not inside `heavy_machinery/`). Cleaning writes handoff parquets under `output/datasets/`; modelling loads them and must **not** wipe `output/`. Edit `LITERATURE_MODEL_VARIANTS` and `EXPERIMENTAL_MODEL_VARIANTS` in modelling §03 before §06 multivariable cells.
 
 ### 3️⃣ Launch the calculator
 
@@ -263,7 +279,7 @@ python -m pytest
 | `output/datasets/unimputed_df.parquet` | Typed cohort after cleaning — DDA / EDA / diagnostic accuracy |
 | `output/datasets/mice_imputed_df.parquet` | Representative formal-MICE draw for quick modelling checks |
 | `output/datasets/simple_imputed_df.parquet` | Simple-impute cohort (EDA shortcut only; not for Rubin pooling) |
-| `output/datasets/manifest.json` | Dtype manifest for parquet roundtrip validation (`dataset_handoff.py`) |
+| `output/datasets/manifest.json` | Dtype manifest for parquet roundtrip validation (`cleaning_phase/dataset_handoff.py`) |
 | `output/missingness/mice/imputed_*.parquet` | All `m` formal-MICE draws used for Rubin pooling |
 | `output/missingness/mice/manifest.json` | MICE engine metadata (R / package versions, `m`, seed, Rubin flag) |
 | `output/missingness/mice/r_session.json` | R session snapshot recorded at imputation time |
@@ -281,11 +297,11 @@ python -m pytest
 
 ## 📄 HTML report
 
-`report.py` assembles a self-contained document aimed at a clinician-researcher audience:
+`modelling_phase/report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
 - **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §07)
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
-- **Publication-style figures** via `plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
+- **Publication-style figures** via `modelling_phase/plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
 - **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target; per-variant VIF diagnostics (collapsed by default)
@@ -308,7 +324,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 | Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
 | Imputation (sensitivity) & metrics | scikit-learn, joblib |
 | Validation | pandera (schema checks) |
-| Visualization | matplotlib, seaborn, `plot_style.py` (shared theme + label prettifier) |
+| Visualization | matplotlib, seaborn, `modelling_phase/plot_style.py` (shared theme + label prettifier) |
 | Deployment | Streamlit |
 | Quality | pytest |
 
@@ -326,9 +342,9 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 ## 🔮 Status
 
-🟢 **Active research pipeline** — two-notebook workflow (cleaning → modelling), formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-style figures, report, and calculator are implemented and tested.
+🟢 **Active research pipeline** — repo-root two-notebook workflow (cleaning → modelling), `cleaning_phase/` + `modelling_phase/` library layout, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-style figures, report, and calculator are implemented and tested.
 
-Recent work: notebook split with validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report; slimmer report appendix (environment + warnings only).
+Recent work: repo-root notebooks (`meningioma-cleaning.ipynb`, `meningioma-modelling.ipynb`); library split into `cleaning_phase/` and `modelling_phase/`; `pyrightconfig.json` + `pytest.ini` path wiring; validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report; slimmer report appendix (environment + warnings only).
 
 Streamlit artifacts are exported per model variant under `model_artifacts/` (e.g. `high_grade_experimental_model_1_model.json`). The default app entry point still resolves `high_grade_model.json` when present; otherwise use the newest artifact or pass an explicit path to `render_model_calculator()`.
 
@@ -346,7 +362,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 📊 DDA — Descriptive Data Analysis (`dda.py`)
+### 📊 DDA — Descriptive Data Analysis (`cleaning_phase/dda.py`)
 
 **Purpose:** understand each column *before* any testing or modelling. No p-values here — only "what does the data actually look like?"
 
@@ -363,7 +379,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 🔗 EDA — Exploratory Association Screening (`eda.py`)
+### 🔗 EDA — Exploratory Association Screening (`modelling_phase/eda.py`)
 
 **Purpose:** for each target × predictor pair, ask "is there *any* signal worth a closer look?" Tests are **univariate** (one predictor at a time) and p-values are **FDR-corrected per target**.
 
@@ -379,7 +395,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 🎯 Diagnostic accuracy (`diagnostic_accuracy.py`)
+### 🎯 Diagnostic accuracy (`modelling_phase/diagnostic_accuracy.py`)
 
 **Purpose:** radiology-style 2×2 performance metrics per binary imaging sign — complementary to EDA, not a substitute for multivariable modelling.
 
@@ -391,7 +407,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 🧩 MICE — Formal Mixed-Type Multiple Imputation (`missingness_resolution.py` + `scripts/run_mice.R`)
+### 🧩 MICE — Formal Mixed-Type Multiple Imputation (`cleaning_phase/missingness_resolution.py` + `heavy_machinery/scripts/run_mice.R`)
 
 **Purpose:** fill missing MRI/clinical values **without pretending we know the true value exactly**, using a model appropriate to each variable type, then carry that uncertainty into the regression via Rubin pooling.
 
@@ -402,7 +418,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Type-matched models** | continuous/count → **PMM**, binary → **logreg**, nominal → **polyreg**, ordinal → **polr** (recorded in `methods.csv`). | One model per declared kind; PMM draws real donor values so counts stay integer and continuous stay plausible. **Alternative:** one regression for all types, or numeric-code + round for categoricals — invents impossible categories. |
 | **Explicit predictor matrix** | Built in R (`predictor_matrix.csv`): row id, IDs, text, datetime, skipped, derived, and excluded columns are zeroed. | Nothing silently drives the imputations; fully auditable. **Alternative:** let `mice` auto-pick predictors — opaque and can leak IDs/derived leakage. |
 | **Derived-column handling** | Non-outcome derived columns (e.g. `age_bins`, `ki67_group`) are dropped before R and **recreated from imputed sources** by the notebook's own derivation function via a `DERIVED_DEPENDENCIES` map. | Avoids contradictions like `meningioma_count=1` with `multiple_meningiomas=True`. **Alternative:** copy clinical thresholds into R — duplicates logic and drifts out of sync. |
-| **R engine via `subprocess`** | Python writes `input.csv` + `mice_spec.json`, runs `Rscript scripts/run_mice.R`, reloads completed datasets, restores dtypes, validates (incl. Pandera) every frame. | Uses the gold-standard `mice` package without `rpy2`; the notebook call is unchanged. **Alternative:** reimplement MICE in Python — error-prone and non-standard. |
+| **R engine via `subprocess`** | Python writes `input.csv` + `mice_spec.json`, runs `heavy_machinery/scripts/run_mice.R`, reloads completed datasets, restores dtypes, validates (incl. Pandera) every frame. | Uses the gold-standard `mice` package without `rpy2`; the notebook call is unchanged. **Alternative:** reimplement MICE in Python — error-prone and non-standard. |
 | **Cell-variation diagnostic** | `imputed_cell_variation.csv` summarises how each originally-missing cell varies across the `m` draws (mean/sd or level counts). | Honest view of imputation spread. **Alternative:** reporting a single draw — hides uncertainty; **not** a confidence interval. |
 | **Binary left NaN in screening** (`simple_impute`) | Fast single-fill for EDA only: median/mode; binaries stay missing unless explicitly allowed. | "Unknown" ≠ "absent" during exploratory screening. **Alternative:** imputing binary as 0 — treats "not recorded" as "definitely negative." |
 | **RF chained (sensitivity only)** (`rf_chained_impute`) | Random-forest `IterativeImputer` + post-hoc Bernoulli for binaries, parallel via `joblib`. | Retained as a labelled robustness check. **Alternative (and the old default):** treating it as formal MI — it is **not** (`proper_multiple_imputation=False`, no Rubin pooling). |
@@ -410,7 +426,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 
 ---
 
-### 📐 Inferential — Multivariable Logistic Regression (`inferential.py`)
+### 📐 Inferential — Multivariable Logistic Regression (`modelling_phase/inferential.py`)
 
 **Purpose:** estimate **adjusted** odds ratios — "if we hold all other MRI signs constant, what does this one contribute to high-grade risk?" Results are **Rubin-pooled** across the m formal-MICE datasets. Run multiple **variants** to compare your cohort against published predictor sets.
 

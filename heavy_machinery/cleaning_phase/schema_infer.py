@@ -6,7 +6,6 @@ Workflow: ``infer_schema`` → ``print_schema_template`` → notebook overrides 
 
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -96,6 +95,17 @@ def _looks_id(s: pd.Series, n_rows: int) -> bool:
     return bool(re.search(r"(^|_)(id|pk|uuid|guid|code|nr|num|no)(_|$)", name))
 
 
+def _looks_numeric(s: pd.Series) -> bool:
+    if pd.api.types.is_numeric_dtype(s):
+        return True
+    if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+        return False
+    sample = s.dropna().astype(str).str.strip(" .").str.replace(",", ".", regex=False).head(50)
+    if sample.empty:
+        return False
+    parsed = pd.to_numeric(sample, errors="coerce")
+    return parsed.notna().mean() > 0.9
+
 def _infer_one(s: pd.Series, n_rows: int, ordinal_max_levels: int) -> Kind:
     nn = s.dropna()
     if nn.empty:
@@ -106,24 +116,20 @@ def _infer_one(s: pd.Series, n_rows: int, ordinal_max_levels: int) -> Kind:
         return "datetime"
     if _looks_binary(s):
         return "binary"
+    if _looks_numeric(s):
+        numeric_like = pd.to_numeric(nn, errors="coerce").dropna()
+        numeric_nunique = numeric_like.nunique()
+        if numeric_nunique == 2:
+            return "binary"
+        is_int = pd.api.types.is_integer_dtype(numeric_like) or (numeric_like % 1 == 0).all()
+        if is_int and numeric_nunique <= ordinal_max_levels and numeric_like.min() >= 0:
+            return "count"
+        return "continuous"
 
-    nu = nn.nunique()
-
-    # Categorical dtype with declared order -> ordinal.
     if isinstance(s.dtype, pd.CategoricalDtype):
         return "ordinal" if s.dtype.ordered else "nominal"
 
-    if pd.api.types.is_numeric_dtype(s):
-        is_int = pd.api.types.is_integer_dtype(s) or (nn % 1 == 0).all()
-        if is_int and nu <= ordinal_max_levels and nn.min() >= 0:
-            # Small non-negative integer set -> likely ordinal/count.
-            return "ordinal" if nu <= 10 else "count"
-        return "continuous"
-
-    # Object / string
-    if nu <= ordinal_max_levels:
-        return "nominal"
-    return "text"
+    return "nominal" if nn.nunique() > ordinal_max_levels else "text"
 
 
 # ---------------------------------------------------------------------------
@@ -190,13 +196,39 @@ def _sort_vals(vals) -> list:
         return (0, str(v))
     return sorted(vals, key=key)
 
+#============= START Printing helpers =============
+def continuous_print(s: pd.Series, n_miss: int) -> None:
+    nn = s.dropna()
+    if nn.empty:
+        print("  · (all missing)\n")
+        return
+    print(f"  · {nn.nunique()} unique · {nn.min()} … {nn.max()}")
+    if n_miss:
+        print(f"  · ∅ → {n_miss}")
+    print()
+    return
+
+def id_text_datetime_print(s: pd.Series, n_miss: int) -> None:
+    nu = s.nunique(dropna=True)
+    print(f"  · {nu} unique", end="")
+    if n_miss:
+        print(f" · ∅ → {n_miss}", end="")
+    print()
+    top_n = min(8, nu + (1 if n_miss else 0))
+    for val, cnt in s.value_counts(dropna=False).head(top_n).items():
+        print(f"  · {_fmt_val(val)} → {int(cnt)}")
+    if nu > 8:
+        print(f"  · … {nu - 8} more values")
+    print()
+
+#============= END Printing helpers =============
 
 def print_column_uniques(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
     *,
     max_levels: int = 25,
-) -> None:
+    ) -> None:
     """Print per-column unique values to help fill nulls= and replace= in schema_overrides."""
     print("📋 Column uniques — for nulls=() and replace={} in schema_overrides below\n")
 
@@ -209,28 +241,11 @@ def print_column_uniques(
         print(f"▸ {col} · {kind}")
 
         if kind == "continuous":
-            nn = s.dropna()
-            if nn.empty:
-                print("  · (all missing)\n")
-                continue
-            print(f"  · {nn.nunique()} unique · {nn.min()} … {nn.max()}")
-            if n_miss:
-                print(f"  · ∅ → {n_miss}")
-            print()
+            continuous_print(s, n_miss)
             continue
 
         if kind in ("id", "text", "datetime"):
-            nu = s.nunique(dropna=True)
-            print(f"  · {nu} unique", end="")
-            if n_miss:
-                print(f" · ∅ → {n_miss}", end="")
-            print()
-            top_n = min(8, nu + (1 if n_miss else 0))
-            for val, cnt in s.value_counts(dropna=False).head(top_n).items():
-                print(f"  · {_fmt_val(val)} → {int(cnt)}")
-            if nu > 8:
-                print(f"  · … {nu - 8} more values")
-            print()
+            id_text_datetime_print(s, n_miss)
             continue
 
         vals = _sort_vals(s.unique())
