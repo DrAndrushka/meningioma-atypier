@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Literal, Optional
+import ast
 import re
 import unicodedata
 
@@ -294,6 +295,9 @@ def schema_summary(schema: dict[str, ColSpec]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+SCHEMA_SUMMARY_NAME = "schema_summary.csv"
+
+
 def export_schema_summary(
     schema: dict[str, ColSpec],
     output_root: Path | str = "output",
@@ -303,6 +307,88 @@ def export_schema_summary(
 
     out_dir = Path(output_root) / "schema"
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / "schema_summary.csv"
+    path = out_dir / SCHEMA_SUMMARY_NAME
     format_table_for_csv(schema_summary(schema)).to_csv(path, index=False)
     return path
+
+
+def _parse_summary_cell(value: Any) -> Any:
+    """Parse a ``schema_summary.csv`` cell (lists, null markers, etc.)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() == "none":
+            return None
+        if text.startswith("[") or text.startswith("("):
+            return ast.literal_eval(text)
+        return text
+    return value
+
+
+def _parse_summary_bool(value: Any, *, default: bool = True) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes"):
+        return True
+    if text in ("false", "0", "no"):
+        return False
+    return default
+
+
+def load_schema_from_handoff(output_root: Path | str = "output") -> dict[str, ColSpec]:
+    """Rebuild ``ColSpec`` schema from ``output/schema/schema_summary.csv``.
+
+    Written by cleaning §16 handoff (final in-memory schema). Modelling reads
+    this instead of re-declaring ``schema_overrides``.
+    """
+    path = Path(output_root) / "schema" / SCHEMA_SUMMARY_NAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No schema handoff at {path}. Run meningioma-cleaning.ipynb §16 first."
+        )
+
+    table = pd.read_csv(path)
+    required = {"column", "kind"}
+    if not required.issubset(table.columns):
+        raise ValueError(f"{path.name} missing columns: {required - set(table.columns)}")
+
+    out: dict[str, ColSpec] = {}
+    for row in table.itertuples(index=False):
+        col = str(row.column)
+        kind = str(row.kind)
+        keep = _parse_summary_bool(getattr(row, "keep", True))
+        datetime_bin = _parse_summary_cell(getattr(row, "datetime_bin", None))
+        levels = _parse_summary_cell(getattr(row, "levels", None))
+        nulls_raw = _parse_summary_cell(getattr(row, "nulls", None))
+        note = getattr(row, "note", "") or ""
+        if isinstance(note, float) and pd.isna(note):
+            note = ""
+
+        ordered_levels = None
+        if isinstance(levels, list):
+            ordered_levels = levels
+        elif levels is not None:
+            ordered_levels = [levels]
+
+        nulls: tuple[Any, ...] = ()
+        if isinstance(nulls_raw, list):
+            nulls = tuple(nulls_raw)
+        elif nulls_raw is not None:
+            nulls = (nulls_raw,)
+
+        out[col] = ColSpec(
+            name=col,
+            kind=kind,  # type: ignore[arg-type]
+            ordered_levels=ordered_levels,
+            nulls=nulls,
+            keep=keep,
+            datetime_bin=datetime_bin,  # type: ignore[arg-type]
+            note=str(note),
+        )
+    return out

@@ -23,6 +23,7 @@ from missingness_resolution import (
     load_imputed_frames,
     load_unimputed_dataset,
 )
+from schema_infer import ColSpec, export_schema_summary, load_schema_from_handoff
 
 
 def _assert_missing_counts_match(
@@ -108,6 +109,38 @@ def _load_modeling_primary(output_root: Path | str) -> pd.DataFrame:
     return _load_dataset_parquet(path, dtype_spec)
 
 
+def validate_schema_against_frame(
+    df: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    *,
+    context: str = "modelling handoff",
+) -> None:
+    """Assert every dataframe column is declared in the handoff schema."""
+    df_cols = set(df.columns)
+    missing = sorted(df_cols - set(schema.keys()))
+    if missing:
+        raise ValueError(
+            f"{context}: columns in dataframe without schema entry — {missing}"
+        )
+    skip_present = sorted(c for c in df_cols if schema[c].kind == "skip")
+    if skip_present:
+        raise ValueError(
+            f"{context}: skip columns still present in dataframe — {skip_present}"
+        )
+
+
+def load_modelling_handoff(
+    output_root: Path | str = "output",
+) -> tuple[pd.DataFrame, dict[str, ColSpec], str]:
+    """Load unimputed cohort, committed schema, and imputation method for modelling."""
+    output_root = Path(output_root)
+    imputation_method = detect_imputation_method(output_root)
+    df = load_unimputed_dataset(output_root)
+    schema = load_schema_from_handoff(output_root)
+    validate_schema_against_frame(df, schema)
+    return df, schema, imputation_method
+
+
 def detect_imputation_method(output_root: Path | str) -> str:
     datasets_dir = _datasets_dir(output_root)
     mice_path = datasets_dir / MICE_MODELING_DATASET_NAME
@@ -127,11 +160,16 @@ def validate_handoff_datasets(
     *,
     df_unimputed: pd.DataFrame,
     imputation_method: str,
+    schema: dict[str, ColSpec] | None = None,
     imputed_frames: list[pd.DataFrame] | None = None,
     imputed_single: pd.DataFrame | None = None,
 ) -> None:
     """Reload saved parquets and assert equivalence to in-memory frames."""
     output_root = Path(output_root)
+
+    if schema is not None:
+        export_schema_summary(schema, output_root)
+        print("💾 Re-exported schema/schema_summary.csv (final handoff schema)")
 
     loaded_unimputed = load_unimputed_dataset(output_root)
     assert_dataset_equivalent(

@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 import schema_infer as si
-from schema_infer import ColSpec, export_schema_summary, infer_schema, print_schema_template, schema_summary
+from schema_infer import ColSpec, export_schema_summary, infer_schema, load_schema_from_handoff, print_schema_template, schema_summary
 
 
 def test_looks_binary():
@@ -99,3 +99,12 @@ def test_export_schema_summary(tiny_df, tmp_output):
     path = export_schema_summary(schema, tmp_output)
     assert path.exists()
     assert path.name == "schema_summary.csv"
+
+
+def test_load_schema_from_handoff_roundtrip(tiny_schema, tmp_output):
+    export_schema_summary(tiny_schema, tmp_output)
+    loaded = load_schema_from_handoff(tmp_output)
+    assert set(loaded.keys()) == set(tiny_schema.keys())
+    assert loaded["grade"].kind == "ordinal"
+    assert loaded["grade"].ordered_levels == [1, 2, 3]
+    assert loaded["id"].keep is False

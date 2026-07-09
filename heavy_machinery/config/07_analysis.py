@@ -1,6 +1,6 @@
 """Step 07 — EDA config, literature/experimental model variants, resolve helpers.
 
-``resolve_eda`` filters EDA predictors and sets binary positive-class defaults.
+``resolve_eda`` filters EDA predictors to columns present in ``df``.
 ``resolve_inferential_variants`` keeps only targets/predictors present in ``df`` and tags
 variants as literature or experimental from the list they came from.
 ``print_copy_pasteable_columns`` prints a Python list of column names for §03.
@@ -11,32 +11,6 @@ from __future__ import annotations
 import pandas as pd
 
 from inferential import InferentialModelVariant, normalize_inferential_variants
-
-_BINARY_POSITIVE_TARGETS = frozenset(
-    {
-        "histology_available",
-        "progesterone_pos",
-        "brain_invasion",
-        "hist_necrosis",
-        "iv_contrast",
-        "tumor_margin",
-        "dural_tail",
-        "capsular_enhancement",
-        "heterogeneous_enhancement",
-        "perifocal_edema",
-        "mass_effect",
-        "calcification",
-        "cystic_component",
-        "necrosis",
-        "hemorrhage",
-        "hyperostosis",
-        "cortical_destruction",
-        "dwi_hyperintensity",
-        "t2_hyperintensity",
-        "t1_hypointensity",
-        "transfalcine_extension",
-    }
-)
 
 
 def print_copy_pasteable_columns(
@@ -57,11 +31,10 @@ def resolve_eda(
     df: pd.DataFrame,
     eda_targets: list,
     eda_predictors: list,
-) -> tuple[list, list, dict]:
-    """Filter EDA predictors to ``df`` columns; default positive class for binary targets."""
+) -> tuple[list, list]:
+    """Filter EDA predictors to ``df`` columns."""
     eda_predictors = [c for c in eda_predictors if c in df.columns]
-    eda_positive_class = {t: True for t in eda_targets if t in _BINARY_POSITIVE_TARGETS}
-    return eda_targets, eda_predictors, eda_positive_class
+    return eda_targets, eda_predictors
 
 
 def inferential_targets_from_variants(
@@ -78,11 +51,9 @@ def inferential_targets_from_variants(
 def resolve_inferential_targets(
     df: pd.DataFrame,
     variants: list[InferentialModelVariant],
-) -> tuple[list[str], dict]:
-    """Outcome list and default positive-class map from resolved model variants."""
-    targets = [t for t in inferential_targets_from_variants(variants) if t in df.columns]
-    positive_class = {t: True for t in targets if t in _BINARY_POSITIVE_TARGETS}
-    return targets, positive_class
+) -> list[str]:
+    """Outcome columns from resolved model variants, filtered to ``df`` columns."""
+    return [t for t in inferential_targets_from_variants(variants) if t in df.columns]
 
 
 def resolve_inferential_variants(

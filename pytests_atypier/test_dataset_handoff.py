@@ -10,7 +10,9 @@ import pytest
 from dataset_handoff import (
     assert_dataset_equivalent,
     detect_imputation_method,
+    load_modelling_handoff,
     validate_handoff_datasets,
+    validate_schema_against_frame,
 )
 from missingness_resolution import (
     MICE_MODELING_DATASET_NAME,
@@ -21,6 +23,7 @@ from missingness_resolution import (
     save_imputed_frames,
     stage_unimputed_dataset,
 )
+from schema_infer import export_schema_summary
 
 
 def test_assert_dataset_equivalent_passes(tiny_df):
@@ -105,3 +108,47 @@ def test_validate_handoff_mice_draws(tmp_output, tiny_df):
         imputation_method="mice",
         imputed_frames=frames,
     )
+
+
+def test_validate_handoff_reexports_schema(tmp_output, tiny_df, tiny_schema):
+    prepare_datasets_dir(tmp_output)
+    stage_unimputed_dataset(tiny_df, tmp_output)
+    imputed = tiny_df.fillna(tiny_df.median(numeric_only=True))
+    _save_dataset_parquet(
+        imputed,
+        _datasets_dir(tmp_output) / SIMPLE_MODELING_DATASET_NAME,
+        context=SIMPLE_MODELING_DATASET_NAME,
+        dtype_reference=imputed,
+    )
+    manifest_path = _datasets_dir(tmp_output) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["modeling_dataset"] = SIMPLE_MODELING_DATASET_NAME
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    validate_handoff_datasets(
+        tmp_output,
+        df_unimputed=tiny_df,
+        imputation_method="simple",
+        imputed_single=imputed,
+        schema=tiny_schema,
+    )
+    assert (tmp_output / "schema" / "schema_summary.csv").exists()
+
+
+def test_load_modelling_handoff(tmp_output, tiny_df, tiny_schema):
+    prepare_datasets_dir(tmp_output)
+    stage_unimputed_dataset(tiny_df, tmp_output)
+    imputed = tiny_df.fillna(tiny_df.median(numeric_only=True))
+    _save_dataset_parquet(
+        imputed,
+        _datasets_dir(tmp_output) / SIMPLE_MODELING_DATASET_NAME,
+        context=SIMPLE_MODELING_DATASET_NAME,
+        dtype_reference=imputed,
+    )
+    export_schema_summary(tiny_schema, tmp_output)
+
+    df, schema, method = load_modelling_handoff(tmp_output)
+    assert method == "simple"
+    assert list(df.columns) == list(tiny_df.columns)
+    assert schema["age"].kind == "continuous"
+    validate_schema_against_frame(df, schema)
