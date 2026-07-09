@@ -867,6 +867,7 @@ def preview_multivariable_cases(
 def run_inferential_stage(
     schema: dict[str, ColSpec],
     *,
+    imputed_frames: list[pd.DataFrame] | None = None,
     targets: Sequence[str],
     predictors: Sequence[str] | None = None,
     variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
@@ -880,7 +881,7 @@ def run_inferential_stage(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", SMConvergenceWarning)
         return run_inferential(
-            None,
+            imputed_frames,
             schema,
             targets=targets,
             predictors=predictors,
