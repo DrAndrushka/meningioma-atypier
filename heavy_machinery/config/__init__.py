@@ -8,8 +8,9 @@ Usage from notebooks at the repo root (``meningioma-atypier/``)::
 01 cohort load · 02 renames · 03 schema overrides · 04 row filters ·
 05 missingness policy · 06 derivations · 07 EDA / model variants · 08 report
 
-Importing this package also prepends ``cleaning_phase/`` and ``modelling_phase/``
-to ``sys.path`` so notebooks can use ``from schema_infer import …`` etc.
+Importing this package prepends ``cleaning_phase/`` and ``modelling_phase/`` to
+``sys.path`` so library modules can use flat sibling imports
+(``from schema_infer import ColSpec``) and tests can reuse the same layout.
 """
 from __future__ import annotations
 

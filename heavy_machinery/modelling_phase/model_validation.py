@@ -1,7 +1,8 @@
 """Bootstrap internal validation and coefficient shrinkage for calculator export.
 
-Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients
-embedded in Streamlit-ready JSON artifacts.
+Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients merged into
+``output/inferential/model_artifacts/<target>_<model_id>_model.json`` by
+``model_calculator.write_streamlit_artifacts``.
 """
 
 from __future__ import annotations

@@ -45,29 +45,36 @@ meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
 ├── meningioma-cleaning.ipynb       # 🧹 Cohort cleaning → output/datasets/ (run first)
 ├── meningioma-modelling.ipynb      # 🧠 EDA + multivariable + report (run second)
-├── output/                         # 📁 Generated tables, figures, report
-├── model_artifacts/
-│   ├── high_grade_model.json       # 📦 Primary deployed calculator artifact
-│   └── high_grade__*_model.json    # 📦 One JSON per inferential model variant
-├── heavy_machinery/                # 📚 Pipeline library code
-│   ├── cleaning_phase/             # 🧹 Schema, cleaning, DDA, MICE, handoff
-│   │   ├── cleaning.py
-│   │   ├── schema_infer.py
-│   │   ├── dda.py
-│   │   ├── missingness_resolution.py
-│   │   └── dataset_handoff.py
-│   ├── modelling_phase/            # 🧠 EDA screen, inferential, validation, report
-│   │   ├── eda.py
-│   │   ├── diagnostic_accuracy.py
-│   │   ├── inferential.py
-│   │   ├── model_validation.py
-│   │   ├── model_calculator.py
-│   │   ├── plot_style.py
-│   │   └── report.py
-│   ├── config/                     # ⚙️ Steps 01–08 · `load("NN_name")`
-│   └── scripts/run_mice.R          # 🧬 Standalone R mice engine (called via subprocess)
+├── pytest.ini                      # 🧪 Test discovery (repo root)
 ├── pyrightconfig.json              # 🔍 basedpyright extraPaths for phase imports
-└── pytests_atypier/                # 🧪 200+ automated tests
+├── requirements.txt                # 📦 Python dependencies
+├── output/                         # 📁 Generated tables, figures, report (gitignored)
+│   ├── datasets/                   # Parquet handoff between notebooks
+│   ├── inferential/
+│   │   ├── tables/                 # Multivariable CSV + *__calculator.json
+│   │   ├── figures/                # Forest plots
+│   │   └── model_artifacts/        # Streamlit JSON per model variant
+│   └── report/report.html
+└── heavy_machinery/                # 📚 Pipeline library code
+    ├── cleaning_phase/             # 🧹 Schema, cleaning, DDA, MICE, handoff, validation
+    │   ├── cleaning.py
+    │   ├── schema_infer.py
+    │   ├── dda.py
+    │   ├── missingness_resolution.py
+    │   ├── validation.py
+    │   └── dataset_handoff.py
+    ├── modelling_phase/            # 🧠 EDA, inferential, validation, report, calculator
+    │   ├── eda.py
+    │   ├── diagnostic_accuracy.py
+    │   ├── inferential.py
+    │   ├── model_validation.py
+    │   ├── model_calculator.py
+    │   ├── plot_style.py
+    │   └── report.py
+    ├── config/                     # ⚙️ Steps 01–08 · `load("NN_name")`
+    ├── scripts/run_mice.R          # 🧬 R mice engine (subprocess from Python)
+    ├── pytests_atypier/            # 🧪 200+ automated tests
+    └── pytest.ini                  # Optional: `cd heavy_machinery && python -m pytest`
 ```
 
 ### 📦 Import paths
@@ -78,10 +85,10 @@ Run notebooks and commands from the **repo root** (`meningioma-atypier/`, same f
 |---------|------------------|
 | **Notebooks** | `from heavy_machinery.config import load` and `from heavy_machinery.cleaning_phase…` / `heavy_machinery.modelling_phase…` |
 | **Library modules** | Flat sibling imports (`from schema_infer import ColSpec`, `from plot_style import …`) — `heavy_machinery.config` prepends `cleaning_phase/` and `modelling_phase/` to `sys.path` |
-| **pytest** | `pytest.ini` mirrors the same paths via `pythonpath` |
-| **Type checking** | `pyrightconfig.json` adds the two phase folders to `extraPaths` so basedpyright resolves the flat imports |
+| **pytest** | Root `pytest.ini` → `heavy_machinery/pytests_atypier/` with the same `pythonpath` as above |
+| **Type checking** | `pyrightconfig.json` adds phase folders + test package to `extraPaths` |
 
-`output/` also lives at the repo root (not under `heavy_machinery/`).
+`output/` and all generated artifacts (including `output/inferential/model_artifacts/`) live at the repo root, not under `heavy_machinery/`.
 
 ---
 
@@ -108,10 +115,10 @@ flowchart LR
 | 08 | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
 | 09–10 | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) |
 | 09b | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
-| 11–12 | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot — **one block per model variant** |
-| 12b | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope |
+| 11–12 | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot, Streamlit JSON — **one block per model variant** |
+| 12b | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope → merged into calculator JSON |
 | 13 | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
-| 🌐 | `app.py` | Interactive risk calculator |
+| 🌐 | `app.py` | Interactive risk calculator (`output/inferential/model_artifacts/`) |
 
 ### 📚 Multiple multivariable models
 
@@ -132,9 +139,9 @@ Each variant gets its own:
 - EPV stability gauge (threshold marker at **EPV = 10**)
 - Rubin-pooled coefficient table + forest plot
 - VIF diagnostics (collapsed by default)
-- Per-variant `*__calculator.json` → `model_artifacts/<target>_<id>_model.json`
+- Per-variant `*__calculator.json` → `output/inferential/model_artifacts/<target>_<id>_model.json`
 
-Re-running §06 **deletes stale per-variant inferential files** before writing new ones (renamed or removed models no longer appear in the report).
+Re-running §06 **clears stale per-variant inferential files** (tables, forest plots, and Streamlit JSON) before writing new ones — renamed or removed models no longer appear in the report or calculator.
 
 Built-in literature examples mirror published meningioma grading models (Yao et al. 2022, Amano et al. 2021, Radeesri & Lekhavat 2020, Azeemuddin et al. 2018, Peng et al. 2021).
 
@@ -262,12 +269,13 @@ Run each notebook top to bottom from the **repo root** (not inside `heavy_machin
 streamlit run app.py
 ```
 
-By default the app loads `model_artifacts/high_grade_model.json`. Pass a different artifact path to `render_model_calculator()` if you wire a model selector later.
+By default the app loads `output/inferential/model_artifacts/high_grade_model.json` (newest artifact if that file is absent). Pass a different path to `render_model_calculator()` to select another variant.
 
 ### 4️⃣ Run tests
 
 ```bash
-python -m pytest
+python -m pytest                    # from repo root
+cd heavy_machinery && python -m pytest   # from library folder
 ```
 
 ---
@@ -291,7 +299,8 @@ python -m pytest
 | `output/inferential/tables/multivariable_cases.csv` | EPV / complete-case counts per variant |
 | `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot (log-scale OR axis) |
 | `output/report/report.html` | Full narrative report — major sections collapse/expand |
-| `model_artifacts/high_grade_<model_id>_model.json` | Streamlit-ready shrunken model per variant |
+| `output/inferential/tables/<target>__<model_id>__calculator.json` | Calculator metadata (intercept, terms, z-scores) per variant |
+| `output/inferential/model_artifacts/<target>_<model_id>_model.json` | Streamlit-ready shrunken model with bootstrap validation |
 
 ---
 
@@ -342,11 +351,9 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 ## 🔮 Status
 
-🟢 **Active research pipeline** — repo-root two-notebook workflow (cleaning → modelling), `cleaning_phase/` + `modelling_phase/` library layout, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-style figures, report, and calculator are implemented and tested.
+🟢 **Stable research pipeline (v1)** — two-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, HTML report, Streamlit calculator, and 200+ pytest tests in `heavy_machinery/pytests_atypier/`.
 
-Recent work: repo-root notebooks (`meningioma-cleaning.ipynb`, `meningioma-modelling.ipynb`); library split into `cleaning_phase/` and `modelling_phase/`; `pyrightconfig.json` + `pytest.ini` path wiring; validated `output/datasets/` handoff; R-based formal MICE with dtype-preserving parquet roundtrips and Pandera checks; shared `plot_style.py` for consistent figures and readable captions; MICE engine/version block in the HTML report; slimmer report appendix (environment + warnings only).
-
-Streamlit artifacts are exported per model variant under `model_artifacts/` (e.g. `high_grade_experimental_model_1_model.json`). The default app entry point still resolves `high_grade_model.json` when present; otherwise use the newest artifact or pass an explicit path to `render_model_calculator()`.
+After running modelling §06, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. Launch the calculator with `streamlit run app.py` from the repo root once inferential has completed.
 
 ---
 

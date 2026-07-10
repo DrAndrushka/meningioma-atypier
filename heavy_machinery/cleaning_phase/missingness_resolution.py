@@ -7,7 +7,8 @@ the "we're not 100% sure" honestly into the final odds ratios.
     raw cohort (has gaps)
         │  analyze_missingness()      → see where/why blanks cluster
         ▼
-    fill the blanks ─┬─ proper_mice_impute()  ★ main method (formal MICE, in R)
+    fill the blanks ─┬─ proper_mice_impute()  ★ main method (formal MICE via R;
+                     │                         heavy_machinery/scripts/run_mice.R)
                      ├─ rf_chained_impute()      sensitivity check only
                      └─ simple_impute()          quick median/mode for screening
         ▼

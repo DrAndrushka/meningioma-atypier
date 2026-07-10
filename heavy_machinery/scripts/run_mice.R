@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 
 # Formal mixed-type MICE engine for proper_mice_impute() (Python orchestrator).
+# Invoked as: Rscript heavy_machinery/scripts/run_mice.R <run_dir>
 #
 # Reads:  <run_dir>/input.csv  and  <run_dir>/mice_spec.json
 # Writes: imputed_001.csv ... imputed_m.csv, methods.csv, predictor_matrix.csv,
