@@ -52,6 +52,9 @@ def apply_row_filter(
         )
 
     out = df.loc[mask].copy()
+    for col in out.columns:
+        if isinstance(out[col].dtype, pd.CategoricalDtype):
+            out[col] = out[col].cat.remove_unused_categories()
     rows_after = len(out)
     log.append({
         "name": row_filter.name,

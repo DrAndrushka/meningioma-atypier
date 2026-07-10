@@ -27,7 +27,6 @@ data/
 # Generated pipeline outputs (anywhere under the repo)
 output/
 outputs/
-model_artifacts/
 *.parquet
 *.tmp
 dupes.csv

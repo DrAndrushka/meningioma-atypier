@@ -223,6 +223,11 @@ def _clear_inferential_artifacts(figs_dir: Path, tabs_dir: Path) -> None:
     for path in figs_dir.glob("*__forest.svg"):
         if path.is_file():
             path.unlink()
+    model_dir = tabs_dir.parent / "model_artifacts"
+    if model_dir.is_dir():
+        for path in model_dir.glob("*_model.json"):
+            if path.is_file():
+                path.unlink()
 
 
 # ---------------------------------------------------------------------------

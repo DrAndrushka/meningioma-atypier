@@ -412,3 +412,15 @@ def _update_cleaning_summary_derived(
         summary = pd.concat([summary, new_df], ignore_index=True)
 
     summary.to_csv(summary_path, index=False)
+
+
+def apply_post_mice_derivations(
+    frame: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    derivations: list,
+    ) -> pd.DataFrame:
+    """Recreate derived columns from imputed sources after R MICE."""
+    out, _schema, _log = apply_derivations(
+        frame, schema, derivations, preview=False,
+    )
+    return out
