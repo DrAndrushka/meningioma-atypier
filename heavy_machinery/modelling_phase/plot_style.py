@@ -94,6 +94,7 @@ _FIG_SUFFIX = {
 _STEM_OVERRIDES = {
     "missing_per_column": "Missing values per column",
     "co_missingness_heatmap": "Co-missingness overlap (Jaccard)",
+    "association_heatmap": "Target × predictor association heatmap",
     "chain_diagnostics": "MICE chain diagnostics",
 }
 

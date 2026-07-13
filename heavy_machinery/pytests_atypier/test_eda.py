@@ -198,3 +198,55 @@ def test_screen_associations(tiny_df, tiny_schema, tmp_output):
     sex_row = out[out["predictor"] == "sex"].iloc[0]
     assert np.isnan(sex_row["auc_univariate"])
     assert (tmp_output / "eda" / "tables" / "associations.csv").exists()
+    if out.loc[out["p_fdr"] < 0.05, "predictor"].nunique() > 0:
+        assert (tmp_output / "eda" / "figures" / "association_heatmap.svg").exists()
+
+
+def test_heatmap_color_limits():
+    mat = pd.DataFrame([[0.23, -0.05], [0.11, 0.34]], index=["a", "b"], columns=["t1", "t2"])
+    vmin, vmax = eda._heatmap_color_limits(mat)
+    assert vmin == -0.4 and vmax == 0.4
+
+
+def test_heatmap_cell_text_decluttered():
+    weak = pd.Series({"test": "spearman", "effect": 0.1, "p_fdr": 0.2})
+    strong = pd.Series({"test": "spearman", "effect": 0.35, "p_fdr": 0.2})
+    sig = pd.Series({"test": "spearman", "effect": 0.08, "p_fdr": 0.01})
+    assert eda._heatmap_cell_text(weak, fdr_alpha=0.05) == ""
+    assert eda._heatmap_cell_text(strong, fdr_alpha=0.05) == ""
+    assert eda._heatmap_cell_text(sig, fdr_alpha=0.05) == "0.1*"
+
+
+def test_heatmap_non_fdr_predictors():
+    out = pd.DataFrame([
+        {"target": "t1", "predictor": "fdr_pred", "test": "spearman",
+         "effect": 0.4, "effect_label": "spearman_rho", "p_fdr": 0.04},
+        {"target": "t2", "predictor": "fdr_pred", "test": "spearman",
+         "effect": 0.2, "effect_label": "spearman_rho", "p_fdr": 0.2},
+        {"target": "t1", "predictor": "not_fdr_pred", "test": "spearman",
+         "effect": 0.5, "effect_label": "spearman_rho", "p_fdr": 0.12},
+        {"target": "t2", "predictor": "not_fdr_pred", "test": "spearman",
+         "effect": 0.3, "effect_label": "spearman_rho", "p_fdr": 0.18},
+    ])
+    excluded = eda.heatmap_uncorrelated_predictors(out, target_order=["t1", "t2"])
+    assert excluded == ["Not FDR pred"]
+
+
+def test_association_heatmap_predictor_order():
+    out = pd.DataFrame([
+        {"target": "t1", "predictor": "weak_pred", "test": "spearman",
+         "effect": 0.1, "effect_label": "spearman_rho", "p_fdr": 0.5},
+        {"target": "t1", "predictor": "strong_pred", "test": "spearman",
+         "effect": 0.6, "effect_label": "spearman_rho", "p_fdr": 0.01},
+        {"target": "t2", "predictor": "weak_pred", "test": "spearman",
+         "effect": 0.05, "effect_label": "spearman_rho", "p_fdr": 0.8},
+        {"target": "t2", "predictor": "strong_pred", "test": "spearman",
+         "effect": 0.4, "effect_label": "spearman_rho", "p_fdr": 0.02},
+    ])
+    svg = eda.association_heatmap_svg(out, target_order=["t1", "t2"])
+    assert svg is not None
+    text = svg.decode("utf-8")
+    assert "Strong pred" in text
+    assert "Weak pred" not in text
+    excluded = eda.heatmap_uncorrelated_predictors(out, target_order=["t1", "t2"])
+    assert excluded == ["Weak pred"]

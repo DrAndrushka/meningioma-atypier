@@ -226,6 +226,16 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 .figure-card .caption { font-size: 12px; color: var(--muted);
                         margin-top: 4px; text-align: center;
                         word-break: break-word; }
+.figure-card.eda-heatmap-overview {
+    max-width: 100%;
+    margin: 8px 0 4px;
+    overflow-x: auto;
+}
+.figure-card.eda-heatmap-overview img {
+    width: auto;
+    min-width: 100%;
+    max-width: none;
+}
 
 /* Collapsible details */
 details.collapsible { margin: 8px 0 14px; }
@@ -1753,6 +1763,67 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     return section_block("🕳️ Missingness story", "".join(body))
 
 
+def _render_eda_heatmap_overview(
+    df: pd.DataFrame,
+    cfg: ReportConfig,
+    art: Artifacts,
+    *,
+    target_order: Sequence[str],
+) -> str:
+    """Embed the seaborn association heatmap (saved artifact or on-the-fly)."""
+    from eda import association_heatmap_svg, heatmap_uncorrelated_predictors
+
+    excluded = heatmap_uncorrelated_predictors(
+        df, target_order=target_order, fdr_alpha=cfg.fdr_alpha,
+    )
+
+    heatmap_path = next(
+        (p for p in art.eda_figures if p.stem == "association_heatmap"),
+        None,
+    )
+    if heatmap_path is not None and heatmap_path.exists():
+        img = _figure_img_html(heatmap_path)
+    else:
+        data = association_heatmap_svg(
+            df, target_order=target_order, fdr_alpha=cfg.fdr_alpha,
+        )
+        if not data:
+            if excluded:
+                items = "".join(f"<li>{_esc(p)}</li>" for p in excluded)
+                return (
+                    warning_box("Not enough association data for a heatmap overview.")
+                    + "<p><strong>Predictors not FDR-significant for any target</strong> "
+                    "(omitted from heatmap):</p>"
+                    f"<ul class='muted'>{items}</ul>"
+                )
+            return warning_box("Not enough association data for a heatmap overview.")
+        src = f"data:image/svg+xml;base64,{base64.b64encode(data).decode('ascii')}"
+        img = (
+            '<img src="'
+            f'{src}" alt="EDA target × predictor heatmap overview" loading="lazy"/>'
+        )
+
+    parts = [
+        "<p>Target × predictor matrix from EDA screening (wide seaborn heatmap, "
+        "1″ square cells). Only predictors FDR-significant for at least one target "
+        "appear in the matrix (strongest left); others are listed below. "
+        "Only FDR-significant cells show effect values (marked with *); "
+        "non-significant cells are colour-only. FDR threshold "
+        f"α = {cfg.fdr_alpha:g}.</p>",
+        '<div class="figure-card eda-heatmap-overview">',
+        img,
+        "</div>",
+    ]
+    if excluded:
+        items = "".join(f"<li>{_esc(p)}</li>" for p in excluded)
+        parts.append(
+            "<p><strong>Predictors not FDR-significant for any target</strong> "
+            "(omitted from heatmap):</p>"
+            f"<ul class='muted'>{items}</ul>"
+        )
+    return "".join(parts)
+
+
 def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     """🔍 EDA story — per-target, color-coded, with badges."""
     body: list[str] = []
@@ -1780,12 +1851,17 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     order = [t for t in cfg.targets if t in targets_in_data]
     order += [t for t in targets_in_data if t not in order]
 
+    body.append(details_block(
+        "🥵 Heatmap Overview",
+        _render_eda_heatmap_overview(df, cfg, art, target_order=order),
+    ))
+
     for target in order:
         sub = df[df["target"] == target].copy()
         if sub.empty:
             continue
 
-        body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
+        target_body: list[str] = []
 
         # Sort by FDR ascending, then |effect| descending
         sub["_p_num"] = sub["p_fdr"].apply(_coerce_p)
@@ -1828,7 +1904,7 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             line = (f"No predictors survived FDR correction for "
                     f"<code>{_esc(target)}</code>. Any nominal findings below "
                     f"are exploratory only.")
-        body.append(f"<p>{line}</p>")
+        target_body.append(f"<p>{line}</p>")
 
         display_cols = ["predictor", "kind", "test", "effect_label", "effect",
                         "auc_univariate", "p", "p_fdr", "significance", "strength", "n_used"]
@@ -1840,21 +1916,26 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             )
         sub["p"] = sub["p"].apply(human_p)
         sub["p_fdr"] = sub["p_fdr"].apply(human_p)
-        body.append(table_to_html(
+        target_body.append(table_to_html(
             sub[display_cols], row_class_fn=_row_class,
             # 'strength' is a pre-built <span> badge — don't HTML-escape it.
             safe_html_cols=("strength",),
         ))
-        body.append(_render_diagnostic_accuracy(target, art, cfg))
-
-        body.append(_render_eda_interpretation(target, interp_df, cfg))
+        target_body.append(_render_diagnostic_accuracy(target, art, cfg))
+        target_body.append(_render_eda_interpretation(target, interp_df, cfg))
 
         # Figures for this target
         figs = [p for p in art.eda_figures if p.stem.startswith(f"{target}__")]
         if figs:
-            body.append(details_block(
+            target_body.append(details_block(
                 f"🖼️ EDA figures for {target} ({len(figs)})",
                 svg_grid(figs)))
+
+        body.append(
+            f'<details class="collapsible">'
+            f'<summary>🎯 Target: <code>{_esc(target)}</code></summary>'
+            f'{"".join(target_body)}</details>'
+        )
 
     body.append(glossary_block(_eda_glossary()))
 

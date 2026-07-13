@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -548,6 +548,276 @@ def _plot_pair(
     plt.close(fig)
 
 
+def _heatmap_signed_effect(row: pd.Series) -> float | None:
+    """Map heterogeneous effect sizes onto one signed colour scale."""
+    eff = row.get("effect")
+    if eff is None or (isinstance(eff, float) and np.isnan(eff)):
+        return None
+    try:
+        eff = float(eff)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(eff):
+        return None
+    label = str(row.get("effect_label") or "")
+    if label in ("spearman_rho", "rank_biserial_r"):
+        return eff
+    if label in ("cramers_v", "epsilon_sq"):
+        return abs(eff)
+    return eff
+
+
+def _heatmap_coerce_p(p: Any) -> float | None:
+    """Parse numeric or ``'<0.001'``-style p-values from association tables."""
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return None
+    if isinstance(p, str):
+        s = p.strip()
+        if not s:
+            return None
+        if s.startswith("<"):
+            try:
+                return float(s[1:]) / 2
+            except ValueError:
+                return None
+        try:
+            v = float(s)
+            return v if np.isfinite(v) else None
+        except ValueError:
+            return None
+    try:
+        v = float(p)
+        return v if np.isfinite(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _heatmap_fdr_significant(row: pd.Series, *, fdr_alpha: float) -> bool:
+    p_num = _heatmap_coerce_p(row.get("p_fdr"))
+    return p_num is not None and p_num < fdr_alpha
+
+
+def _heatmap_cell_text(
+    row: pd.Series,
+    *,
+    fdr_alpha: float,
+) -> str:
+    """Annotate only FDR-significant cells; others stay colour-only."""
+    if str(row.get("test") or "") == "skip":
+        return ""
+    if not _heatmap_fdr_significant(row, fdr_alpha=fdr_alpha):
+        return ""
+    eff = row.get("effect")
+    if eff is None or (isinstance(eff, float) and np.isnan(eff)):
+        return ""
+    try:
+        eff = float(eff)
+    except (TypeError, ValueError):
+        return ""
+    if not np.isfinite(eff):
+        return ""
+    if abs(eff) < 0.05:
+        return "0*"
+    if abs(eff) >= 10:
+        return f"{eff:.0f}*"
+    return f"{eff:.1f}*"
+
+
+def _heatmap_color_limits(effect_mat: pd.DataFrame) -> tuple[float, float]:
+    """Symmetric colour limits from data (rounded up to one decimal)."""
+    import math
+
+    vals = effect_mat.to_numpy(dtype=float)
+    finite = vals[np.isfinite(vals)]
+    if finite.size == 0:
+        return -1.0, 1.0
+    max_abs = float(np.max(np.abs(finite)))
+    if max_abs <= 0:
+        return -0.1, 0.1
+    vmax = max(0.1, math.ceil(max_abs * 10) / 10)
+    return -vmax, vmax
+
+
+def _heatmap_truncated_rdbu():
+    """Higher-saturation diverging map (trim pale tails of RdBu_r)."""
+    import matplotlib as mpl
+    from matplotlib.colors import LinearSegmentedColormap
+
+    base = mpl.colormaps["RdBu_r"]
+    colors = base(np.linspace(0.12, 0.88, 256))
+    return LinearSegmentedColormap.from_list("truncated_rdbu_r", colors)
+
+
+_HEATMAP_CELL_IN = 1.0  # square 1″ × 1″ cells
+
+
+def _predictor_any_fdr_significant(
+    out: pd.DataFrame,
+    predictor: str,
+    *,
+    fdr_alpha: float,
+) -> bool:
+    """True if this predictor is FDR-significant against at least one target."""
+    sub = out[out["predictor"] == predictor]
+    if sub.empty:
+        return False
+    return any(
+        _heatmap_fdr_significant(row, fdr_alpha=fdr_alpha)
+        for _, row in sub.iterrows()
+    )
+
+
+def _heatmap_build_frames(
+    out: pd.DataFrame,
+    *,
+    target_order: Sequence[str],
+    fdr_alpha: float,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]] | None:
+    """Build plotted matrices and prettified names of omitted predictors."""
+    if out is None or out.empty:
+        return None
+
+    targets = [t for t in target_order if t in set(out["target"].dropna())]
+    preds = list(out["predictor"].dropna().unique())
+    if not targets or not preds:
+        return None
+
+    effect_mat = pd.DataFrame(np.nan, index=targets, columns=preds, dtype=float)
+    annot_mat = pd.DataFrame("", index=targets, columns=preds, dtype=object)
+    for _, row in out.iterrows():
+        t, p = row.get("target"), row.get("predictor")
+        if t not in effect_mat.index or p not in effect_mat.columns:
+            continue
+        signed = _heatmap_signed_effect(row)
+        if signed is not None:
+            effect_mat.loc[t, p] = signed
+        annot_mat.loc[t, p] = _heatmap_cell_text(row, fdr_alpha=fdr_alpha)
+
+    non_fdr = [
+        p for p in effect_mat.columns
+        if not _predictor_any_fdr_significant(out, p, fdr_alpha=fdr_alpha)
+    ]
+    excluded = sorted(prettify_label(p) for p in non_fdr)
+    plotted_cols = [p for p in effect_mat.columns if p not in non_fdr]
+    if not plotted_cols:
+        return None
+
+    effect_mat = effect_mat[plotted_cols]
+    annot_mat = annot_mat[plotted_cols]
+    pred_order = (
+        effect_mat.abs()
+        .max(axis=0)
+        .sort_values(ascending=False)
+        .index
+        .tolist()
+    )
+    effect_mat = effect_mat[pred_order]
+    annot_mat = annot_mat[pred_order]
+    return effect_mat, annot_mat, excluded
+
+
+def heatmap_uncorrelated_predictors(
+    out: pd.DataFrame,
+    *,
+    target_order: Sequence[str],
+    fdr_alpha: float = 0.05,
+) -> list[str]:
+    """Predictors never FDR-significant for any target (omitted from heatmap)."""
+    if out is None or out.empty:
+        return []
+    built = _heatmap_build_frames(
+        out, target_order=target_order, fdr_alpha=fdr_alpha,
+    )
+    if built is None:
+        return sorted(
+            prettify_label(p)
+            for p in out["predictor"].dropna().unique()
+        )
+    _, _, excluded = built
+    return excluded
+
+
+def association_heatmap_svg(
+    out: pd.DataFrame,
+    *,
+    target_order: Sequence[str],
+    fdr_alpha: float = 0.05,
+) -> bytes | None:
+    """Seaborn target × predictor heatmap (wide layout, 1″ square cells) as SVG."""
+    import io
+
+    built = _heatmap_build_frames(
+        out, target_order=target_order, fdr_alpha=fdr_alpha,
+    )
+    if built is None:
+        return None
+    effect_mat, annot_mat, _ = built
+
+    vmin, vmax = _heatmap_color_limits(effect_mat)
+    n_t, n_p = effect_mat.shape
+    fig_w = _HEATMAP_CELL_IN * n_p + 3.6
+    fig_h = _HEATMAP_CELL_IN * n_t + 2.8
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=False)
+    annot_fs = 10 if n_p <= 18 else 9
+    sns.heatmap(
+        effect_mat,
+        annot=annot_mat.values,
+        fmt="",
+        cmap=_heatmap_truncated_rdbu(),
+        center=0,
+        vmin=vmin,
+        vmax=vmax,
+        square=True,
+        linewidths=0.5,
+        linecolor="white",
+        ax=ax,
+        cbar_kws={
+            "label": (
+                "Signed effect (rho / rank-biserial; "
+                "Cramér's V & ε² on positive scale)"
+            ),
+            "shrink": 0.82,
+        },
+        xticklabels=[prettify_label(p) for p in effect_mat.columns],
+        yticklabels=[prettify_label(t) for t in effect_mat.index],
+        annot_kws={"fontsize": annot_fs},
+    )
+    ax.set_xlabel("Predictor", labelpad=10)
+    ax.set_ylabel("Target", labelpad=14)
+    ax.set_title("Association strength overview (* = FDR-significant)", pad=12)
+    x_rot = 55 if n_p > 10 else 40
+    x_fs = 7.5 if n_p > 18 else 8.5
+    plt.setp(ax.get_xticklabels(), rotation=x_rot, ha="right", fontsize=x_fs)
+    plt.setp(ax.get_yticklabels(), rotation=0)
+
+    # Keep axis titles inside the export (ylabel was clipping on wide layouts).
+    longest_y = max((len(lbl.get_text()) for lbl in ax.get_yticklabels()), default=8)
+    left = min(0.38, max(0.14, 0.007 * longest_y + 0.10))
+    bottom = 0.30 if n_p > 12 else 0.22
+    fig.subplots_adjust(left=left, bottom=bottom, right=0.90, top=0.90)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.35)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def plot_association_heatmap(
+    out: pd.DataFrame,
+    *,
+    targets: Sequence[str],
+    figs_dir: Path,
+    fdr_alpha: float = 0.05,
+) -> None:
+    """Write ``association_heatmap.svg`` under ``figs_dir`` using seaborn."""
+    data = association_heatmap_svg(
+        out, target_order=targets, fdr_alpha=fdr_alpha,
+    )
+    if data:
+        figs_dir.mkdir(parents=True, exist_ok=True)
+        (figs_dir / "association_heatmap.svg").write_bytes(data)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -693,4 +963,10 @@ def screen_associations(
            .reset_index(drop=True))
     # display-only rounding: integers stay int, fractions -> 3 sig figs (raw df returned)
     _format_table_for_csv(out).to_csv(tabs_dir / "associations.csv", index=False)
+    try:
+        plot_association_heatmap(
+            out, targets=targets, figs_dir=figs_dir, fdr_alpha=fdr_alpha,
+        )
+    except Exception as exc:
+        warnings.warn(f"EDA association heatmap skipped: {exc}", stacklevel=2)
     return out
