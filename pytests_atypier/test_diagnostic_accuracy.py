@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from diagnostic_accuracy import (
     binary_diagnostic_metrics,
@@ -102,8 +103,9 @@ def test_screen_skips_non_binary_target(tmp_output):
         "grade": ColSpec("grade", "ordinal", ordered_levels=[1, 2, 3]),
         "necrosis": ColSpec("necrosis", "binary"),
     }
-    out = screen_diagnostic_accuracy(
-        df, schema, targets=["grade"], predictors=["necrosis"],
-        output_root=tmp_output,
-    )
+    with pytest.warns(UserWarning, match="requires binary outcome"):
+        out = screen_diagnostic_accuracy(
+            df, schema, targets=["grade"], predictors=["necrosis"],
+            output_root=tmp_output,
+        )
     assert out.empty

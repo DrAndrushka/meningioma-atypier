@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import statsmodels.api as sm
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
@@ -275,10 +276,13 @@ def test_run_inferential_loads_from_disk(tiny_df, tiny_schema, tmp_output):
 
     frames, schema = _make_imputed(tiny_df, tiny_schema)
     mr.save_imputed_frames(frames, tmp_output, source_df=frames[0])
-    out = run_inferential(
-        None, schema,
-        targets=["event"], predictors=["age"],
-        positive_class={"event": True},
-        output_root=tmp_output,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        with pytest.warns(UserWarning, match="Rubin pooling on a sensitivity-analysis imputation"):
+            out = run_inferential(
+                None, schema,
+                targets=["event"], predictors=["age"],
+                positive_class={"event": True},
+                output_root=tmp_output,
+            )
     assert "target" in out.columns

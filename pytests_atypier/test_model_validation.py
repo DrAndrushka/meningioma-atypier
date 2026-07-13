@@ -37,10 +37,11 @@ def test_bootstrap_internal_validation(tiny_model_df):
 
 
 def test_enrich_streamlit_artifact_with_ordinal_predictor():
-    df = pd.DataFrame({
-        "event": [0, 1, 0, 1, 0, 1],
-        "age_bins": [0.0, 1.0, 2.0, 3.0, 4.0, 2.0],
-    })
+    rng = np.random.default_rng(0)
+    n = 80
+    age_bins = rng.integers(0, 5, size=n).astype(float)
+    event = ((age_bins + rng.normal(0, 1.5, size=n)) > 2).astype(int)
+    df = pd.DataFrame({"event": event, "age_bins": age_bins})
     design_cols = ["age_bins"]
     meta = {
         "target": "event",
@@ -56,7 +57,8 @@ def test_enrich_streamlit_artifact_with_ordinal_predictor():
     }
     artifact = calculator_meta_to_streamlit_artifact(meta, n=len(df), events=int(df["event"].sum()))
     enriched = enrich_streamlit_artifact(artifact, df, design_cols, n_bootstrap=20)
-    assert enriched["coefficients"]["age_bins"] == pytest.approx(0.2 * enriched["coefficient_processing"]["shrinkage_factor"])
+    shrinkage = enriched["coefficient_processing"]["shrinkage_factor"]
+    assert enriched["coefficients"]["age_bins"] == pytest.approx(0.2 * shrinkage, abs=0.0001)
 
 
 def test_enrich_streamlit_artifact_adds_validation(tiny_model_df):

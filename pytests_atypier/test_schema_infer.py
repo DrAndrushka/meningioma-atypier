@@ -67,12 +67,11 @@ def test_print_schema_template(tiny_df, capsys):
     assert "schema_overrides" in text
 
 
-def test_schema_summary(tiny_df):
-    schema = infer_schema(tiny_df)
-    tbl = schema_summary(schema)
+def test_schema_summary(tiny_schema):
+    tbl = schema_summary(tiny_schema)
     assert list(tbl.columns) == ["column", "kind", "keep", "datetime_bin", "levels", "nulls", "note"]
     grade = tbl.loc[tbl["column"] == "grade", "levels"].iloc[0]
-    assert grade == [1, 2]
+    assert grade == [1, 2, 3]
 
 
 def test_schema_summary_nominal_levels_from_replace():

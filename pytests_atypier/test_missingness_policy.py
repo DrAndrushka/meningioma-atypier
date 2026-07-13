@@ -41,7 +41,9 @@ def test_apply_structural_group():
     out, out_schema, log = _c05.apply_missingness_policy(df, schema, groups, [])
 
     assert out["n_slots"].tolist() == [2, 0, 1]
-    assert out["max_slot"].tolist() == [2.0, None, 3.0]
+    assert out["max_slot"].iloc[0] == 2.0
+    assert pd.isna(out["max_slot"].iloc[1])
+    assert out["max_slot"].iloc[2] == 3.0
     assert out_schema["slot_1"].kind == "skip"
     assert out_schema["slot_2"].kind == "skip"
     assert log.iloc[0]["status"] == "applied"

@@ -30,7 +30,7 @@ def test_apply_row_filters_active_and_inactive():
     assert log.iloc[0]["rows_before"] == 3
     assert log.iloc[0]["rows_after"] == 2
     assert log.iloc[0]["rows_removed"] == 1
-    assert log.iloc[1]["active"] is False
+    assert log.iloc[1]["active"] == False
     assert log.iloc[1]["rows_removed"] == 0
 
 

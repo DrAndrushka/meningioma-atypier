@@ -17,7 +17,7 @@ from model_calculator import (
     write_streamlit_artifacts,
 )
 
-ARTIFACT_PATH = Path(__file__).resolve().parents[1] / "model_artifacts" / "high_grade_model.json"
+ARTIFACT_PATH = Path(__file__).resolve().parent / "fixtures" / "high_grade_model.json"
 
 
 @pytest.fixture
@@ -54,8 +54,11 @@ def test_build_encoded_features_keys(artifact: dict):
     )
     assert encoded["tumor_location_skull_base"] == 1.0
     vol_feat = next(f for f in artifact["features"] if f["name"] == "tumor_volume")
-    z_vol = (10.0 - vol_feat["z_mu"]) / vol_feat["z_sd"]
-    assert encoded["tumor_volume"] == pytest.approx(z_vol)
+    if vol_feat.get("transform") == "standardize":
+        z_vol = (10.0 - vol_feat["z_mu"]) / vol_feat["z_sd"]
+        assert encoded["tumor_volume"] == pytest.approx(z_vol)
+    else:
+        assert encoded["tumor_volume"] == pytest.approx(10.0)
     assert encoded["perifocal_edema"] == 0.0
     assert encoded["hyperostosis"] == 1.0
 

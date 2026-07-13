@@ -60,9 +60,9 @@ def test_stats_binary():
     s = pd.Series([True, False, True], dtype="boolean")
     stats = dda._stats_binary(s)
     assert stats["n"] == 3
-    assert stats["mode"] is True
+    assert stats["mode"] == True
     assert stats["mode_pct"] == round(200 / 3, 2)
-    assert stats["rarest"] is False
+    assert stats["rarest"] == False
     assert stats["rarest_pct"] == round(100 / 3, 2)
     assert "median_category" not in stats
     assert "second_mode" not in stats
