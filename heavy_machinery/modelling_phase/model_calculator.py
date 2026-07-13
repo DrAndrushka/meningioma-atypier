@@ -1,7 +1,7 @@
 """Streamlit risk calculator UI and JSON artifact export.
 
 Renders inputs, predicted probability, and validation charts from inferential
-``*__calculator.json`` files. Writes ``model_artifacts/<target>_<model_id>_model.json``.
+``*__calculator.json`` files. Writes ``output/inferential/model_artifacts/<target>_<model_id>_model.json``.
 """
 
 from __future__ import annotations
@@ -597,8 +597,8 @@ def calculator_meta_to_streamlit_artifact(
 
 
 def _default_streamlit_artifact_dir(output_root: Path) -> Path:
-    """``output/`` at repo root → sibling ``model_artifacts/``."""
-    return output_root.resolve().parent / "model_artifacts"
+    """``output/inferential/model_artifacts/`` under the pipeline output root."""
+    return output_root.resolve() / "inferential" / "model_artifacts"
 
 
 def write_streamlit_artifacts(
@@ -612,7 +612,7 @@ def write_streamlit_artifacts(
     vif_threshold: float = 5.0,
     n_bootstrap: int = 1000,
 ) -> list[Path]:
-    """Write ``model_artifacts/<target>_model.json`` from inferential calculator meta."""
+    """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta."""
     from model_validation import build_complete_case_frame, enrich_streamlit_artifact
 
     output_root = Path(output_root)
@@ -681,12 +681,14 @@ def resolve_streamlit_artifact_path(
     artifact_path: str | Path | None = None,
     *,
     project_root: Path | str | None = None,
+    output_root: Path | str | None = None,
 ) -> Path:
-    """Resolve explicit path or newest ``model_artifacts/*_model.json``."""
+    """Resolve explicit path or newest ``output/inferential/model_artifacts/*_model.json``."""
     if artifact_path is not None:
         return _resolve_artifact_path(artifact_path)
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
-    art_dir = root / "model_artifacts"
+    out = Path(output_root) if output_root is not None else root / "output"
+    art_dir = _default_streamlit_artifact_dir(out)
     candidates = sorted(art_dir.glob("*_model.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
         raise FileNotFoundError(

@@ -129,8 +129,8 @@ def test_write_streamlit_artifacts(tmp_path: Path):
         }),
         encoding="utf-8",
     )
-    art_dir = tmp_path.parent / "model_artifacts"
-    paths = write_streamlit_artifacts(tmp_path, artifact_dir=art_dir)
+    paths = write_streamlit_artifacts(tmp_path)
+    art_dir = tmp_path / "inferential" / "model_artifacts"
     assert paths == [art_dir / "event_model.json"]
     assert json.loads(paths[0].read_text())["target"] == "event"
 

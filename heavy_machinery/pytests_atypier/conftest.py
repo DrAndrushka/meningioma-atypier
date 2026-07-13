@@ -1,4 +1,8 @@
-"""Shared pytest fixtures (tiny dataframe, schema, temp output root)."""
+"""Shared pytest fixtures for ``heavy_machinery/pytests_atypier/``.
+
+Tiny dataframe + schema for cleaning/modelling tests; ``tmp_output`` as a stand-in
+for repo-root ``output/``.
+"""
 
 from __future__ import annotations
 

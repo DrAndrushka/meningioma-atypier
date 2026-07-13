@@ -1,9 +1,10 @@
 """Rubin-pooled multivariable logistic regression on MICE-imputed cohorts.
 
 Fits one model per variant (literature + experimental lists from ``config/07``).
-VIF pruning, forest plots, calculator JSON, EPV / complete-case tables.
-Removes stale per-variant artifacts at the start of each run.
-Artifacts → ``output/inferential/``.
+VIF pruning, forest plots, calculator JSON, EPV / complete-case tables, and
+Streamlit-ready JSON under ``output/inferential/model_artifacts/``.
+Removes stale per-variant tables, figures, and model JSON at the start of each run.
+Artifacts → ``output/inferential/`` (``tables/``, ``figures/``, ``model_artifacts/``).
 """
 
 from __future__ import annotations
@@ -223,6 +224,11 @@ def _clear_inferential_artifacts(figs_dir: Path, tabs_dir: Path) -> None:
     for path in figs_dir.glob("*__forest.svg"):
         if path.is_file():
             path.unlink()
+    model_dir = tabs_dir.parent / "model_artifacts"
+    if model_dir.is_dir():
+        for path in model_dir.glob("*_model.json"):
+            if path.is_file():
+                path.unlink()
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +730,7 @@ def run_inferential(
     """
     Run multivariable logistic regression per target × model variant with Rubin
     pooling over the MICE imputations. Returns combined long-format results and
-    writes tables + forest plot SVGs.
+    writes tables, forest plot SVGs, and Streamlit JSON under ``output/inferential/``.
 
     Pass ``predictors=`` for a single model (legacy filenames), or ``variants=``
     for multiple named predictor sets (e.g. literature-based calculators).
@@ -732,6 +738,9 @@ def run_inferential(
 
     Pass ``imputed_frames=None`` to load draws from
     ``output/missingness/mice/`` or ``output/datasets/`` (written by imputation).
+
+    Stale per-variant CSV/SVG/JSON in ``output/inferential/`` is removed before
+    each run so renamed or dropped models cannot linger in the report or calculator.
     """
     output_root = Path(output_root)
     if imputed_frames is None:
@@ -875,7 +884,11 @@ def run_inferential_stage(
     vif_threshold: float = 5.0,
     output_root: Path | str = "output",
 ) -> pd.DataFrame:
-    """Notebook entry point: load MICE parquets, fit Rubin-pooled models, write artifacts."""
+    """Notebook entry point: load MICE parquets, fit Rubin-pooled models, write artifacts.
+
+    Writes ``output/inferential/tables/``, ``figures/``, and
+    ``output/inferential/model_artifacts/*.json`` (Streamlit calculator).
+    """
     from statsmodels.tools.sm_exceptions import ConvergenceWarning as SMConvergenceWarning
 
     with warnings.catch_warnings():

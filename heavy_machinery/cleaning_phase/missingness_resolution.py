@@ -7,7 +7,8 @@ the "we're not 100% sure" honestly into the final odds ratios.
     raw cohort (has gaps)
         │  analyze_missingness()      → see where/why blanks cluster
         ▼
-    fill the blanks ─┬─ proper_mice_impute()  ★ main method (formal MICE, in R)
+    fill the blanks ─┬─ proper_mice_impute()  ★ main method (formal MICE via R;
+                     │                         heavy_machinery/scripts/run_mice.R)
                      ├─ rf_chained_impute()      sensitivity check only
                      └─ simple_impute()          quick median/mode for screening
         ▼
@@ -32,6 +33,8 @@ import subprocess
 import time
 import warnings
 from datetime import UTC, datetime
+from functools import partial
+from inspect import getmodule
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
@@ -1793,6 +1796,7 @@ def proper_mice_impute(
     output_root: Path | str = "output",
     analysis_outcome: str | None = None,
     derived_dependencies: Mapping[str, Sequence[str]] | None = None,
+    derivations: list | None = None,
     post_impute_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     predictor_exclusions: Sequence[str] = (),
     save_imputed: bool = True,
@@ -1834,6 +1838,20 @@ def proper_mice_impute(
             f"proper_mice_impute: analysis_outcome {analysis_outcome!r} not in df"
         )
     derived_dependencies = dict(derived_dependencies or {})
+    if derivations is not None and post_impute_transform is None:
+        # Use the same loaded config module that built DERIVATIONS in the
+        # notebook. load("06_derivations") re-executes the file and creates new
+        # dataclass types, so isinstance() inside apply_derivations would fail.
+        derivations_mod = getmodule(derivations[0]) if derivations else None
+        if derivations_mod is None:
+            from heavy_machinery.config import load
+
+            derivations_mod = load("06_derivations")
+        post_impute_transform = partial(
+            derivations_mod.apply_post_mice_derivations,
+            schema=schema,
+            derivations=derivations,
+        )
 
     parts = _classify_mice_columns(
         df, schema,

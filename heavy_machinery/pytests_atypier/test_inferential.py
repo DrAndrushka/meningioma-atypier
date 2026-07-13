@@ -257,6 +257,10 @@ def test_run_inferential_clears_stale_artifacts(tiny_df, tiny_schema, tmp_output
     stale_table.write_text("stale")
     stale_fig = figs / "event__old_model__forest.svg"
     stale_fig.write_text("<svg></svg>")
+    model_dir = tmp_output / "inferential" / "model_artifacts"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    stale_model = model_dir / "event__old_model_model.json"
+    stale_model.write_text("{}")
 
     run_inferential(
         frames, schema,
@@ -268,7 +272,9 @@ def test_run_inferential_clears_stale_artifacts(tiny_df, tiny_schema, tmp_output
 
     assert not stale_table.exists()
     assert not stale_fig.exists()
+    assert not stale_model.exists()
     assert (tabs / "event__new_model__multivariable.csv").exists()
+    assert (model_dir / "event_new_model_model.json").exists()
 
 
 def test_run_inferential_loads_from_disk(tiny_df, tiny_schema, tmp_output):

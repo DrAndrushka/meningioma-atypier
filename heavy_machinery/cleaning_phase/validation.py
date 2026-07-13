@@ -1,3 +1,9 @@
+"""Pandera schema validation for cleaned and imputed cohort frames.
+
+Builds serializable checks from ``ColSpec`` (categories, dtypes, ranges) and validates
+every handoff parquet — unimputed cohort after cleaning and each MICE draw before
+multivariable modelling. Artifacts → ``output/cleaning/schema_validation.json``.
+"""
 import numpy as np
 import pandas as pd
 import pandera.pandas as pa
