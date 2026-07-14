@@ -1,6 +1,6 @@
 """Step 01 — load raw cohort export and optional year filter.
 
-``load_raw`` supports CSV or Excel. ``filter_cohort``: ``None`` = all years;
+``load_raw`` supports CSV or Excel (single path or list of paths). ``filter_cohort``: ``None`` = all years;
 ``[2024, 2025]`` = subset. Empty list raises — use ``None`` instead.
 """
 from __future__ import annotations
@@ -8,12 +8,33 @@ from __future__ import annotations
 import pandas as pd
 
 
-def load_raw(data_path: str) -> pd.DataFrame:
+def _read_export(data_path: str) -> pd.DataFrame:
     if str(data_path).endswith(".csv"):
-        df_raw = pd.read_csv(data_path)
-    else:
-        df_raw = pd.read_excel(data_path)
-    print(f"Loaded: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns")
+        return pd.read_csv(data_path)
+    return pd.read_excel(data_path)
+
+
+def load_raw(data_path: str | list[str]) -> pd.DataFrame:
+    if isinstance(data_path, str):
+        df_raw = _read_export(data_path)
+        print(f"Loaded: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns")
+        return df_raw
+
+    paths = list(data_path)
+    if not paths:
+        raise ValueError("data_path is empty")
+
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        df = _read_export(path)
+        print(f"Loaded {path}: {df.shape[0]} rows × {df.shape[1]} columns")
+        frames.append(df)
+
+    df_raw = pd.concat(frames, ignore_index=True)
+    print(
+        f"Combined: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns "
+        f"({len(frames)} files)"
+    )
     return df_raw
 
 

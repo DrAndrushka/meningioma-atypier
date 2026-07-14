@@ -6,6 +6,12 @@ for repo-root ``output/``.
 
 from __future__ import annotations
 
+import os
+
+# joblib/loky workers on Windows default to cp1252 stdout; MICE progress prints use emoji.
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+os.environ.setdefault("PYTHONUTF8", "1")
+
 from pathlib import Path
 
 import matplotlib
