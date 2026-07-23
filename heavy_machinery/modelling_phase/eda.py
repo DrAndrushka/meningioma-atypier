@@ -152,7 +152,12 @@ def _cramers_v(table: np.ndarray) -> float:
 
 
 def _mwu_with_effect(x_group1: np.ndarray, x_group0: np.ndarray):
-    """Mann–Whitney U (two-sided) with signed rank-biserial r = 1 - 2U/(n1·n0)."""
+    """Mann–Whitney U (two-sided) with signed rank-biserial r.
+
+    Call order is fixed and required: ``x_group1`` = values where outcome==1,
+    ``x_group0`` = values where outcome==0. ``U`` is scipy's statistic for
+    ``x_group1``. Effect: Kerby ``r = 2U/(n1·n0) - 1`` (+1 ⇒ group1 higher).
+    """
     n1, n0 = len(x_group1), len(x_group0)
     if n1 < 2 or n0 < 2:
         return np.nan, np.nan, np.nan, n1 + n0
@@ -160,7 +165,7 @@ def _mwu_with_effect(x_group1: np.ndarray, x_group0: np.ndarray):
     U = float(res.statistic)
     p = float(res.pvalue)
     denom = n1 * n0
-    r = float(1.0 - (2.0 * U) / denom) if denom > 0 else np.nan
+    r = float((2.0 * U) / denom - 1.0) if denom > 0 else np.nan
     return U, p, r, n1 + n0
 
 
@@ -273,6 +278,7 @@ def _association_test(
         y_arr = pair[y_col].values.astype(float)
         if pred_kind in ("continuous", "count"):
             x = pair[pred].astype(float).values
+            # Fixed order: outcome==1 first, outcome==0 second (locks sign).
             stat, p, eff, _ = _mwu_with_effect(x[y_arr == 1], x[y_arr == 0])
             return {"test": "mann_whitney_u", "stat": stat, "p": p,
                     "effect": eff, "effect_label": "rank_biserial_r"}
@@ -281,6 +287,7 @@ def _association_test(
             return _spearman_row(y_arr, x.values)
         if pred_kind == "datetime":
             x, _ = _predictor_values(pair, pred, pred_spec)
+            # Fixed order: outcome==1 first, outcome==0 second (locks sign).
             stat, p, eff, _ = _mwu_with_effect(
                 x.values[y_arr == 1], x.values[y_arr == 0])
             return {"test": "mann_whitney_u_days", "stat": stat, "p": p,

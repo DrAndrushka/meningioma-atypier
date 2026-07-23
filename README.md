@@ -34,7 +34,7 @@ The workflow is deliberately **statistics-first, not black-box ML**:
 | 📏 Size & location | max diameter, skull-base vs non-skull-base, laterality |
 | 👤 Demographics | age, sex, multiple meningiomas |
 
-Raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`
+Default raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`. Cleaning §01 accepts a **list** of CSV/XLSX paths (`DATA_PATHS`) and stacks them with `pd.concat`.
 
 ---
 
@@ -45,11 +45,18 @@ meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
 ├── meningioma-cleaning.ipynb       # 🧹 Cohort cleaning → output/datasets/ (run first)
 ├── meningioma-modelling.ipynb      # 🧠 EDA + multivariable + report (run second)
+├── aesthetics_experiments.ipynb    # 🎨 Local graph / e-poster prototyping (optional)
 ├── pytest.ini                      # 🧪 Test discovery (repo root)
 ├── pyrightconfig.json              # 🔍 basedpyright extraPaths for phase imports
 ├── requirements.txt                # 📦 Python dependencies
 ├── output/                         # 📁 Generated tables, figures, report (gitignored)
 │   ├── datasets/                   # Parquet handoff between notebooks
+│   ├── dda/
+│   │   ├── figures/                # Univariate DDA SVGs
+│   │   └── figures_bivariate/      # Optional bivariate DDA SVGs
+│   ├── eda/
+│   │   ├── tables/                 # associations.csv, diagnostic_accuracy.csv
+│   │   └── figures/                # per-pair plots + association_heatmap.svg
 │   ├── inferential/
 │   │   ├── tables/                 # Multivariable CSV + *__calculator.json
 │   │   ├── figures/                # Forest plots
@@ -111,9 +118,9 @@ flowchart LR
 | Stage | Module | What it produces |
 |-------|--------|------------------|
 | 01–06 | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log, derived columns |
-| 07 | `cleaning_phase/dda.py` | Per-column distribution stats + publication-style SVG histograms |
+| 07 | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`) |
 | 08 | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
-| 09–10 | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) |
+| 09–10 | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
 | 09b | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
 | 11–12 | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot, Streamlit JSON — **one block per model variant** |
 | 12b | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope → merged into calculator JSON |
@@ -136,7 +143,7 @@ A resolve cell merges literature + experimental lists, filters to columns presen
 
 Each variant gets its own:
 
-- EPV stability gauge (threshold marker at **EPV = 10**)
+- EPV stability gauge (threshold marker at **EPV = 10**; events = **minority** class count ÷ design columns)
 - Rubin-pooled coefficient table + forest plot
 - VIF diagnostics (collapsed by default)
 - Per-variant `*__calculator.json` → `output/inferential/model_artifacts/<target>_<id>_model.json`
@@ -155,7 +162,7 @@ Each choice exists because clinical data is **small-N, missing, and multi-tested
 
 | Comparison | Test | Why |
 |------------|------|-----|
-| Continuous vs binary outcome | **Mann–Whitney U** | Non-parametric; robust to skewed tumor volumes and ADC values. Effect: rank-biserial *r* = 1 − 2U/(n₁·n₀). |
+| Continuous vs binary outcome | **Mann–Whitney U** | Non-parametric; robust to skewed tumor volumes and ADC values. Effect: rank-biserial *r* = 2U₁/(n₁·n₀) − 1 (groups always passed as outcome==1, then outcome==0; + ⇒ higher in positive class). |
 | Ordinal vs binary | **Spearman ρ** | Uses rank order without assuming equal spacing between WHO-style categories. |
 | Nominal vs binary | **χ²** (or **Fisher exact** if sparse) | Tests independence in the 2×K table. Effect: **Cramér's V** = √(χ² / n·min(r−1, c−1)). |
 | Multiple predictors per target | **Benjamini–Hochberg FDR** | Controls false discoveries across dozens of MRI features: qᵢ = min_{k≥i} p₍ₖ₎·m/k. |
@@ -291,7 +298,10 @@ cd heavy_machinery && python -m pytest   # from library folder
 | `output/missingness/mice/imputed_*.parquet` | All `m` formal-MICE draws used for Rubin pooling |
 | `output/missingness/mice/manifest.json` | MICE engine metadata (R / package versions, `m`, seed, Rubin flag) |
 | `output/missingness/mice/r_session.json` | R session snapshot recorded at imputation time |
+| `output/dda/figures/` | Univariate DDA SVGs (hist / bar / box / timeline) |
+| `output/dda/figures_bivariate/` | Optional bivariate DDA SVGs (`{x}__by__{partner}.svg`) |
 | `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
+| `output/eda/figures/association_heatmap.svg` | Target × predictor signed-effect overview (* = FDR-significant) |
 | `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
 | `output/inferential/tables/<target>__<model_id>__multivariable.csv` | Adjusted ORs with 95% CI per variant |
 | `output/inferential/tables/<target>__<model_id>__vif.csv` | VIF diagnostics per variant (also in report multivariable section) |
@@ -310,6 +320,8 @@ cd heavy_machinery && python -m pytest   # from library folder
 
 - **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §07)
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
+- **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
+- **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
 - **Publication-style figures** via `modelling_phase/plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
@@ -355,6 +367,18 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 After running modelling §06, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. Launch the calculator with `streamlit run app.py` from the repo root once inferential has completed.
 
+### Recent changes (main)
+
+| Commit | What landed |
+|--------|-------------|
+| *(uncommitted)* | **Rank-biserial sign fix** in `eda._mwu_with_effect`: Kerby `r = 2U₁/(n₁·n₀) − 1` with groups always `(outcome==1, outcome==0)`; + means higher in the positive class. Regression tests in `test_eda.py`. Re-run EDA/heatmap after this lands. |
+| `e534a58` | **EPV** uses the **minority** class (not the labelled positive class). Richer **bivariate DDA** plots, including continuous partners. |
+| `aaa5f0d` | Bivariate DDA distribution plot generation (`run_dda_bivariate` → `output/dda/figures_bivariate/`). |
+| `c6dcc1f` | Aesthetics / e-poster graph experiments notebook (local prototyping). |
+| `e285589` | Cleaning ingest accepts **multiple** CSV/XLSX inputs. |
+| `cca03a5` | Streamlit **`model_artifacts/`** moved under `output/inferential/`. |
+| `cadb796` | FDR-focused **EDA association heatmap** + collapsible HTML report sections. |
+
 ---
 
 ## 📚 Reference style
@@ -383,16 +407,17 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Mode %, class imbalance** = top count ÷ rarest count | How dominant the most common category is. | Catches degenerate fields (e.g. 98% "absent") before χ² tests fail. **Alternative:** plotting only — tables catch imbalance across the whole schema at once. |
 | **Entropy** H = −Σ p·log₂(p); **balance** = H ÷ log₂(k) | H measures category diversity; balance scales it 0 (one class) → 1 (even split). | Quantifies whether a nominal field carries information or is nearly constant. **Alternative:** counting levels manually — entropy summarizes imbalance in one number. |
 | **Histogram + KDE, boxplot** | Bar counts per bin; smooth curve over the shape; box shows median and outliers. | Visual sanity check alongside the table — spots bimodality, typos, impossible values. **Alternative:** summary stats alone — miss two-peaked ADC distributions or data-entry spikes. |
+| **Bivariate seaborn plots** (`run_dda_bivariate`) | Selected `x` columns stratified / scatter-paired by partner columns → SVGs under `figures_bivariate/`. | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** only univariate plots — miss age/sex structure that later confounds associations. |
 
 ---
 
 ### 🔗 EDA — Exploratory Association Screening (`modelling_phase/eda.py`)
 
-**Purpose:** for each target × predictor pair, ask "is there *any* signal worth a closer look?" Tests are **univariate** (one predictor at a time) and p-values are **FDR-corrected per target**.
+**Purpose:** for each target × predictor pair, ask "is there *any* signal worth a closer look?" Tests are **univariate** (one predictor at a time) and p-values are **FDR-corrected per target**. An optional **association heatmap** maps signed effects onto one colour scale (Spearman / rank-biserial keep their sign; Cramér's V and ε² are shown on the positive scale).
 
 | Formula | How it works (brief) | Why here (vs alternatives) |
 |---------|----------------------|----------------------------|
-| **Mann–Whitney U**; effect **r** = 1 − 2U/(n₁·n₀) | Ranks all values, compares ranks between outcome groups. *r* ≈ 0 means no separation, \|r\| near 1 means strong separation. | Continuous MRI measures vs binary outcome (e.g. high-grade yes/no) are **skewed and modest-N**. **Alternative:** two-sample *t*-test assumes normality and equal variance — brittle on tumor volumes. |
+| **Mann–Whitney U**; effect **r** = 2U₁/(n₁·n₀) − 1 | Ranks all values, compares ranks between outcome groups (always U for outcome==1). *r* > 0 ⇒ positive class tends higher; \|r\| near 1 means strong separation. | Continuous MRI measures vs binary outcome (e.g. high-grade yes/no) are **skewed and modest-N**. **Alternative:** two-sample *t*-test assumes normality and equal variance — brittle on tumor volumes. |
 | **Spearman ρ** | Correlation on **ranks**, not raw values. ρ ∈ [−1, 1]. | Ordinal predictors (age bins, Ki-67 groups) are ordered but not evenly spaced. **Alternative:** Pearson *r* assumes linearity and equal spacing — wrong for ordered categories. |
 | **χ² test**; **Cramér's V** = √(χ² / n·min(r−1,c−1)) | Compares observed vs expected counts in a cross-tab; V scales association 0 → 1. | Nominal MRI signs vs binary outcome — standard "are these patterns linked?" test. **Alternative:** ignoring sparse cells — χ² breaks when expected counts < 5. |
 | **Fisher exact** (2×2, sparse cells) | Exact probability for the table — no large-sample approximation. | Used automatically when counts are tiny (rare imaging signs). **Alternative:** forcing χ² on sparse data — inflated false positives. |
