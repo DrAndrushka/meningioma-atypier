@@ -35,7 +35,7 @@ from inferential import (
 )
 
 from cleaning import format_number, format_table_for_display
-from plot_style import prettify_caption
+from plot_style import prettify_caption, prettify_label
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +334,19 @@ details.section-collapsible .section-body > details.collapsible:not(.glossary-bl
 details.section-collapsible .section-body > details.collapsible:not(.glossary-block) > summary {
     font-size: 15px;
     padding: 4px 0 8px;
+}
+/* Bivariate key dividers nested under 2️⃣ DDA - bivariate */
+details.section-collapsible .section-body > details.collapsible details.collapsible:not(.glossary-block) {
+    margin: 8px 0 12px;
+    padding: 8px 12px 2px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    background: #fafafa;
+}
+details.section-collapsible .section-body > details.collapsible details.collapsible:not(.glossary-block) > summary {
+    font-size: 14px;
+    font-weight: 600;
+    padding: 2px 0 6px;
 }
 details.section-collapsible > .section-body > h3:first-child,
 details.section-collapsible > .section-body > p:first-child {
@@ -710,6 +723,7 @@ class Artifacts:
     dda_datetime: pd.DataFrame | None = None
     dda_id_text: pd.DataFrame | None = None
     dda_figures: list[Path] = field(default_factory=list)
+    dda_bivariate_figures: list[Path] = field(default_factory=list)
 
     # Missingness
     missingness_summary: pd.DataFrame | None = None
@@ -783,6 +797,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     dda_fig = root / "dda" / "figures"
     if dda_fig.exists():
         art.dda_figures = sorted(dda_fig.glob("*.svg"))
+    dda_biv = root / "dda" / "figures_bivariate"
+    if dda_biv.exists():
+        art.dda_bivariate_figures = sorted(dda_biv.glob("*.svg"))
 
     # Missingness
     miss_tab = root / "missingness" / "tables"
@@ -1294,18 +1311,40 @@ def _dda_continuous_for_report(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _group_dda_bivariate_figures(
+    paths: list[Path],
+) -> dict[str, list[Path]]:
+    """Group ``{x}__by__{partner}.svg`` paths by bivariate dict key ``x``."""
+    groups: dict[str, list[Path]] = {}
+    for p in paths:
+        stem = p.stem
+        if "__by__" in stem:
+            x_key = stem.split("__by__", 1)[0]
+        else:
+            x_key = stem
+        groups.setdefault(x_key, []).append(p)
+    # Stable key order; figures within a key already sorted if input was.
+    return {k: groups[k] for k in sorted(groups)}
+
+
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
-    """📊 DDA story with per-kind subsections."""
+    """📊 DDA story: univariate tables/figures, then bivariate seaborn plots."""
     body = [
-        '<p>This section summarizes each variable on its own, before any '
-        'association testing. Tables describe distribution shape and balance; '
+        '<p>Descriptive pass before association testing. '
+        '<strong>Univariate</strong> tables and figures summarize each column '
+        'on its own; <strong>bivariate</strong> plots show selected pairs '
+        '(grouped by the dict key / x column).</p>',
+    ]
+
+    # --- 1️⃣ Univariate ---
+    uni: list[str] = [
+        '<p>Tables describe distribution shape and balance; '
         'figures show the same information visually.</p>',
     ]
 
-    # Dataset overview
     if art.dda_overall is not None and not art.dda_overall.empty:
-        body.append("<h3>📦 Dataset overview</h3>")
-        body.append(table_to_html(art.dda_overall))
+        uni.append("<h3>📦 Dataset overview</h3>")
+        uni.append(table_to_html(art.dda_overall))
 
     sections = [
         ("📏 Continuous / count variables",
@@ -1332,26 +1371,56 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
          None),
     ]
     for heading, blurb, tbl, row_fn in sections:
-        body.append(f"<h3>{heading}</h3>")
-        body.append(f"<p>{blurb}</p>")
+        uni.append(f"<h3>{heading}</h3>")
+        uni.append(f"<p>{blurb}</p>")
         if tbl is None or tbl.empty:
-            body.append('<p class="muted"><em>(no variables of this kind)</em></p>')
+            uni.append('<p class="muted"><em>(no variables of this kind)</em></p>')
         else:
             display_tbl = (
                 _dda_continuous_for_report(tbl)
                 if tbl is art.dda_continuous
                 else tbl
             )
-            body.append(table_to_html(display_tbl, row_class_fn=row_fn))
+            uni.append(table_to_html(display_tbl, row_class_fn=row_fn))
 
-    # Figures (collapsed by default; usually many)
     if art.dda_figures:
-        grid_html = svg_grid(art.dda_figures)
-        body.append(details_block(f"🖼️ DDA figures ({len(art.dda_figures)})",
-                                  grid_html))
+        uni.append(details_block(
+            f"🖼️ DDA figures ({len(art.dda_figures)})",
+            svg_grid(art.dda_figures),
+        ))
 
-    # Glossary at the end so a clinician can look up any column they just saw.
-    body.append(glossary_block(_dda_glossary()))
+    uni.append(glossary_block(_dda_glossary()))
+
+    body.append(details_block(
+        "1️⃣ DDA - univariate",
+        "".join(uni),
+    ))
+
+    # --- 2️⃣ Bivariate (nested dropdown per dict key / x column) ---
+    if art.dda_bivariate_figures:
+        groups = _group_dda_bivariate_figures(art.dda_bivariate_figures)
+        biv_parts = [
+            '<p>One figure per pair from '
+            '<code>{x_col: [partner, …]}</code>. '
+            'Open a key below to browse that x column’s plots.</p>',
+        ]
+        for x_key, figs in groups.items():
+            label = prettify_label(x_key)
+            biv_parts.append(details_block(
+                f"🔑 {label} ({len(figs)})",
+                svg_grid(figs),
+            ))
+        biv_inner = "".join(biv_parts)
+    else:
+        biv_inner = (
+            '<p class="muted"><em>(no bivariate figures — run '
+            '<code>run_dda_bivariate</code> with a '
+            '<code>{x_col: [partner, …]}</code> dict)</em></p>'
+        )
+    body.append(details_block(
+        f"2️⃣ DDA - bivariate ({len(art.dda_bivariate_figures)})",
+        biv_inner,
+    ))
 
     return section_block("📊 Descriptive Data Analysis (DDA)", "".join(body))
 

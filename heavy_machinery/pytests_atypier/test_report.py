@@ -196,7 +196,35 @@ def test_render_schema(report_cfg, report_art):
 
 def test_render_dda(report_cfg, report_art):
     report_art.dda_overall = pd.DataFrame([{"n_rows": 4}])
-    assert "<section" in render_dda(report_cfg, report_art)
+    html = render_dda(report_cfg, report_art)
+    assert "<section" in html
+    assert "1️⃣ DDA - univariate" in html
+    assert "2️⃣ DDA - bivariate" in html
+    # Univariate appears before bivariate in the HTML
+    assert html.index("1️⃣ DDA - univariate") < html.index("2️⃣ DDA - bivariate")
+
+
+def test_group_dda_bivariate_figures(tmp_path):
+    a = tmp_path / "age__by__sex.svg"
+    b = tmp_path / "age__by__adc_value.svg"
+    c = tmp_path / "sex__by__adc_value.svg"
+    for p in (a, b, c):
+        p.write_text("<svg></svg>", encoding="utf-8")
+    groups = rp._group_dda_bivariate_figures([a, b, c])
+    assert list(groups) == ["age", "sex"]
+    assert len(groups["age"]) == 2
+    assert len(groups["sex"]) == 1
+
+
+def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
+    a = tmp_path / "age__by__sex.svg"
+    b = tmp_path / "sex__by__adc_value.svg"
+    for p in (a, b):
+        p.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
+    report_art.dda_bivariate_figures = [a, b]
+    html = render_dda(report_cfg, report_art)
+    assert "🔑 Age (1)" in html
+    assert "🔑 Sex (1)" in html
 
 
 def test_dda_continuous_for_report_rounds_to_two_decimals():

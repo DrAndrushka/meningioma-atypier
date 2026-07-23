@@ -120,3 +120,46 @@ def test_run_dda(tiny_df, tiny_schema, tmp_output):
     tables = run_dda(tiny_df, tiny_schema, output_root=tmp_output)
     assert "overall" in tables
     assert (tmp_output / "dda" / "tables" / "dda_overall.csv").exists()
+
+
+def test_run_dda_bivariate(tiny_df, tmp_output):
+    paths = dda.run_dda_bivariate(
+        tiny_df, {"age": ["sex"]}, output_root=tmp_output,
+    )
+    assert len(paths) == 1
+    assert paths[0].exists()
+    assert paths[0].parent.name == "figures_bivariate"
+
+
+def test_run_dda_bivariate_continuous_partner(tiny_df, tmp_output):
+    df = tiny_df.copy()
+    df["adc_value"] = [0.7, 0.8, 0.9, 1.0, 0.75, 0.85, 0.95, 1.05][: len(df)]
+    # Need enough distinct values to count as continuous-like
+    df = pd.concat([df] * 4, ignore_index=True)
+    df["adc_value"] = np.linspace(0.5, 1.2, len(df))
+    paths = dda.run_dda_bivariate(
+        df, {"age": ["adc_value"], "sex": ["adc_value"]}, output_root=tmp_output,
+    )
+    assert len(paths) == 2
+    assert all(p.exists() for p in paths)
+
+
+def test_build_dda_bivariate_specs_includes_continuous(tiny_df, tiny_schema):
+    from schema_infer import ColSpec
+
+    df = tiny_df.copy()
+    df["adc_value"] = [0.7, 0.8, 0.9, 1.1]
+    schema = dict(tiny_schema)
+    schema["adc_value"] = ColSpec("adc_value", "continuous")
+    specs = dda.build_dda_bivariate_specs(df, schema, ["age"])
+    assert "adc_value" in specs["age"]
+    assert "sex" in specs["age"]
+    assert "entry_year" not in specs["age"]
+    assert "note" not in specs["age"]
+
+
+def test_plot_bivariate_skips_high_cardinality_categorical(tiny_df, tmp_path):
+    df = tiny_df.copy()
+    df = pd.concat([df] * 5, ignore_index=True)
+    df["noisy"] = [f"l{i}" for i in range(len(df))]
+    assert dda._plot_bivariate(df, "age", "noisy", tmp_path, max_marker_levels=12) is None
