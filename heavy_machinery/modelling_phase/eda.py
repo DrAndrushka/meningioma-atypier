@@ -71,7 +71,11 @@ def _encode_binary_target(y: pd.Series, positive_class) -> pd.Series:
         nn = y.dropna().unique()
         if len(nn) != 2:
             raise ValueError(f"Target '{y.name}' is not binary (unique values: {nn})")
-        positive_class = True if True in nn else 1 if 1 in nn else sorted(nn, key=str)[-1]
+        positive_class = (
+            True if True in nn
+            else 1 if 1 in nn
+            else y.dropna().value_counts().idxmin()  # rarer class
+        )
     out = pd.Series(np.where(y.isna(), np.nan, (y == positive_class).astype(float)), index=y.index)
     return out, positive_class
 

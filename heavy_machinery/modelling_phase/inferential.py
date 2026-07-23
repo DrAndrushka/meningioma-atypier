@@ -384,7 +384,11 @@ def _encode_target(y: pd.Series, positive_class) -> tuple[pd.Series, object]:
         nn = y.dropna().unique()
         if len(nn) != 2:
             raise ValueError(f"Target '{y.name}' not binary; values={nn}")
-        positive_class = True if True in nn else 1 if 1 in nn else sorted(nn, key=str)[-1]
+        positive_class = (
+            True if True in nn
+            else 1 if 1 in nn
+            else y.dropna().value_counts().idxmin()  # rarer class
+        )
     out = pd.Series(
         np.where(y.isna(), np.nan, (y == positive_class).astype(float)),
         index=y.index,
@@ -607,7 +611,12 @@ def summarize_multivariable_cases(
             y_enc, _ = _encode_target(df[target], positive_class.get(target))
             sub = pd.concat([y_enc.rename("_y"), Xp], axis=1).dropna()
             n_used = len(sub)
-            n_events = int(sub["_y"].sum()) if n_used else 0
+            # EPV power uses the minority class count, not the encoded positive class.
+            if n_used:
+                y_counts = sub["_y"].value_counts()
+                n_events = int(y_counts.min()) if len(y_counts) >= 2 else 0
+            else:
+                n_events = 0
             n_params = len(Xp.columns)
             rows.append({
                 "target": target,

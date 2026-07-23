@@ -7,6 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pytest
+import seaborn as sns
 
 import dda
 from dda import run_dda
@@ -163,3 +165,25 @@ def test_plot_bivariate_skips_high_cardinality_categorical(tiny_df, tmp_path):
     df = pd.concat([df] * 5, ignore_index=True)
     df["noisy"] = [f"l{i}" for i in range(len(df))]
     assert dda._plot_bivariate(df, "age", "noisy", tmp_path, max_marker_levels=12) is None
+
+
+def test_continuous_density_clips_to_observed_min(tiny_df, tmp_path):
+    """KDE must not extend below the lowest observed continuous value."""
+    df = tiny_df.dropna(subset=["age", "sex"]).copy()
+    df["age"] = df["age"].clip(lower=40.0)  # all ages ≥ 40
+    path = dda._plot_continuous_density_by_categorical(
+        df, cont_col="age", cat_col="sex", out_dir=tmp_path, file_stem="age_by_sex",
+    )
+    assert path.exists()
+    # Re-plot on an axes and assert xlim lower bound matches data min
+    order = dda._ordered_levels(df["sex"])
+    fig, ax = plt.subplots()
+    x_lo = float(df["age"].min())
+    x_hi = float(df["age"].max())
+    sns.kdeplot(
+        data=df, x="age", hue="sex", hue_order=order,
+        clip=(x_lo, x_hi), cut=0, ax=ax,
+    )
+    ax.set_xlim(x_lo, x_hi)
+    assert ax.get_xlim()[0] == pytest.approx(x_lo)
+    plt.close(fig)

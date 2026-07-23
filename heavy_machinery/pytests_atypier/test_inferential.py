@@ -91,6 +91,35 @@ def test_encode_target():
     assert enc.iloc[0] == 1.0
 
 
+def test_encode_target_auto_picks_rarer_class():
+    y = pd.Series(["benign", "benign", "benign", "atypical", "benign"])
+    enc, pos = inf._encode_target(y, None)
+    assert pos == "atypical"
+    assert enc.tolist() == [0.0, 0.0, 0.0, 1.0, 0.0]
+
+
+def test_epv_uses_minority_count_when_positive_class_is_majority():
+    rng = np.random.default_rng(0)
+    n_pos, n_neg = 80, 20
+    y = pd.Series([True] * n_pos + [False] * n_neg)
+    _, pos = inf._encode_target(y, None)
+    assert pos is True
+
+    df = pd.DataFrame({
+        "event": y,
+        "age": rng.normal(60.0, 10.0, size=n_pos + n_neg),
+    })
+    schema = {
+        "event": ColSpec("event", "binary"),
+        "age": ColSpec("age", "continuous"),
+    }
+    summary = inf.summarize_multivariable_cases(
+        df, schema, targets=["event"], predictors=["age"],
+    )
+    assert summary.iloc[0]["n_outcome_events"] == n_neg
+    assert summary.iloc[0]["epv"] == round(n_neg / summary.iloc[0]["n_design_columns"], 1)
+
+
 def _make_imputed(tiny_df, tiny_schema):
     df = tiny_df.copy()
     df["age"] = df["age"].fillna(df["age"].median())

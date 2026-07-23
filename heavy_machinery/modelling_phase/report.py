@@ -2024,7 +2024,7 @@ _INFERENTIAL_GLOSSARY_GROUPS = [
          "complete-case preview (pre-imputation) is shown only as a stability "
          "sanity check."),
         ("n_outcome_events",
-         "Count of positive outcomes among those patients. 🎯 Drives EPV and how "
+         "Count of the rarer outcome class among those patients. 🎯 Drives EPV and how "
          "trustworthy each adjusted OR is."),
         ("n_design_columns",
          "Predictor columns in the final design matrix after encoding and VIF pruning. "

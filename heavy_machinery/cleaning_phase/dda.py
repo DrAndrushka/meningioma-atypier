@@ -327,6 +327,28 @@ def _plot_datetime(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
 # Bivariate distributions (x × partner via seaborn)
 # ---------------------------------------------------------------------------
 
+# Okabe–Ito inspired — distinct, colorblind-friendlier than Set2 pastels.
+_BIVARIATE_COLORS = (
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#009E73",  # bluish green
+    "#CC79A7",  # reddish purple
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#F0E442",  # yellow
+    "#000000",  # black
+)
+
+
+def _bivariate_palette(n: int) -> list:
+    """Cycle a distinct bivariate palette to length ``n``."""
+    n = max(int(n), 1)
+    base = list(_BIVARIATE_COLORS)
+    if n <= len(base):
+        return base[:n]
+    return [base[i % len(base)] for i in range(n)]
+
+
 def _is_continuous_like(s: pd.Series, *, max_cat_levels: int = 12) -> bool:
     """Numeric with many distinct values → continuous; few levels stay categorical."""
     if not pd.api.types.is_numeric_dtype(s) or pd.api.types.is_bool_dtype(s):
@@ -341,6 +363,22 @@ def _ordered_levels(s: pd.Series) -> list:
     return sorted(levels, key=str)
 
 
+def _level_counts(s: pd.Series, order: list) -> dict:
+    vc = s.value_counts(dropna=True)
+    return {lv: int(vc.get(lv, 0)) for lv in order}
+
+
+def _annotate_total_n(ax: plt.Axes, n: int) -> None:
+    """Corner badge with total non-missing n used in the plot."""
+    ax.text(
+        0.98, 0.98, f"n={n}",
+        transform=ax.transAxes, ha="right", va="top",
+        fontsize=10, fontweight="bold",
+        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white",
+              "edgecolor": "#cccccc", "alpha": 0.9},
+    )
+
+
 def _plot_continuous_density_by_categorical(
     plot_df: pd.DataFrame,
     cont_col: str,
@@ -348,50 +386,45 @@ def _plot_continuous_density_by_categorical(
     out_dir: Path,
     *,
     file_stem: str,
-    max_facet_levels: int = 4,
 ) -> Path:
-    """Seaborn KDE of a continuous var by a categorical — facet when few levels.
+    """Overlapping seaborn KDEs of a continuous var, colored by categorical.
 
-    Matches the aesthetics density style (density curves, facet titles with n=).
-    Many levels → single-axes overlaid KDEs instead of a wide facet strip.
+    One axes, different colors per level, legend labels include ``n=``.
+    KDE support is clipped to the observed ``[min, max]`` of ``cont_col``.
     """
     cont_label = prettify_label(cont_col)
     cat_label = prettify_label(cat_col)
     order = _ordered_levels(plot_df[cat_col])
-    n_facet = plot_df.groupby(cat_col, observed=True).size()
     path = out_dir / f"{file_stem}.svg"
 
-    if len(order) <= max_facet_levels:
-        g = sns.FacetGrid(
-            plot_df, col=cat_col, col_order=order,
-            sharex=True, sharey=True, height=4.0, aspect=1.15,
-        )
-        g.map_dataframe(
-            sns.kdeplot, x=cont_col, fill=False, linewidth=1.8,
-            color=PALETTE["primary"],
-        )
-        for ax, level in zip(g.axes.flat, order):
-            n = int(n_facet.get(level, 0))
-            ax.set_title(f"{level} (n={n})")
-            ax.set_ylabel("Density")
-        g.set_axis_labels(cont_label, "Density")
-        g.fig.suptitle(
-            f"{cont_label} density by {cat_label}", y=1.03, fontsize=13,
-        )
-        g.fig.tight_layout()
-        g.fig.savefig(path, format="svg", bbox_inches="tight")
-        plt.close(g.fig)
-    else:
-        fig, ax = plt.subplots(figsize=(8, 4.5))
+    cont = plot_df[cont_col].astype(float)
+    x_lo = float(cont.min())
+    x_hi = float(cont.max())
+    if not np.isfinite(x_lo) or not np.isfinite(x_hi) or x_hi <= x_lo:
+        x_lo, x_hi = (x_lo, x_lo + 1.0) if np.isfinite(x_lo) else (0.0, 1.0)
+    clip = (x_lo, x_hi)
+
+    palette = _bivariate_palette(len(order))
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    for level, color in zip(order, palette):
+        sub = plot_df.loc[plot_df[cat_col] == level, cont_col].astype(float).dropna()
+        n = int(sub.size)
+        if n < 2 or float(sub.std(ddof=0)) == 0.0:
+            continue
         sns.kdeplot(
-            data=plot_df, x=cont_col, hue=cat_col, hue_order=order,
-            fill=False, linewidth=1.6, palette="Set2", ax=ax,
+            sub, ax=ax, color=color, linewidth=1.8, fill=False,
+            clip=clip, cut=0, warn_singular=False,
+            label=f"{level} (n={n})",
         )
-        ax.set(
-            xlabel=cont_label, ylabel="Density",
-            title=f"{cont_label} density by {cat_label}",
-        )
-        _save_fig(fig, path)
+
+    ax.set_xlim(x_lo, x_hi)
+    ax.set(
+        xlabel=cont_label, ylabel="Density",
+        title=f"{cont_label} density by {cat_label}",
+    )
+    ax.legend(title=cat_label, frameon=True)
+    _annotate_total_n(ax, len(plot_df))
+    _save_fig(fig, path)
     return path
 
 
@@ -404,9 +437,10 @@ def _plot_bivariate(
 
     Plot choice:
     - continuous × continuous → scatter + OLS trend
-    - continuous ↔ categorical → faceted / overlaid KDE density (not boxplots)
+    - continuous ↔ categorical → overlapping colored KDEs (legend with n=)
     - categorical × categorical → grouped counts
 
+    All figures show ``n=`` (total and/or per level). Uses a distinct shared palette.
     Categorical partners with ``<2`` or ``>max_marker_levels`` levels are skipped.
     Continuous partners (e.g. ``adc_value``) are always allowed.
     """
@@ -427,6 +461,7 @@ def _plot_bivariate(
             return None
 
     file_stem = f"{x_col}__by__{by_col}"
+    n_total = int(len(plot_df))
 
     # Continuous × continuous — scatter + trend
     if x_cont and by_cont:
@@ -435,16 +470,17 @@ def _plot_bivariate(
         fig, ax = plt.subplots(figsize=(8, 4.5))
         sns.scatterplot(
             data=plot_df, x=x_col, y=by_col, ax=ax,
-            alpha=0.55, color=PALETTE["primary"], edgecolor="none",
+            alpha=0.55, color=_BIVARIATE_COLORS[0], edgecolor="none",
         )
         sns.regplot(
             data=plot_df, x=x_col, y=by_col, ax=ax,
-            scatter=False, color=PALETTE["accent"],
+            scatter=False, color=_BIVARIATE_COLORS[1],
         )
         ax.set(
             xlabel=x_label, ylabel=by_label,
             title=f"{x_label} vs {by_label}",
         )
+        _annotate_total_n(ax, n_total)
         path = out_dir / f"{file_stem}.svg"
         _save_fig(fig, path)
         return path
@@ -467,19 +503,36 @@ def _plot_bivariate(
     fig, ax = plt.subplots(figsize=(8, 4.5))
     x_order = _ordered_levels(plot_df[x_col])
     hue_order = _ordered_levels(plot_df[by_col])
+    hue_n = _level_counts(plot_df[by_col], hue_order)
+    palette = _bivariate_palette(len(hue_order))
     sns.countplot(
         data=plot_df, x=x_col, hue=by_col,
         order=x_order, hue_order=hue_order,
-        palette="Set2", ax=ax,
+        palette=palette, ax=ax,
     )
+    for container in ax.containers:
+        ax.bar_label(container, fontsize=8, padding=2)
     ax.set(
         xlabel=x_label, ylabel="Count",
         title=f"{x_label} by {by_label}",
     )
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        labeled = []
+        for lab in labels:
+            n_lv = next(
+                (hue_n[lv] for lv in hue_order if str(lv) == str(lab)),
+                int(hue_n.get(lab, 0)) if lab in hue_n else 0,
+            )
+            labeled.append(f"{lab} (n={n_lv})")
+        ax.legend(handles, labeled, title=by_label, frameon=True)
+    _annotate_total_n(ax, n_total)
+    ax.margins(y=0.14)
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
     path = out_dir / f"{file_stem}.svg"
     _save_fig(fig, path)
     return path
+
 
 
 _MARKER_KINDS = frozenset({
