@@ -1,4 +1,4 @@
-"""Step 04 — cohort inclusion row filters.
+"""Cohort inclusion row filters.
 
 ``RowFilter`` list with ``keep(df)`` masks. ``active=False`` skips but still logs.
 ``finalize_row_drops`` feeds the report.
@@ -116,6 +116,7 @@ def finalize_row_drops(
         n_rows_raw=len(df_raw),
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=len(df),
+        n_columns_raw=df_raw.shape[1],
         schema=schema,
         drop_log=_drop_log_for_export(row_filter_log),
         dupes=dupes,

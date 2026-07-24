@@ -148,14 +148,20 @@ def test_build_cleaning_summary(tiny_schema):
         n_rows_raw=10,
         n_rows_after_schema=10,
         n_rows_final=9,
+        n_columns_raw=5,
+        n_columns_after_schema=4,
         schema=tiny_schema,
         drop_log=[{"reason": "test", "criterion": "x", "n_before": 10, "n_remaining": 9, "n_dropped": 1}],
         dupes=None,
     )
+    assert list(tbl.columns) == ["step", "detail", "n_rows", "n_columns", "criterion"]
     assert tbl.iloc[-1]["step"] == "final"
     drop_row = tbl.loc[tbl["step"] == "drop_rows"].iloc[0]
-    assert drop_row["n_rows_before"] == 10
     assert drop_row["n_rows"] == 9
+    assert drop_row["n_columns"] == 4
+    assert drop_row["criterion"] == "x"
+    assert "n_rows_before" not in tbl.columns
+    assert "n_dropped" not in tbl.columns
 
 
 def test_build_cleaning_log():

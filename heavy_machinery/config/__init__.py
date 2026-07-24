@@ -1,12 +1,12 @@
-"""Notebook config modules — one Python file per pipeline section (01–08).
+"""Notebook config modules — one Python file per pipeline concern.
 
 Usage from notebooks at the repo root (``meningioma-atypier/``)::
 
     from heavy_machinery.config import load
-    load("07_analysis").resolve_eda(...)
+    load("analysis").resolve_eda(...)
 
-01 cohort load · 02 renames · 03 schema overrides · 04 row filters ·
-05 missingness policy · 06 derivations · 07 EDA / model variants · 08 report
+cohort · column_rename_map · schema_overrides · row_filters ·
+missingness · derivations · analysis · report_settings
 
 Importing this package prepends ``cleaning_phase/`` and ``modelling_phase/`` to
 ``sys.path`` so library modules can use flat sibling imports

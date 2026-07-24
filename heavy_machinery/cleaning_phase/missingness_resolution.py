@@ -1840,13 +1840,13 @@ def proper_mice_impute(
     derived_dependencies = dict(derived_dependencies or {})
     if derivations is not None and post_impute_transform is None:
         # Use the same loaded config module that built DERIVATIONS in the
-        # notebook. load("06_derivations") re-executes the file and creates new
+        # notebook. load("derivations") re-executes the file and creates new
         # dataclass types, so isinstance() inside apply_derivations would fail.
         derivations_mod = getmodule(derivations[0]) if derivations else None
         if derivations_mod is None:
             from heavy_machinery.config import load
 
-            derivations_mod = load("06_derivations")
+            derivations_mod = load("derivations")
         post_impute_transform = partial(
             derivations_mod.apply_post_mice_derivations,
             schema=schema,

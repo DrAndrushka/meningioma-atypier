@@ -4,7 +4,7 @@ Notebooks, ``output/``, and ``app.py`` live at the **repo root**. Library code l
 
 - ``cleaning_phase/`` — schema, cleaning, DDA, MICE, Pandera validation, dataset handoff
 - ``modelling_phase/`` — EDA, inferential, bootstrap validation, report, Streamlit calculator
-- ``config/`` — numbered pipeline steps 01–08 (``load("NN_name")``)
+- ``config/`` — pipeline config modules (``load("name")``)
 - ``scripts/run_mice.R`` — formal mixed-type MICE engine (R subprocess)
 - ``pytests_atypier/`` — pytest suite (``python -m pytest`` from repo root or here)
 

@@ -1,4 +1,4 @@
-"""Step 03 — merge notebook ``schema_overrides`` and write ``schema_summary.csv``."""
+"""Merge notebook ``schema_overrides`` and write ``schema_summary.csv``."""
 from __future__ import annotations
 
 from pathlib import Path

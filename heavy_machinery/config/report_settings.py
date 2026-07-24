@@ -1,4 +1,4 @@
-"""Step 08 — build HTML report and print output artifact summary.
+"""Build HTML report and print output artifact summary.
 
 Wraps ``report.build_report`` / ``write_html``. Appends ``ANALYSIS_YEARS`` to the
 title when the cohort was year-filtered.

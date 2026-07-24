@@ -23,6 +23,9 @@ _REQUIRED_ARTIFACT_KEYS = (
     "features",
 )
 
+# Streamlit calculator always loads this experimental variant (see modelling notebook).
+CALCULATOR_MODEL_ID = "experimental_model_1"
+
 
 def _resolve_artifact_path(path: str | Path) -> Path:
     p = Path(path)
@@ -683,22 +686,23 @@ def resolve_streamlit_artifact_path(
     project_root: Path | str | None = None,
     output_root: Path | str | None = None,
 ) -> Path:
-    """Resolve explicit path or newest ``output/inferential/model_artifacts/*_model.json``."""
+    """Resolve explicit path, else ``*_{CALCULATOR_MODEL_ID}_model.json`` under model_artifacts."""
     if artifact_path is not None:
         return _resolve_artifact_path(artifact_path)
     root = Path(project_root) if project_root is not None else _PROJECT_ROOT
     out = Path(output_root) if output_root is not None else root / "output"
     art_dir = _default_streamlit_artifact_dir(out)
-    candidates = sorted(art_dir.glob("*_model.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise FileNotFoundError(
-            f"No Streamlit model artifacts found in {art_dir}. "
-            "Run §11 inferential in the notebook first."
-        )
-    preferred = art_dir / "high_grade_model.json"
-    if preferred.is_file():
-        return preferred.resolve()
-    return candidates[0].resolve()
+    preferred = sorted(
+        art_dir.glob(f"*_{CALCULATOR_MODEL_ID}_model.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if preferred:
+        return preferred[0].resolve()
+    raise FileNotFoundError(
+        f"No Streamlit artifact for model_id={CALCULATOR_MODEL_ID!r} in {art_dir}. "
+        "Run multivariable modelling with that experimental variant first."
+    )
 
 
 def render_model_calculator(artifact_path: str | Path | None = None) -> None:

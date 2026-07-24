@@ -34,7 +34,7 @@ The workflow is deliberately **statistics-first, not black-box ML**:
 | 📏 Size & location | max diameter, skull-base vs non-skull-base, laterality |
 | 👤 Demographics | age, sex, multiple meningiomas |
 
-Default raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`. Cleaning §01 accepts a **list** of CSV/XLSX paths (`DATA_PATHS`) and stacks them with `pd.concat`.
+Default raw file: `heavy_machinery/Meningiomas PSKUS grants - Visi pacienti.csv`. `load("cohort").load_raw(DATA_PATHS)` accepts a **list** of CSV/XLSX paths and stacks them with `pd.concat`. Optional `ANALYSIS_YEARS` (in the cleaning notebook year-filter cell) subsets by entry year via `apply_cohort_year_filter` (`None` = all years).
 
 ---
 
@@ -78,7 +78,15 @@ meningioma-atypier/
     │   ├── model_calculator.py
     │   ├── plot_style.py
     │   └── report.py
-    ├── config/                     # ⚙️ Steps 01–08 · `load("NN_name")`
+    ├── config/                     # ⚙️ Pipeline config · `load("name")` (no numeric prefixes)
+    │   ├── cohort.py               # load_raw + ANALYSIS_YEARS filter
+    │   ├── column_rename_map.py
+    │   ├── schema_overrides.py
+    │   ├── row_filters.py
+    │   ├── missingness.py
+    │   ├── derivations.py
+    │   ├── analysis.py             # EDA / literature / experimental variants
+    │   └── report_settings.py
     ├── scripts/run_mice.R          # 🧬 R mice engine (subprocess from Python)
     ├── pytests_atypier/            # 🧪 200+ automated tests
     └── pytest.ini                  # Optional: `cd heavy_machinery && python -m pytest`
@@ -117,15 +125,15 @@ flowchart LR
 
 | Stage | Module | What it produces |
 |-------|--------|------------------|
-| 01–06 | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log, derived columns |
-| 07 | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`) |
-| 08 | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
-| 09–10 | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
-| 09b | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
-| 11–12 | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot, Streamlit JSON — **one block per model variant** |
-| 12b | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope → merged into calculator JSON |
-| 13 | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
-| 🌐 | `app.py` | Interactive risk calculator (`output/inferential/model_artifacts/`) |
+| Cleaning | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log (`n_rows` / `n_columns`), derived columns |
+| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`) |
+| Missingness / MICE | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
+| EDA | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
+| Diagnostic accuracy | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
+| Inferential | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot, Streamlit JSON — **one block per model variant** |
+| Validation | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope → merged into calculator JSON |
+| Report | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
+| 🌐 | `app.py` | Interactive risk calculator — default `*_experimental_model_1_model.json` |
 
 ### 📚 Multiple multivariable models
 
@@ -139,7 +147,7 @@ In `meningioma-modelling.ipynb` (§03), configure three separate lists:
 
 Each variant is `(id, title, link, target, [predictors])` or an equivalent dict. Put custom models in `EXPERIMENTAL_MODEL_VARIANTS` — the report groups by list, not by id prefix.
 
-A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("07_analysis").print_copy_pasteable_columns(df)` in §03 to copy column names into your lists.
+A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("analysis").print_copy_pasteable_columns(df)` in §03 to copy column names into your lists.
 
 Each variant gets its own:
 
@@ -195,7 +203,7 @@ The HTML report renders this as a collapsible **"Like in that research"** table 
 install.packages(c("mice", "jsonlite"))
 ```
 
-**Notebook profiles** (§10 `proper_mice_impute` cell):
+**Notebook profiles** (cleaning §12 `proper_mice_impute` cell):
 
 | Profile | `m` | `max_iter` |
 |---------|-----|------------|
@@ -276,7 +284,7 @@ Run each notebook top to bottom from the **repo root** (not inside `heavy_machin
 streamlit run app.py
 ```
 
-By default the app loads `output/inferential/model_artifacts/high_grade_model.json` (newest artifact if that file is absent). Pass a different path to `render_model_calculator()` to select another variant.
+By default the app resolves the newest `output/inferential/model_artifacts/*_experimental_model_1_model.json` (`CALCULATOR_MODEL_ID` in `model_calculator.py`). Pass an explicit path to `render_model_calculator()` to select another variant.
 
 ### 4️⃣ Run tests
 
@@ -365,13 +373,14 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 🟢 **Stable research pipeline (v1)** — two-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, HTML report, Streamlit calculator, and 200+ pytest tests in `heavy_machinery/pytests_atypier/`.
 
-After running modelling §06, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. Launch the calculator with `streamlit run app.py` from the repo root once inferential has completed.
+After running modelling §06, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. `streamlit run app.py` loads the `experimental_model_1` artifact by default.
 
 ### Recent changes (main)
 
 | Commit | What landed |
 |--------|-------------|
-| *(uncommitted)* | **Rank-biserial sign fix** in `eda._mwu_with_effect`: Kerby `r = 2U₁/(n₁·n₀) − 1` with groups always `(outcome==1, outcome==0)`; + means higher in the positive class. Regression tests in `test_eda.py`. Re-run EDA/heatmap after this lands. |
+| *(uncommitted)* | **Config modules renamed** — drop numeric prefixes (`01_cohort.py` → `cohort.py`, …); call `load("name")`. Streamlit calculator always resolves `*_experimental_model_1_model.json` (`CALCULATOR_MODEL_ID`). Cleaning summary tracks `n_columns` (not `n_dropped`); cohort year filter logs into drop_log. |
+| `a7e03a3` | **Rank-biserial sign fix** in `eda._mwu_with_effect`: Kerby `r = 2U₁/(n₁·n₀) − 1` with groups always `(outcome==1, outcome==0)`; + means higher in the positive class. |
 | `e534a58` | **EPV** uses the **minority** class (not the labelled positive class). Richer **bivariate DDA** plots, including continuous partners. |
 | `aaa5f0d` | Bivariate DDA distribution plot generation (`run_dda_bivariate` → `output/dda/figures_bivariate/`). |
 | `c6dcc1f` | Aesthetics / e-poster graph experiments notebook (local prototyping). |

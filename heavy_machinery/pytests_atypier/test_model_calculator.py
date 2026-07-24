@@ -8,12 +8,14 @@ from pathlib import Path
 import pytest
 
 from model_calculator import (
+    CALCULATOR_MODEL_ID,
     build_auc_comparison_figure,
     build_encoded_features,
     build_roc_validation_figure,
     calculator_meta_to_streamlit_artifact,
     load_model_artifact,
     predict_from_artifact,
+    resolve_streamlit_artifact_path,
     write_streamlit_artifacts,
 )
 
@@ -133,6 +135,27 @@ def test_write_streamlit_artifacts(tmp_path: Path):
     art_dir = tmp_path / "inferential" / "model_artifacts"
     assert paths == [art_dir / "event_model.json"]
     assert json.loads(paths[0].read_text())["target"] == "event"
+
+
+def test_resolve_streamlit_artifact_path_prefers_experimental_model_1(tmp_path: Path):
+    art_dir = tmp_path / "inferential" / "model_artifacts"
+    art_dir.mkdir(parents=True)
+    other = art_dir / "high_grade_yao_et_al_2022_model.json"
+    preferred = art_dir / f"high_grade_{CALCULATOR_MODEL_ID}_model.json"
+    other.write_text("{}", encoding="utf-8")
+    preferred.write_text("{}", encoding="utf-8")
+    # Newer literature file must not win — calculator is pinned to experimental_model_1.
+    other.touch()
+    got = resolve_streamlit_artifact_path(output_root=tmp_path)
+    assert got == preferred.resolve()
+
+
+def test_resolve_streamlit_artifact_path_requires_experimental_model_1(tmp_path: Path):
+    art_dir = tmp_path / "inferential" / "model_artifacts"
+    art_dir.mkdir(parents=True)
+    (art_dir / "high_grade_experimental_model_2_model.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match=CALCULATOR_MODEL_ID):
+        resolve_streamlit_artifact_path(output_root=tmp_path)
 
 
 def test_missing_coefficient_raises(tmp_path: Path):

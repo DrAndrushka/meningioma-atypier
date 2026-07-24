@@ -1,4 +1,4 @@
-"""Step 06 — derived columns (bins, flags, custom functions).
+"""Derived columns (bins, flags, custom functions).
 
 ``BinNumeric``, ``Apply`` (single column), ``Compute`` (whole frame). The derivation
 list lives in the cleaning notebook; ``apply_derivations`` runs it and updates schema.
@@ -333,7 +333,9 @@ def apply_derivations(
         out_dir = Path(output_root) / "cleaning"
         out_dir.mkdir(parents=True, exist_ok=True)
         derivation_log.to_csv(out_dir / "derivation_log.csv", index=False)
-        _update_cleaning_summary_derived(output_root, new_cols, len(out))
+        _update_cleaning_summary_derived(
+            output_root, new_cols, n_rows=len(out), n_columns=out.shape[1],
+        )
         # Append derived columns to the schema summary so they appear in the
         # report's Schema story. Append-only: we must NOT re-export the whole
         # post-cleaning schema, because cleaning rewrites binned datetime
@@ -378,6 +380,7 @@ def _update_cleaning_summary_derived(
     output_root: Path | str,
     created_cols: list[str],
     n_rows: int,
+    n_columns: int,
 ) -> None:
     """Insert a ``derived`` row into cleaning_summary.csv naming the new columns.
 
@@ -400,12 +403,16 @@ def _update_cleaning_summary_derived(
             f"added {len(created_cols)} column(s): " + ", ".join(created_cols))
     if "n_rows" in row:
         row["n_rows"] = n_rows
-    if "n_dropped" in row:
-        row["n_dropped"] = 0
+    if "n_columns" in row:
+        row["n_columns"] = n_columns
+    if "criterion" in row:
+        row["criterion"] = ""
 
     new_df = pd.DataFrame([row], columns=summary.columns)
     if (summary["step"] == "final").any():
         pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
+        if "n_columns" in summary.columns:
+            summary.loc[summary["step"] == "final", "n_columns"] = n_columns
         summary = pd.concat(
             [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
     else:

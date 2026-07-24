@@ -492,11 +492,16 @@ def zscore(s: pd.Series) -> pd.Series:
     return out
 
 
+_SUMMARY_COLUMNS = ["step", "detail", "n_rows", "n_columns", "criterion"]
+
+
 def _build_cleaning_summary(
     *,
     n_rows_raw: int,
     n_rows_after_schema: int,
     n_rows_final: int,
+    n_columns_raw: int,
+    n_columns_after_schema: int,
     schema: dict[str, ColSpec],
     drop_log: list[dict[str, Any]] | None,
     dupes: pd.DataFrame | None,
@@ -508,19 +513,20 @@ def _build_cleaning_summary(
         apply_detail += f"; dropped {n_skip} skip column(s)"
     if n_excluded:
         apply_detail += f"; excluded {n_excluded} keep=False column(s) from cleaned.csv"
-    rows_before_schema = n_rows_raw
     rows: list[dict[str, Any]] = [
         {
             "step": "raw_data",
             "detail": "rows in source file",
             "n_rows": n_rows_raw,
-            "n_dropped": 0,
+            "n_columns": n_columns_raw,
+            "criterion": "",
         },
         {
             "step": "apply_schema",
             "detail": apply_detail,
             "n_rows": n_rows_after_schema,
-            "n_dropped": rows_before_schema - n_rows_after_schema,
+            "n_columns": n_columns_after_schema,
+            "criterion": "",
         },
     ]
     n_dup = 0 if dupes is None else len(dupes)
@@ -531,24 +537,25 @@ def _build_cleaning_summary(
             if n_dup else "no duplicate ID groups"
         ),
         "n_rows": n_rows_after_schema,
-        "n_dropped": 0,
+        "n_columns": n_columns_after_schema,
+        "criterion": "",
     })
     for entry in drop_log or []:
         rows.append({
             "step": "drop_rows",
             "detail": entry.get("reason", ""),
-            "criterion": entry.get("criterion", ""),
-            "n_rows_before": entry.get("n_before"),
             "n_rows": entry.get("n_remaining"),
-            "n_dropped": entry.get("n_dropped", 0),
+            "n_columns": n_columns_after_schema,
+            "criterion": entry.get("criterion", ""),
         })
     rows.append({
         "step": "final",
         "detail": "rows entering DDA / downstream analysis",
         "n_rows": n_rows_final,
-        "n_dropped": 0,
+        "n_columns": n_columns_after_schema,
+        "criterion": "",
     })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=_SUMMARY_COLUMNS)
 
 
 def _build_cleaning_log(
@@ -612,6 +619,7 @@ def export_cleaning_artifacts(
     drop_log: list[dict[str, Any]] | None = None,
     dupes: pd.DataFrame | None = None,
     schema_log: list[dict[str, Any]] | None = None,
+    n_columns_raw: int | None = None,
 ) -> dict[str, Path]:
     """Write ``output/cleaning/cleaned.csv``, ``cleaning_summary.csv``, and ``cleaning_log.csv``."""
     out_dir = Path(output_root) / "cleaning"
@@ -625,6 +633,8 @@ def export_cleaning_artifacts(
         n_rows_raw=n_rows_raw,
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=n_rows_final,
+        n_columns_raw=n_columns_raw if n_columns_raw is not None else df.shape[1],
+        n_columns_after_schema=df.shape[1],
         schema=schema,
         drop_log=drop_log,
         dupes=dupes,

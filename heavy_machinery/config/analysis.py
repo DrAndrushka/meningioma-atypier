@@ -1,4 +1,4 @@
-"""Step 07 — EDA config, literature/experimental model variants, resolve helpers.
+"""EDA config, literature/experimental model variants, resolve helpers.
 
 ``resolve_eda`` filters EDA predictors to columns present in ``df``.
 ``resolve_inferential_variants`` keeps only targets/predictors present in ``df`` and tags

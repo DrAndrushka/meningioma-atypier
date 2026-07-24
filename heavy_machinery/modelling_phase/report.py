@@ -1185,8 +1185,15 @@ def _summary_with_derived_step(
         fin = summary[summary["step"] == "final"]
         if not fin.empty:
             new_row["n_rows"] = fin.iloc[0]["n_rows"]
-    if "n_dropped" in new_row:
-        new_row["n_dropped"] = 0
+    if "n_columns" in new_row and "step" in summary.columns:
+        fin = summary[summary["step"] == "final"]
+        if not fin.empty and pd.notna(fin.iloc[0].get("n_columns")):
+            try:
+                new_row["n_columns"] = int(fin.iloc[0]["n_columns"]) + len(cols)
+            except (TypeError, ValueError):
+                new_row["n_columns"] = ""
+    if "criterion" in new_row:
+        new_row["criterion"] = ""
 
     new_df = pd.DataFrame([new_row], columns=summary.columns)
     # Place 'derived' just before the 'final' row when present.
@@ -1216,8 +1223,9 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
         body.append("<h3>Summary</h3>")
         summary = _summary_with_derived_step(
             art.cleaning_summary, art.derivation_log)
-        summary = _format_count_cols(
-            summary, ["n_rows", "n_dropped", "n_rows_before"])
+        wanted = ["step", "detail", "n_rows", "n_columns", "criterion"]
+        summary = summary[[c for c in wanted if c in summary.columns]]
+        summary = _format_count_cols(summary, ["n_rows", "n_columns"])
         body.append(table_to_html(summary))
 
     has_log = art.cleaning_log is not None and not art.cleaning_log.empty

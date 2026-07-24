@@ -1,7 +1,7 @@
 """Streamlit calculator entry point for meningioma-atypier.
 
-Loads ``output/inferential/model_artifacts/high_grade_model.json`` by default via
-``render_model_calculator``. Run from repo root: ``streamlit run app.py``.
+Loads ``output/inferential/model_artifacts/*_experimental_model_1_model.json``
+via ``render_model_calculator``. Run from repo root: ``streamlit run app.py``.
 """
 
 from __future__ import annotations

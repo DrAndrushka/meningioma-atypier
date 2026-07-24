@@ -1,4 +1,4 @@
-"""Tests for config/04_row_filters.py — cohort inclusion masks."""
+"""Tests for config/row_filters.py — cohort inclusion masks."""
 
 from __future__ import annotations
 
@@ -6,26 +6,26 @@ import pandas as pd
 
 from config import load
 
-_c04 = load("04_row_filters")
+_row_filters = load("row_filters")
 
 
 def test_apply_row_filters_active_and_inactive():
     df = pd.DataFrame({"who_grade": [1, None, 2], "sex": ["male", "female", "unknown"]})
     filters = [
-        _c04.RowFilter(
+        _row_filters.RowFilter(
             name="who_grade present",
             keep=lambda d: d["who_grade"].notna(),
             note="Keep rows where who_grade is not missing",
             active=True,
         ),
-        _c04.RowFilter(
+        _row_filters.RowFilter(
             name="sex known",
             keep=lambda d: d["sex"] != "unknown",
             note="Keep rows where sex is known",
             active=False,
         ),
     ]
-    out, log = _c04.apply_row_filters(df, filters)
+    out, log = _row_filters.apply_row_filters(df, filters)
     assert len(out) == 2
     assert log.iloc[0]["rows_before"] == 3
     assert log.iloc[0]["rows_after"] == 2
@@ -43,7 +43,7 @@ def test_drop_log_for_export():
         "rows_removed": 2,
         "note": "Keep rows where who_grade is not missing",
     }])
-    drop_log = _c04._drop_log_for_export(log)
+    drop_log = _row_filters._drop_log_for_export(log)
     assert drop_log[0]["n_before"] == 10
     assert drop_log[0]["n_remaining"] == 8
     assert drop_log[0]["n_dropped"] == 2

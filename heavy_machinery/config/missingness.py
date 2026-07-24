@@ -1,4 +1,4 @@
-"""Step 05 — missingness policy before MICE.
+"""Missingness policy before MICE.
 
 ``StructuralGroup``: shared measurement slots (blank = not measured).
 ``MnarColumn``: missing may be informative → optional ``*_missing`` flags.
