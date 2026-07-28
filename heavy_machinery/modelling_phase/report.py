@@ -335,7 +335,7 @@ details.section-collapsible .section-body > details.collapsible:not(.glossary-bl
     font-size: 15px;
     padding: 4px 0 8px;
 }
-/* Bivariate key dividers nested under 2️⃣ DDA - bivariate */
+/* Bivariate / trivariate key dividers nested under 2️⃣ / 3️⃣ DDA */
 details.section-collapsible .section-body > details.collapsible details.collapsible:not(.glossary-block) {
     margin: 8px 0 12px;
     padding: 8px 12px 2px;
@@ -713,6 +713,7 @@ class Artifacts:
     cleaning_summary: pd.DataFrame | None = None
     cleaning_log: pd.DataFrame | None = None
     derivation_log: pd.DataFrame | None = None
+    schema_coercion: pd.DataFrame | None = None
     schema_summary: pd.DataFrame | None = None
 
     # DDA
@@ -724,6 +725,7 @@ class Artifacts:
     dda_id_text: pd.DataFrame | None = None
     dda_figures: list[Path] = field(default_factory=list)
     dda_bivariate_figures: list[Path] = field(default_factory=list)
+    dda_trivariate_figures: list[Path] = field(default_factory=list)
 
     # Missingness
     missingness_summary: pd.DataFrame | None = None
@@ -779,6 +781,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     art.cleaning_summary = _maybe_read_csv(cleaning_dir / "cleaning_summary.csv", art.warnings)
     art.cleaning_log     = _maybe_read_csv(cleaning_dir / "cleaning_log.csv", art.warnings)
     art.derivation_log   = _maybe_read_csv(cleaning_dir / "derivation_log.csv", art.warnings)
+    art.schema_coercion  = _maybe_read_csv(cleaning_dir / "schema_coercion.csv", art.warnings)
 
     # Schema
     if cfg.schema_path and cfg.schema_path.exists():
@@ -800,6 +803,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     dda_biv = root / "dda" / "figures_bivariate"
     if dda_biv.exists():
         art.dda_bivariate_figures = sorted(dda_biv.glob("*.svg"))
+    dda_tri = root / "dda" / "figures_trivariate"
+    if dda_tri.exists():
+        art.dda_trivariate_figures = sorted(dda_tri.glob("*.svg"))
 
     # Missingness
     miss_tab = root / "missingness" / "tables"
@@ -1212,8 +1218,9 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
              "appropriate.")
     body = [f'<p>{blurb}</p>']
 
+    has_coercion = art.schema_coercion is not None and not art.schema_coercion.empty
     if (art.cleaning_summary is None and art.cleaning_log is None
-            and art.derivation_log is None):
+            and art.derivation_log is None and not has_coercion):
         body.append(warning_box(
             "No saved cleaning summary was found. Cleaning may have been "
             "performed, but no cleaning audit table was exported."))
@@ -1227,6 +1234,25 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
         summary = summary[[c for c in wanted if c in summary.columns]]
         summary = _format_count_cols(summary, ["n_rows", "n_columns"])
         body.append(table_to_html(summary))
+
+    if has_coercion:
+        coer = art.schema_coercion.copy()
+        if "n" in coer.columns:
+            coer = _format_count_cols(coer, ["n", "n_after"] if "n_after" in coer.columns else ["n"])
+        n_rows = len(art.schema_coercion)
+        body.append(details_block(
+            f"Coerced value audit ({n_rows})",
+            "<p>Value-level changes from schema application "
+            "(<code>replace</code>, <code>nulls</code>, dtype coercion). "
+            "Missing results show as <code>(missing)</code>. "
+            "Datetime columns are summarized by format style "
+            "(e.g. <code>DD.MM.YYYY.</code> → <code>YYYY-MM-DD 00:00:00</code>), "
+            "not one row per timestamp. "
+            "<code>n_after</code> is a running non-null count within each column "
+            "(starts at pre-coercion non-nulls; only drops on losses to "
+            "<code>(missing)</code>).</p>"
+            + table_to_html(coer, max_rows=500),
+        ))
 
     has_log = art.cleaning_log is not None and not art.cleaning_log.empty
     has_deriv = art.derivation_log is not None and not art.derivation_log.empty
@@ -1335,13 +1361,31 @@ def _group_dda_bivariate_figures(
     return {k: groups[k] for k in sorted(groups)}
 
 
+def _group_dda_trivariate_figures(
+    paths: list[Path],
+) -> dict[str, list[Path]]:
+    """Group ``{x}__vs__{y}__by__{g}.svg`` paths by pair key ``{x}__vs__{y}``."""
+    groups: dict[str, list[Path]] = {}
+    for p in paths:
+        stem = p.stem
+        if "__by__" in stem:
+            pair_key = stem.split("__by__", 1)[0]
+        else:
+            pair_key = stem
+        groups.setdefault(pair_key, []).append(p)
+    return {k: groups[k] for k in sorted(groups)}
+
+
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
-    """📊 DDA story: univariate tables/figures, then bivariate seaborn plots."""
+    """📊 DDA story: univariate tables/figures, then bi-/trivariate seaborn plots."""
     body = [
         '<p>Descriptive pass before association testing. '
         '<strong>Univariate</strong> tables and figures summarize each column '
         'on its own; <strong>bivariate</strong> plots show selected pairs '
-        '(grouped by the dict key / x column).</p>',
+        '(grouped by the dict key / x column); '
+        '<strong>trivariate</strong> plots compare selected pairs across '
+        'prespecified groups (SciencePlots scatter / box / counts; '
+        'OLS + LOESS when both axes are continuous).</p>',
     ]
 
     # --- 1️⃣ Univariate ---
@@ -1428,6 +1472,40 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
     body.append(details_block(
         f"2️⃣ DDA - bivariate ({len(art.dda_bivariate_figures)})",
         biv_inner,
+    ))
+
+    # --- 3️⃣ Trivariate (nested dropdown per (x, y) pair) ---
+    if art.dda_trivariate_figures:
+        groups = _group_dda_trivariate_figures(art.dda_trivariate_figures)
+        tri_parts = [
+            '<p>One figure per triple from '
+            '<code>{(x, y): [group, …]}</code> (SciencePlots). '
+            'Continuous×continuous: scatter with OLS '
+            '(<em>straight-line fit</em>) + LOESS (<em>smooth trend</em>); '
+            'continuous×categorical: dodged box + strip; '
+            'categorical×categorical: count panels by group. '
+            'Open a pair below to browse its group plots.</p>',
+        ]
+        for pair_key, figs in groups.items():
+            if "__vs__" in pair_key:
+                x_raw, y_raw = pair_key.split("__vs__", 1)
+                label = f"{prettify_label(x_raw)} vs {prettify_label(y_raw)}"
+            else:
+                label = prettify_label(pair_key)
+            tri_parts.append(details_block(
+                f"🔑 {label} ({len(figs)})",
+                svg_grid(figs),
+            ))
+        tri_inner = "".join(tri_parts)
+    else:
+        tri_inner = (
+            '<p class="muted"><em>(no trivariate figures — run '
+            '<code>run_dda_trivariate</code> with a '
+            '<code>{(x, y): [group, …]}</code> dict)</em></p>'
+        )
+    body.append(details_block(
+        f"3️⃣ DDA - trivariate ({len(art.dda_trivariate_figures)})",
+        tri_inner,
     ))
 
     return section_block("📊 Descriptive Data Analysis (DDA)", "".join(body))
@@ -1574,9 +1652,14 @@ _EDA_GLOSSARY_GROUPS = [
          "Spearman correlation (−1 to +1). ➡️ Positive = both variables rise "
          "together; negative = one rises as the other falls. 0 ≈ no monotonic "
          "link."),
+        ("phi",
+         "Signed 2×2 association (−1 to +1), equal to Pearson r on 0/1 codes. "
+         "➡️ Positive = feature-present co-occurs with the outcome; negative = "
+         "protective / inverse. |ϕ| equals Cramér's V on the same table."),
         ("cramers_v",
          "How tightly two categorical variables are linked (0 = none, 1 = perfect). "
-         "🔗 Helps judge whether a location or margin category meaningfully "
+         "🔗 Unsigned — used when there are 3+ categories (no single direction). "
+         "Helps judge whether a location or margin category meaningfully "
          "tracks the outcome, not just whether χ² is significant."),
         ("epsilon_sq",
          "Kruskal–Wallis effect size — share of overall spread explained by "
@@ -2476,17 +2559,25 @@ def _render_diagnostic_accuracy(target: str, art: Artifacts,
 
 
 def _eda_direction_phrase(r: pd.Series, target: str) -> str:
-    """Plain-language wording for one EDA association row (Spearman sign from rho)."""
+    """Plain-language wording for one EDA association row (signed effects)."""
     pred = _esc(r.get("predictor"))
-    test = str(r.get("test") or "")
     eff = _coerce_float(r.get("effect"))
-    if test == "spearman" and eff is not None:
-        if eff > 0:
-            return (f"Higher <code>{pred}</code> is associated with a higher rate of "
-                    f"<code>{_esc(target)}</code>")
-        if eff < 0:
-            return (f"Higher <code>{pred}</code> is associated with a lower rate of "
-                    f"<code>{_esc(target)}</code>")
+    label = str(r.get("effect_label") or "")
+    if label in ("spearman_rho", "phi", "rank_biserial_r") and eff is not None:
+        if label == "rank_biserial_r":
+            if eff > 0:
+                return (f"Higher <code>{pred}</code> values in "
+                        f"<code>{_esc(target)}</code>-positive cases")
+            if eff < 0:
+                return (f"Lower <code>{pred}</code> values in "
+                        f"<code>{_esc(target)}</code>-positive cases")
+        else:
+            if eff > 0:
+                return (f"Higher / present <code>{pred}</code> is associated with a "
+                        f"higher rate of <code>{_esc(target)}</code>")
+            if eff < 0:
+                return (f"Higher / present <code>{pred}</code> is associated with a "
+                        f"lower rate of <code>{_esc(target)}</code>")
     return (f"<code>{pred}</code> is associated with "
             f"<code>{_esc(target)}</code> (see figure for group differences)")
 

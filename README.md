@@ -53,7 +53,8 @@ meningioma-atypier/
 │   ├── datasets/                   # Parquet handoff between notebooks
 │   ├── dda/
 │   │   ├── figures/                # Univariate DDA SVGs
-│   │   └── figures_bivariate/      # Optional bivariate DDA SVGs
+│   │   ├── figures_bivariate/      # Optional bivariate DDA SVGs
+│   │   └── figures_trivariate/     # Optional trivariate DDA SVGs (OLS + LOESS)
 │   ├── eda/
 │   │   ├── tables/                 # associations.csv, diagnostic_accuracy.csv
 │   │   └── figures/                # per-pair plots + association_heatmap.svg
@@ -125,8 +126,8 @@ flowchart LR
 
 | Stage | Module | What it produces |
 |-------|--------|------------------|
-| Cleaning | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log (`n_rows` / `n_columns`), derived columns |
-| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`) |
+| Cleaning | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log (`n_rows` / `n_columns`), derived columns; `schema_coercion.csv` audits value→value changes (incl. → missing) |
+| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`); optional **trivariate** SciencePlots figures (`run_dda_trivariate` → `output/dda/figures_trivariate/`, OLS + LOESS by group) |
 | Missingness / MICE | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
 | EDA | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
 | Diagnostic accuracy | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
@@ -308,6 +309,7 @@ cd heavy_machinery && python -m pytest   # from library folder
 | `output/missingness/mice/r_session.json` | R session snapshot recorded at imputation time |
 | `output/dda/figures/` | Univariate DDA SVGs (hist / bar / box / timeline) |
 | `output/dda/figures_bivariate/` | Optional bivariate DDA SVGs (`{x}__by__{partner}.svg`) |
+| `output/dda/figures_trivariate/` | Optional trivariate DDA SVGs (`{x}__vs__{y}__by__{group}.svg`) |
 | `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
 | `output/eda/figures/association_heatmap.svg` | Target × predictor signed-effect overview (* = FDR-significant) |
 | `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
@@ -328,7 +330,9 @@ cd heavy_machinery && python -m pytest   # from library folder
 
 - **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §07)
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
+- **Coerced value audit** dropdown in Cleaning when `output/cleaning/schema_coercion.csv` is present
 - **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
+- **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has SVGs (grouped by the `(x, y)` pair key)
 - **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
 - **Publication-style figures** via `modelling_phase/plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
@@ -353,7 +357,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 | Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
 | Imputation (sensitivity) & metrics | scikit-learn, joblib |
 | Validation | pandera (schema checks) |
-| Visualization | matplotlib, seaborn, `modelling_phase/plot_style.py` (shared theme + label prettifier) |
+| Visualization | matplotlib, seaborn, SciencePlots (trivariate), `modelling_phase/plot_style.py` (shared theme + label prettifier) |
 | Deployment | Streamlit |
 | Quality | pytest |
 
@@ -417,6 +421,7 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Entropy** H = −Σ p·log₂(p); **balance** = H ÷ log₂(k) | H measures category diversity; balance scales it 0 (one class) → 1 (even split). | Quantifies whether a nominal field carries information or is nearly constant. **Alternative:** counting levels manually — entropy summarizes imbalance in one number. |
 | **Histogram + KDE, boxplot** | Bar counts per bin; smooth curve over the shape; box shows median and outliers. | Visual sanity check alongside the table — spots bimodality, typos, impossible values. **Alternative:** summary stats alone — miss two-peaked ADC distributions or data-entry spikes. |
 | **Bivariate seaborn plots** (`run_dda_bivariate`) | Selected `x` columns stratified / scatter-paired by partner columns → SVGs under `figures_bivariate/`. | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** only univariate plots — miss age/sex structure that later confounds associations. |
+| **Trivariate SciencePlots** (`run_dda_trivariate`) | Cont/cat × cont/cat compared across a group column → SVGs under `figures_trivariate/`. Cont×cont gets **OLS** (`straight-line fit`) + **LOESS** (`smooth trend`) with SciencePlots styling; cont×cat gets dodged box+strip; cat×cat gets count facets. Ordered categoricals keep level order. | Shows whether relationships differ by grade/sex (and similar) before modelling. **Alternative:** only bivariate — miss interaction-shaped patterns across a third grouping variable. |
 
 ---
 

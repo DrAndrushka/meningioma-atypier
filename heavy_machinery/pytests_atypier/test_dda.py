@@ -133,6 +133,118 @@ def test_run_dda_bivariate(tiny_df, tmp_output):
     assert paths[0].parent.name == "figures_bivariate"
 
 
+def test_run_dda_trivariate(tmp_output):
+    rng = np.random.default_rng(0)
+    n = 40
+    df = pd.DataFrame({
+        "vol": rng.uniform(5, 80, n),
+        "diam": rng.uniform(1, 8, n),
+        "high_grade": rng.choice([False, True], n),
+    })
+    paths = dda.run_dda_trivariate(
+        df,
+        {("diam", "vol"): ["high_grade"]},
+        output_root=tmp_output,
+    )
+    assert len(paths) == 1
+    assert paths[0].exists()
+    assert paths[0].parent.name == "figures_trivariate"
+    assert paths[0].name == "diam__vs__vol__by__high_grade.svg"
+
+
+def test_plot_trivariate_legend_labels(tmp_path):
+    rng = np.random.default_rng(2)
+    n = 40
+    df = pd.DataFrame({
+        "diam": rng.uniform(1, 8, n),
+        "vol": rng.uniform(5, 80, n),
+        "high_grade": rng.choice([False, True], n),
+    })
+    path = dda._plot_trivariate(df, "diam", "vol", "high_grade", tmp_path)
+    assert path is not None
+    # Rebuild once more to inspect legend text via a direct call path:
+    # (SVG exists; check display helper + that plotting didn't raise.)
+    assert dda._display_level(False, by_col="high_grade") == "Low grade"
+    assert dda._display_level(True, by_col="high_grade") == "High grade"
+
+
+def test_run_dda_trivariate_cont_cat_and_cat_cat(tmp_output):
+    rng = np.random.default_rng(1)
+    n = 36
+    df = pd.DataFrame({
+        "vol": rng.uniform(5, 80, n),
+        "side": rng.choice(["L", "R", "mid"], n),
+        "margin": rng.choice(["smooth", "irregular"], n),
+        "high_grade": rng.choice(["low", "high"], n),
+    })
+    # ordered categorical group
+    df["grade_ord"] = pd.Categorical(
+        rng.choice(["I", "II", "III"], n),
+        categories=["I", "II", "III"], ordered=True,
+    )
+    paths = dda.run_dda_trivariate(
+        df,
+        {
+            ("vol", "side"): ["high_grade"],
+            ("side", "margin"): ["grade_ord"],
+        },
+        output_root=tmp_output,
+    )
+    assert len(paths) == 2
+    stems = {p.name for p in paths}
+    assert "vol__vs__side__by__high_grade.svg" in stems
+    assert "side__vs__margin__by__grade_ord.svg" in stems
+
+
+def test_plot_trivariate_respects_ordered_categories(tmp_path):
+    df = pd.DataFrame({
+        "vol": np.linspace(10, 90, 30),
+        "bin": ["a", "b"] * 15,
+        "grade": pd.Categorical(
+            ["III", "I", "II"] * 10,
+            categories=["I", "II", "III"], ordered=True,
+        ),
+    })
+    path = dda._plot_trivariate(df, "vol", "bin", "grade", tmp_path)
+    assert path is not None
+    assert dda._ordered_levels(df["grade"]) == ["I", "II", "III"]
+
+
+def test_plot_trivariate_skips_high_cardinality_by(tiny_df, tmp_path):
+    df = tiny_df.copy()
+    df = pd.concat([df] * 5, ignore_index=True)
+    df["noisy"] = [f"l{i}" for i in range(len(df))]
+    df["vol"] = np.linspace(1, 10, len(df))
+    df["diam"] = np.linspace(2, 11, len(df))
+    assert dda._plot_trivariate(df, "vol", "diam", "noisy", tmp_path) is None
+
+
+def test_normalize_science_styles():
+    assert dda._normalize_science_styles(None) == ["science", "no-latex"]
+    assert dda._normalize_science_styles("ieee") == ["ieee"]
+    assert dda._normalize_science_styles(["science", "nature", "no-latex"]) == [
+        "science", "nature", "no-latex",
+    ]
+
+
+def test_run_dda_trivariate_ieee_style(tmp_output):
+    rng = np.random.default_rng(3)
+    n = 30
+    df = pd.DataFrame({
+        "diam": rng.uniform(1, 8, n),
+        "vol": rng.uniform(5, 80, n),
+        "high_grade": rng.choice([False, True], n),
+    })
+    paths = dda.run_dda_trivariate(
+        df,
+        {("diam", "vol"): ["high_grade"]},
+        output_root=tmp_output,
+        science_style=["science", "ieee", "no-latex"],
+    )
+    assert len(paths) == 1
+    assert paths[0].exists()
+
+
 def test_run_dda_bivariate_continuous_partner(tiny_df, tmp_output):
     df = tiny_df.copy()
     df["adc_value"] = [0.7, 0.8, 0.9, 1.0, 0.75, 0.85, 0.95, 1.05][: len(df)]
@@ -168,22 +280,27 @@ def test_plot_bivariate_skips_high_cardinality_categorical(tiny_df, tmp_path):
 
 
 def test_continuous_density_clips_to_observed_min(tiny_df, tmp_path):
-    """KDE must not extend below the lowest observed continuous value."""
+    """Hist + KDE must keep xlim at the lowest observed continuous value."""
     df = tiny_df.dropna(subset=["age", "sex"]).copy()
     df["age"] = df["age"].clip(lower=40.0)  # all ages ≥ 40
     path = dda._plot_continuous_density_by_categorical(
         df, cont_col="age", cat_col="sex", out_dir=tmp_path, file_stem="age_by_sex",
     )
     assert path.exists()
-    # Re-plot on an axes and assert xlim lower bound matches data min
     order = dda._ordered_levels(df["sex"])
     fig, ax = plt.subplots()
     x_lo = float(df["age"].min())
     x_hi = float(df["age"].max())
-    sns.kdeplot(
-        data=df, x="age", hue="sex", hue_order=order,
-        clip=(x_lo, x_hi), cut=0, ax=ax,
-    )
+    for level in order:
+        sub = df.loc[df["sex"] == level, "age"].dropna()
+        if sub.empty:
+            continue
+        sns.histplot(
+            sub, bins=18, kde=True, stat="count",
+            binrange=(x_lo, x_hi),
+            kde_kws={"clip": (x_lo, x_hi), "cut": 0},
+            ax=ax,
+        )
     ax.set_xlim(x_lo, x_hi)
     assert ax.get_xlim()[0] == pytest.approx(x_lo)
     plt.close(fig)

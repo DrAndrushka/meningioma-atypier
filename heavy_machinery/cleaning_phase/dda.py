@@ -3,6 +3,9 @@
 Summary stats plus histogram/box/bar plots where appropriate. No p-values.
 Optional bivariate seaborn plots via ``run_dda_bivariate``
 (``{x: [partners]}`` — categorical and continuous partners).
+Optional trivariate SciencePlots figures via ``run_dda_trivariate``
+(``{(x, y): [group, …]}`` — cont/cat × cont/cat compared across groups;
+OLS + LOESS when both axes continuous, with Bokeh-style legend labels).
 Artifacts → ``output/dda/``.
 """
 
@@ -15,6 +18,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import skew, kurtosis, trim_mean
+from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from schema_infer import ColSpec
 from heavy_machinery.modelling_phase.plot_style import PALETTE, apply_plot_style, prettify_label
@@ -339,6 +343,11 @@ _BIVARIATE_COLORS = (
     "#000000",  # black
 )
 
+# Default SciencePlots stack for trivariate figures.
+# Variants: ["science", "nature", "no-latex"] | ["science", "ieee", "no-latex"]
+#           | ["science", "bright", "grid", "no-latex"]
+_SCIENCE_STYLES_DEFAULT: tuple[str, ...] = ("science", "no-latex")
+
 
 def _bivariate_palette(n: int) -> list:
     """Cycle a distinct bivariate palette to length ``n``."""
@@ -348,6 +357,33 @@ def _bivariate_palette(n: int) -> list:
         return base[:n]
     return [base[i % len(base)] for i in range(n)]
 
+
+def _normalize_science_styles(
+    styles: str | list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    """Coerce a style name / list to a non-empty SciencePlots style list."""
+    if styles is None:
+        return list(_SCIENCE_STYLES_DEFAULT)
+    if isinstance(styles, str):
+        styles = [styles]
+    out = [str(s).strip() for s in styles if str(s).strip()]
+    return out or list(_SCIENCE_STYLES_DEFAULT)
+
+
+def _science_style(styles: str | list[str] | tuple[str, ...] | None = None):
+    """Publication matplotlib style context for trivariate figures (SciencePlots)."""
+    import scienceplots  # noqa: F401
+
+    return plt.style.context(_normalize_science_styles(styles))
+
+
+def _display_level(level, *, by_col: str = "") -> str:
+    """Human-readable group level; ``high_grade`` bool → Low/High grade."""
+    if by_col == "high_grade" and level in (True, False, 1, 0):
+        return "High grade" if bool(level) else "Low grade"
+    if isinstance(level, (bool, np.bool_)):
+        return "Yes" if bool(level) else "No"
+    return str(level)
 
 def _is_continuous_like(s: pd.Series, *, max_cat_levels: int = 12) -> bool:
     """Numeric with many distinct values → continuous; few levels stay categorical."""
@@ -387,10 +423,10 @@ def _plot_continuous_density_by_categorical(
     *,
     file_stem: str,
 ) -> Path:
-    """Overlapping seaborn KDEs of a continuous var, colored by categorical.
+    """Overlapping hist + KDE of a continuous var, colored by categorical.
 
-    One axes, different colors per level, legend labels include ``n=``.
-    KDE support is clipped to the observed ``[min, max]`` of ``cont_col``.
+    Layered semi-transparent histograms with KDE curves (aesthetics-style).
+    Legend labels include ``n=``. Support clipped to observed ``[min, max]``.
     """
     cont_label = prettify_label(cont_col)
     cat_label = prettify_label(cat_col)
@@ -409,18 +445,28 @@ def _plot_continuous_density_by_categorical(
     for level, color in zip(order, palette):
         sub = plot_df.loc[plot_df[cat_col] == level, cont_col].astype(float).dropna()
         n = int(sub.size)
-        if n < 2 or float(sub.std(ddof=0)) == 0.0:
+        if n < 1:
             continue
-        sns.kdeplot(
-            sub, ax=ax, color=color, linewidth=1.8, fill=False,
-            clip=clip, cut=0, warn_singular=False,
+        use_kde = n >= 2 and float(sub.std(ddof=0)) > 0.0
+        sns.histplot(
+            sub,
+            bins=18,
+            kde=use_kde,
+            stat="count",
+            alpha=0.6,
+            color=color,
+            edgecolor="white",
+            linewidth=0.6,
+            binrange=clip,
+            kde_kws={"clip": clip, "cut": 0} if use_kde else None,
             label=f"{level} (n={n})",
+            ax=ax,
         )
 
     ax.set_xlim(x_lo, x_hi)
     ax.set(
-        xlabel=cont_label, ylabel="Density",
-        title=f"{cont_label} density by {cat_label}",
+        xlabel=cont_label, ylabel="Count",
+        title=f"{cont_label} distribution by {cat_label}",
     )
     ax.legend(title=cat_label, frameon=True)
     _annotate_total_n(ax, len(plot_df))
@@ -437,7 +483,7 @@ def _plot_bivariate(
 
     Plot choice:
     - continuous × continuous → scatter + OLS trend
-    - continuous ↔ categorical → overlapping colored KDEs (legend with n=)
+    - continuous ↔ categorical → overlapping hist + KDE (legend with n=)
     - categorical × categorical → grouped counts
 
     All figures show ``n=`` (total and/or per level). Uses a distinct shared palette.
@@ -485,7 +531,7 @@ def _plot_bivariate(
         _save_fig(fig, path)
         return path
 
-    # Continuous ↔ categorical — density (aesthetics-style)
+    # Continuous ↔ categorical — hist + KDE (aesthetics-style)
     if x_cont and not by_cont:
         return _plot_continuous_density_by_categorical(
             plot_df, cont_col=x_col, cat_col=by_col, out_dir=out_dir,
@@ -609,6 +655,252 @@ def run_dda_bivariate(
             path = _plot_bivariate(
                 df, x_col, by_col, figs_dir,
                 max_marker_levels=max_marker_levels,
+            )
+            if path is not None:
+                paths.append(path)
+    return paths
+
+
+def _plot_trivariate(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    by_col: str,
+    out_dir: Path,
+    *,
+    max_marker_levels: int = 12,
+    lowess_frac: float = 0.4,
+    science_style: str | list[str] | tuple[str, ...] | None = None,
+) -> Path | None:
+    """One SciencePlots trivariate figure for ``(x, y)`` compared across ``by``.
+
+    Plot choice (``by`` always categorical, ordered levels respected):
+    - continuous × continuous → scatter + OLS (dashed) + LOESS (solid);
+      legend entries match ``{level}`` / ``{level} straight-line fit`` /
+      ``{level} smooth trend``
+    - continuous × categorical → dodged box + strip, hue = ``by``
+    - categorical × categorical → count bars faceted by ``by``
+
+    ``science_style`` selects SciencePlots sheets (default ``science`` + ``no-latex``;
+    try ``nature`` / ``ieee``). Corner badge shows total n on single-axis plots.
+    High-cardinality categoricals are skipped.
+    """
+    plot_df = df[[x_col, y_col, by_col]].dropna()
+    if plot_df.empty:
+        return None
+
+    by_n = int(plot_df[by_col].nunique(dropna=True))
+    if by_n < 2 or by_n > max_marker_levels:
+        return None
+    if _is_continuous_like(plot_df[by_col], max_cat_levels=max_marker_levels):
+        return None
+
+    x_cont = _is_continuous_like(plot_df[x_col], max_cat_levels=max_marker_levels)
+    y_cont = _is_continuous_like(plot_df[y_col], max_cat_levels=max_marker_levels)
+    for col, is_cont in ((x_col, x_cont), (y_col, y_cont)):
+        if is_cont:
+            continue
+        n_lv = int(plot_df[col].nunique(dropna=True))
+        if n_lv < 1 or n_lv > max_marker_levels:
+            return None
+
+    file_stem = f"{x_col}__vs__{y_col}__by__{by_col}"
+    path = out_dir / f"{file_stem}.svg"
+    x_label, y_label, by_label = (
+        prettify_label(x_col), prettify_label(y_col), prettify_label(by_col),
+    )
+    by_order = _ordered_levels(plot_df[by_col])
+    by_counts = _level_counts(plot_df[by_col], by_order)
+    palette = _bivariate_palette(len(by_order))
+    n_total = int(len(plot_df))
+    level_labs = [_display_level(lv, by_col=by_col) for lv in by_order]
+
+    with _science_style(science_style):
+        if x_cont and y_cont:
+            fig, ax = plt.subplots(figsize=(7.2, 4.5))
+            y_floor = float(plot_df[y_col].min()) >= 0
+            for level, color, lab in zip(by_order, palette, level_labs):
+                sub = plot_df.loc[plot_df[by_col] == level]
+                ax.scatter(
+                    sub[x_col], sub[y_col],
+                    s=28, alpha=0.7, color=color, edgecolors="white",
+                    linewidths=0.4, label=lab, zorder=3,
+                )
+            for level, color, lab in zip(by_order, palette, level_labs):
+                sub = plot_df.loc[plot_df[by_col] == level]
+                if len(sub) < 2:
+                    continue
+                x = sub[x_col].to_numpy(dtype=float)
+                y = sub[y_col].to_numpy(dtype=float)
+                slope, intercept = np.polyfit(x, y, 1)
+                x_line = np.linspace(float(x.min()), float(x.max()), 60)
+                y_line = slope * x_line + intercept
+                if y_floor:
+                    y_line = np.clip(y_line, 0, None)
+                ax.plot(
+                    x_line, y_line, color=color, linestyle="--", linewidth=1.6,
+                    label=f"{lab} straight-line fit", zorder=2,
+                )
+                smo = lowess(y, x, frac=lowess_frac, return_sorted=True)
+                y_s = smo[:, 1]
+                if y_floor:
+                    y_s = np.clip(y_s, 0, None)
+                ax.plot(
+                    smo[:, 0], y_s, color=color, linewidth=2.4,
+                    solid_capstyle="round", label=f"{lab} smooth trend", zorder=2,
+                )
+            ax.set(
+                xlabel=x_label, ylabel=y_label,
+                title=f"{x_label} vs {y_label} by {by_label}",
+            )
+            ax.minorticks_on()
+            ax.legend(loc="upper left", frameon=True, fancybox=False, framealpha=0.95)
+            _annotate_total_n(ax, n_total)
+            _save_fig(fig, path)
+            return path
+
+        if x_cont ^ y_cont:
+            cont_col, cat_col = (x_col, y_col) if x_cont else (y_col, x_col)
+            cont_label, cat_label = (
+                (x_label, y_label) if x_cont else (y_label, x_label)
+            )
+            cat_order = _ordered_levels(plot_df[cat_col])
+            n_cat, n_hue = len(cat_order), len(by_order)
+            fig, ax = plt.subplots(figsize=(7.2, 4.5))
+            box_w = 0.55 / max(n_hue, 1)
+            gap = 0.04
+            centers = np.arange(n_cat, dtype=float)
+            for i, (level, color, lab) in enumerate(zip(by_order, palette, level_labs)):
+                offset = (i - (n_hue - 1) / 2) * (box_w + gap)
+                positions = centers + offset
+                data = [
+                    plot_df.loc[
+                        (plot_df[cat_col] == cat_lv) & (plot_df[by_col] == level),
+                        cont_col,
+                    ].astype(float).to_numpy()
+                    for cat_lv in cat_order
+                ]
+                ax.boxplot(
+                    data, positions=positions, widths=box_w * 0.85,
+                    patch_artist=True, showfliers=False,
+                    medianprops={"color": "#222222", "linewidth": 1.2},
+                    whiskerprops={"color": "#555555", "linewidth": 0.8},
+                    capprops={"color": "#555555", "linewidth": 0.8},
+                    boxprops={
+                        "facecolor": color, "alpha": 0.45,
+                        "edgecolor": "#333333", "linewidth": 0.8,
+                    },
+                )
+                # strip
+                rng = np.random.default_rng(abs(hash((x_col, y_col, by_col, str(level)))) % (2**32))
+                for pos, vals in zip(positions, data):
+                    if vals.size == 0:
+                        continue
+                    jitter = rng.uniform(-box_w * 0.25, box_w * 0.25, size=vals.size)
+                    ax.scatter(
+                        np.full(vals.size, pos) + jitter, vals,
+                        s=10, alpha=0.55, color=color, edgecolors="none", zorder=3,
+                    )
+                # proxy for legend
+                ax.plot([], [], color=color, linewidth=6, alpha=0.55, label=f"{lab} (n={by_counts[level]})")
+            ax.set_xticks(centers)
+            ax.set_xticklabels([str(c) for c in cat_order], rotation=30, ha="right")
+            ax.set(
+                xlabel=cat_label, ylabel=cont_label,
+                title=f"{cont_label} by {cat_label} × {by_label}",
+            )
+            ax.minorticks_on()
+            ax.legend(loc="best", frameon=True, framealpha=0.95, title=by_label)
+            _annotate_total_n(ax, n_total)
+            _save_fig(fig, path)
+            return path
+
+        # categorical × categorical × by
+        x_order = _ordered_levels(plot_df[x_col])
+        y_order = _ordered_levels(plot_df[y_col])
+        n_panels = len(by_order)
+        y_palette = _bivariate_palette(len(y_order))
+        fig, axes = plt.subplots(
+            1, n_panels, figsize=(max(3.6 * n_panels, 7.2), 4.5), squeeze=False,
+        )
+        x_pos = np.arange(len(x_order), dtype=float)
+        bar_w = 0.8 / max(len(y_order), 1)
+        for ax, level, lab in zip(axes[0], by_order, level_labs):
+            sub = plot_df.loc[plot_df[by_col] == level]
+            for j, (y_lv, color) in enumerate(zip(y_order, y_palette)):
+                counts = [
+                    int(((sub[x_col] == x_lv) & (sub[y_col] == y_lv)).sum())
+                    for x_lv in x_order
+                ]
+                offset = (j - (len(y_order) - 1) / 2) * bar_w
+                ax.bar(
+                    x_pos + offset, counts, width=bar_w * 0.9,
+                    color=color, edgecolor="white", linewidth=0.4,
+                    label=str(y_lv),
+                )
+            ax.set_title(f"{lab} (n={by_counts[level]})")
+            ax.set_xlabel(x_label)
+            ax.set_ylabel("Count")
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels([str(x) for x in x_order], rotation=30, ha="right")
+            ax.minorticks_on()
+            ax.legend(title=y_label, frameon=True, fontsize=8, framealpha=0.95)
+        fig.suptitle(f"{x_label} × {y_label} by {by_label}  (n={n_total})", y=1.02)
+        _save_fig(fig, path)
+        return path
+
+
+def run_dda_trivariate(
+    df: pd.DataFrame,
+    trivariate_specs: dict[tuple[str, str], list[str]],
+    *,
+    output_root: Path | str = "output",
+    max_marker_levels: int = 12,
+    lowess_frac: float = 0.4,
+    science_style: str | list[str] | tuple[str, ...] | None = None,
+) -> list[Path]:
+    """Plot each ``{(x, y): [group, …]}`` triple with SciencePlots + matplotlib.
+
+    Example::
+
+        run_dda_trivariate(
+            df,
+            {("max_diameter_cm", "tumor_volume"): ["high_grade", "sex"]},
+            output_root=OUTPUT_ROOT,
+            science_style=["science", "nature", "no-latex"],  # or "ieee"
+        )
+
+    ``science_style`` — SciencePlots sheet name or list (default
+    ``["science", "no-latex"]``). Try ``nature`` / ``ieee`` / ``bright``+``grid``.
+
+    Writes SVGs under ``output/dda/figures_trivariate/`` (clears prior SVGs there).
+
+    Type matrix (``by`` = ordered/unordered categorical):
+    - cont × cont → scatter + OLS (``straight-line fit``) + LOESS (``smooth trend``)
+    - cont × cat  → dodged box + strip
+    - cat × cat   → count bars faceted by by
+    """
+    output_root = Path(output_root)
+    figs_dir = output_root / "dda" / "figures_trivariate"
+    figs_dir.mkdir(parents=True, exist_ok=True)
+    for old in figs_dir.glob("*.svg"):
+        old.unlink()
+
+    paths: list[Path] = []
+    for pair, by_cols in trivariate_specs.items():
+        if not (isinstance(pair, tuple) and len(pair) == 2):
+            continue
+        x_col, y_col = pair
+        if x_col not in df.columns or y_col not in df.columns:
+            continue
+        for by_col in by_cols:
+            if by_col not in df.columns or by_col in (x_col, y_col):
+                continue
+            path = _plot_trivariate(
+                df, x_col, y_col, by_col, figs_dir,
+                max_marker_levels=max_marker_levels,
+                lowess_frac=lowess_frac,
+                science_style=science_style,
             )
             if path is not None:
                 paths.append(path)

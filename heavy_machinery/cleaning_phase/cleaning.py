@@ -168,6 +168,8 @@ def apply_schema(
     schema: dict[str, ColSpec],
     *,
     log: list[dict[str, Any]] | None = None,
+    output_root: Path | str | None = None,
+    coercion_log: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     """
     Coerce dtypes and apply nulls/replacements according to schema.
@@ -175,8 +177,12 @@ def apply_schema(
     Columns with kind='skip' are dropped from the returned frame.
 
     If ``log`` is a list, per-column actions are appended for ``export_cleaning_artifacts``.
+    Value-level changes (including → missing) are aggregated into
+    ``output/cleaning/schema_coercion.csv`` when ``output_root`` is set
+    (and/or appended to ``coercion_log``).
     """
     out = df.copy()
+    coercion_rows: list[dict[str, Any]] = []
 
     for col, spec in schema.items():
         if col not in out.columns:
@@ -189,6 +195,8 @@ def apply_schema(
                 })
             continue
 
+        before = out[col].copy()
+        orig_kind = spec.kind
         actions: list[str] = []
         if spec.replace:
             out[col] = out[col].replace(spec.replace)
@@ -277,6 +285,13 @@ def apply_schema(
             out[col] = s.astype("string")
         actions.append(f"coerce_{spec.kind}")
 
+        coercion_rows.extend(
+            _coercion_changes(
+                col, schema[col].kind, before, out[col],
+                style_collapse=(orig_kind == "datetime"),
+            )
+        )
+
         if log is not None and spec.kind != "skip":
             if not spec.keep:
                 actions.append("excluded_keep_false")
@@ -299,7 +314,155 @@ def apply_schema(
                     "kind": "skip",
                 })
 
+    if coercion_log is not None:
+        coercion_log.extend(coercion_rows)
+    if output_root is not None:
+        write_schema_coercion_table(coercion_rows, output_root)
+
     return out
+
+
+def _fmt_coercion_value(v: Any) -> str:
+    """Stable display token for coercion audit rows (missing → ``(missing)``)."""
+    if v is None:
+        return "(missing)"
+    try:
+        if pd.isna(v):
+            return "(missing)"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, (bool, np.bool_)):
+        return "True" if bool(v) else "False"
+    if isinstance(v, pd.Timestamp):
+        return v.isoformat(sep=" ")
+    if isinstance(v, (float, np.floating)):
+        fv = float(v)
+        if fv == int(fv) and abs(fv) < 1e15:
+            return str(int(fv))
+        return str(fv)
+    return str(v)
+
+
+# Datetime audit: collapse many concrete values into format styles.
+_DATE_STYLE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}\.$"), "DD.MM.YYYY."),
+    (re.compile(r"^\d{1,2}\.\d{1,2}\.\d{4}$"), "DD.MM.YYYY"),
+    (re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$"), "DD/MM/YYYY"),
+    (re.compile(r"^\d{4}-\d{2}-\d{2}$"), "YYYY-MM-DD"),
+    (re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?"), "YYYY-MM-DD HH:MM:SS"),
+    (re.compile(r"^\d{4}$"), "YYYY"),
+)
+
+
+def _coercion_style_token(v: Any) -> str:
+    """Map a value to a datetime/format style label (or keep literal / missing)."""
+    if v is None:
+        return "(missing)"
+    try:
+        if pd.isna(v):
+            return "(missing)"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(v, pd.Timestamp):
+        if (
+            v.hour == 0 and v.minute == 0 and v.second == 0
+            and getattr(v, "microsecond", 0) == 0
+        ):
+            return "YYYY-MM-DD 00:00:00"
+        return "YYYY-MM-DD HH:MM:SS"
+    if isinstance(v, (bool, np.bool_)):
+        return "True" if bool(v) else "False"
+    if isinstance(v, (int, np.integer)) and 1900 <= int(v) <= 2100:
+        return "YYYY"
+    if isinstance(v, (float, np.floating)) and float(v).is_integer():
+        iv = int(v)
+        if 1900 <= iv <= 2100:
+            return "YYYY"
+    text = str(v).strip()
+    for rx, label in _DATE_STYLE_PATTERNS:
+        if rx.match(text):
+            return label
+    return text
+
+
+def _coercion_changes(
+    column: str,
+    kind: str,
+    before: pd.Series,
+    after: pd.Series,
+    *,
+    style_collapse: bool = False,
+) -> list[dict[str, Any]]:
+    """Count ``value_before → value_after`` transitions (changed cells only).
+
+    When ``style_collapse`` is True (datetime columns), concrete timestamps /
+    date strings are bucketed into format styles so hundreds of
+    ``05.09.2024. → 2024-09-05 …`` rows become one
+    ``DD.MM.YYYY. → YYYY-MM-DD 00:00:00`` row. Non-date literals (e.g. sentinels)
+    stay as-is.
+
+    ``n_after`` is filled later in ``write_schema_coercion_table`` as a
+    within-column running non-null count (starts at pre-coercion non-nulls,
+    decreases only on transitions to ``(missing)``).
+    """
+    fmt = _coercion_style_token if style_collapse else _fmt_coercion_value
+    b = before.map(fmt)
+    a = after.map(fmt)
+    changed = b != a
+    if not bool(changed.any()):
+        return []
+    n_nonnull_before = int(before.notna().sum())
+    counts = (
+        pd.DataFrame({"value_before": b[changed], "value_after": a[changed]})
+        .value_counts()
+        .reset_index(name="n")
+    )
+    return [
+        {
+            "column": column,
+            "kind": kind,
+            "value_before": row.value_before,
+            "value_after": row.value_after,
+            "n": int(row.n),
+            "n_after": n_nonnull_before,  # start; rewritten as decreasing running total
+        }
+        for row in counts.itertuples(index=False)
+    ]
+
+
+_COERCION_COLUMNS = ("column", "kind", "value_before", "value_after", "n", "n_after")
+
+
+def write_schema_coercion_table(
+    rows: list[dict[str, Any]],
+    output_root: Path | str,
+) -> Path:
+    """Write ``output/cleaning/schema_coercion.csv`` (before→after value counts)."""
+    out_dir = Path(output_root) / "cleaning"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "schema_coercion.csv"
+    table = pd.DataFrame(rows, columns=list(_COERCION_COLUMNS))
+    if not table.empty:
+        # Losses first so the running non-null count steps down, then other changes.
+        table["_to_missing"] = table["value_after"].eq("(missing)")
+        table = table.sort_values(
+            ["column", "_to_missing", "n", "value_before", "value_after"],
+            ascending=[True, False, False, True, True],
+        ).reset_index(drop=True)
+        out_parts: list[pd.DataFrame] = []
+        for _, grp in table.groupby("column", sort=False):
+            g = grp.copy()
+            running = int(g["n_after"].iloc[0])  # pre-coercion non-null start
+            vals: list[int] = []
+            for to_miss, n in zip(g["_to_missing"], g["n"]):
+                if to_miss:
+                    running -= int(n)
+                vals.append(running)
+            g["n_after"] = vals
+            out_parts.append(g)
+        table = pd.concat(out_parts, ignore_index=True).drop(columns=["_to_missing"])
+    table.to_csv(path, index=False)
+    return path
 
 
 def _coerce_binary(s: pd.Series) -> pd.Series:

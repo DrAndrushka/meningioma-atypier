@@ -63,6 +63,87 @@ def test_apply_schema(tiny_df, tiny_schema):
     assert "excluded_keep_false" in id_row["action"]
 
 
+def test_schema_coercion_table(tmp_output):
+    df = pd.DataFrame({
+        "vol": ["1.5", "NAV SECTRA - NOSŪTĪTS", "2,1", None, "3"],
+        "flag": ["yes", "no", "maybe", "1", "0"],
+    })
+    schema = {
+        "vol": ColSpec("vol", "continuous"),
+        "flag": ColSpec("flag", "binary"),
+    }
+    coercion: list[dict] = []
+    out = apply_schema(
+        df, schema, output_root=tmp_output, coercion_log=coercion,
+    )
+    path = tmp_output / "cleaning" / "schema_coercion.csv"
+    assert path.exists()
+    table = pd.read_csv(path)
+    assert list(table.columns) == [
+        "column", "kind", "value_before", "value_after", "n", "n_after",
+    ]
+    # sentinel → missing
+    nav = table[
+        (table["column"] == "vol")
+        & (table["value_before"] == "NAV SECTRA - NOSŪTĪTS")
+        & (table["value_after"] == "(missing)")
+    ]
+    assert len(nav) == 1 and int(nav.iloc[0]["n"]) == 1
+    # comma decimal → float
+    comma = table[
+        (table["column"] == "vol")
+        & (table["value_before"] == "2,1")
+        & (table["value_after"] == "2.1")
+    ]
+    assert len(comma) == 1
+    # running non-null count: starts high, only drops on → (missing)
+    # vol before: 1.5, NAV, 2,1, None, 3 → 4 non-null; 1 loss (NAV)
+    vol_rows = table[table["column"] == "vol"].reset_index(drop=True)
+    assert vol_rows["n_after"].is_monotonic_decreasing
+    miss_rows = vol_rows[vol_rows["value_after"] == "(missing)"]
+    keep_rows = vol_rows[vol_rows["value_after"] != "(missing)"]
+    assert int(miss_rows.iloc[0]["n_after"]) == 3  # 4 - 1
+    if not keep_rows.empty:
+        assert (keep_rows["n_after"] == 3).all()
+    # binary unknown → missing
+    assert any(
+        r["column"] == "flag" and r["value_before"] == "maybe" and r["value_after"] == "(missing)"
+        for r in coercion
+    )
+    assert out["vol"].isna().sum() == 2  # sentinel + None
+
+
+def test_schema_coercion_datetime_style_collapse(tmp_output):
+    df = pd.DataFrame({
+        "mri_date": [
+            "05.09.2024.", "05.09.2024.", "13.02.2018", "NAV MRI", None,
+        ],
+    })
+    schema = {"mri_date": ColSpec("mri_date", "datetime", datetime_bin="full")}
+    coercion: list[dict] = []
+    apply_schema(df, schema, output_root=tmp_output, coercion_log=coercion)
+    table = pd.read_csv(tmp_output / "cleaning" / "schema_coercion.csv")
+    # Many concrete dates collapse to style → style
+    dotted = table[
+        (table["value_before"] == "DD.MM.YYYY.")
+        & (table["value_after"] == "YYYY-MM-DD 00:00:00")
+    ]
+    assert len(dotted) == 1 and int(dotted.iloc[0]["n"]) == 2
+    plain = table[
+        (table["value_before"] == "DD.MM.YYYY")
+        & (table["value_after"] == "YYYY-MM-DD 00:00:00")
+    ]
+    assert len(plain) == 1 and int(plain.iloc[0]["n"]) == 1
+    # Sentinels stay literal
+    nav = table[
+        (table["value_before"] == "NAV MRI")
+        & (table["value_after"] == "(missing)")
+    ]
+    assert len(nav) == 1
+    # Not one row per concrete timestamp
+    assert len(table) <= 3
+
+
 def test_coerce_binary():
     s = pd.Series(["yes", "no", "1", "0"])
     out = cl._coerce_binary(s)

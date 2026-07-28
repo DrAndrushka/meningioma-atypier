@@ -151,6 +151,28 @@ def _cramers_v(table: np.ndarray) -> float:
     return float(np.sqrt(chi2 / denom)) if denom > 0 else np.nan
 
 
+def _phi_coef(table: np.ndarray) -> float:
+    """Signed ϕ for 2×2 ``[[n00, n01], [n10, n11]]`` (rows x=0/1, cols y=0/1).
+
+    Positive ⇒ x=1 co-occurs with y=1; negative ⇒ protective / inverse.
+    For 2×2, ``|ϕ|`` equals Cramér's V.
+    """
+    table = np.asarray(table, dtype=float)
+    if table.shape != (2, 2):
+        return np.nan
+    n00, n01 = table[0, 0], table[0, 1]
+    n10, n11 = table[1, 0], table[1, 1]
+    num = n00 * n11 - n01 * n10
+    den = np.sqrt((n00 + n01) * (n10 + n11) * (n00 + n10) * (n01 + n11))
+    return float(num / den) if den > 0 else np.nan
+
+
+def _ordered_binary_2x2(x01: pd.Series, y01: pd.Series) -> np.ndarray:
+    """Contingency with fixed index/columns ``[0, 1]`` so ϕ sign is locked."""
+    ct = pd.crosstab(x01.astype(float), y01.astype(float))
+    return ct.reindex(index=[0.0, 1.0], columns=[0.0, 1.0], fill_value=0).values.astype(float)
+
+
 def _mwu_with_effect(x_group1: np.ndarray, x_group0: np.ndarray):
     """Mann–Whitney U (two-sided) with signed rank-biserial r.
 
@@ -240,6 +262,7 @@ def _kruskal_with_effect(groups: list[np.ndarray]) -> tuple[float, float, float]
 
 
 def _chi2_row(table: np.ndarray) -> dict:
+    """χ² / Fisher p-value; 2×2 effect is signed ϕ, larger tables Cramér's V."""
     if table.size == 0 or table.sum() == 0:
         return {"test": "chi2", "stat": np.nan, "p": np.nan,
                 "effect": np.nan, "effect_label": "cramers_v"}
@@ -248,7 +271,10 @@ def _chi2_row(table: np.ndarray) -> dict:
         if (exp < 5).any():
             odds, p = fisher_exact(table, alternative="two-sided")
             return {"test": "fisher_exact", "stat": float(odds), "p": float(p),
-                    "effect": _cramers_v(table), "effect_label": "cramers_v"}
+                    "effect": _phi_coef(table), "effect_label": "phi"}
+        chi2, p, _, _ = chi2_contingency(table, correction=False)
+        return {"test": "chi2", "stat": float(chi2), "p": float(p),
+                "effect": _phi_coef(table), "effect_label": "phi"}
     chi2, p, _, _ = chi2_contingency(table, correction=False)
     return {"test": "chi2", "stat": float(chi2), "p": float(p),
             "effect": _cramers_v(table), "effect_label": "cramers_v"}
@@ -292,7 +318,12 @@ def _association_test(
                 x.values[y_arr == 1], x.values[y_arr == 0])
             return {"test": "mann_whitney_u_days", "stat": stat, "p": p,
                     "effect": eff, "effect_label": "rank_biserial_r"}
-        if pred_kind in ("nominal", "binary"):
+        if pred_kind == "binary":
+            # Lock row/col order [absent, present] × [y=0, y=1] so ϕ is signed.
+            table = _ordered_binary_2x2(
+                _binary_predictor_scores(pair[pred]), pair[y_col])
+            return _chi2_row(table)
+        if pred_kind == "nominal":
             ct = pd.crosstab(pair[pred], pair[y_col])
             return _chi2_row(ct.values)
 
@@ -314,6 +345,10 @@ def _association_test(
         yv = y_num.values.astype(float)
         if pk in ("continuous", "count", "ordinal", "datetime"):
             return _spearman_row(yv, x_num.values.astype(float))
+        if pk == "binary":
+            # Signed monotonic link (binary present=1 vs ordinal codes).
+            x_bin = _binary_predictor_scores(pair[pred]).values.astype(float)
+            return _spearman_row(yv, x_bin)
         ct = pd.crosstab(pair[pred], pair["target"])
         return _chi2_row(ct.values)
 
@@ -571,7 +606,7 @@ def _heatmap_signed_effect(row: pd.Series) -> float | None:
     if not np.isfinite(eff):
         return None
     label = str(row.get("effect_label") or "")
-    if label in ("spearman_rho", "rank_biserial_r"):
+    if label in ("spearman_rho", "rank_biserial_r", "phi"):
         return eff
     if label in ("cramers_v", "epsilon_sq"):
         return abs(eff)

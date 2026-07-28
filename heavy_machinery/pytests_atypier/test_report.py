@@ -189,6 +189,23 @@ def test_render_cleaning(report_cfg, report_art):
     assert "<section" in render_cleaning(report_cfg, report_art)
 
 
+def test_render_cleaning_coercion_audit(report_cfg, report_art):
+    report_art.cleaning_summary = pd.DataFrame([{
+        "step": "final", "detail": "done", "n_rows": 10, "n_columns": 5, "criterion": "",
+    }])
+    report_art.schema_coercion = pd.DataFrame([{
+        "column": "tumor_volume",
+        "kind": "continuous",
+        "value_before": "NAV SECTRA - NOSŪTĪTS",
+        "value_after": "(missing)",
+        "n": 21,
+    }])
+    html = render_cleaning(report_cfg, report_art)
+    assert "Coerced value audit (1)" in html
+    assert "NAV SECTRA - NOSŪTĪTS" in html
+    assert "(missing)" in html
+
+
 def test_render_schema(report_cfg, report_art):
     report_art.schema_summary = pd.DataFrame([{"column": "age", "kind": "continuous"}])
     assert "<section" in render_schema(report_cfg, report_art)
@@ -200,8 +217,10 @@ def test_render_dda(report_cfg, report_art):
     assert "<section" in html
     assert "1️⃣ DDA - univariate" in html
     assert "2️⃣ DDA - bivariate" in html
-    # Univariate appears before bivariate in the HTML
+    assert "3️⃣ DDA - trivariate" in html
+    # Univariate appears before bivariate before trivariate in the HTML
     assert html.index("1️⃣ DDA - univariate") < html.index("2️⃣ DDA - bivariate")
+    assert html.index("2️⃣ DDA - bivariate") < html.index("3️⃣ DDA - trivariate")
 
 
 def test_group_dda_bivariate_figures(tmp_path):
@@ -216,6 +235,17 @@ def test_group_dda_bivariate_figures(tmp_path):
     assert len(groups["sex"]) == 1
 
 
+def test_group_dda_trivariate_figures(tmp_path):
+    a = tmp_path / "vol__vs__diam__by__high_grade.svg"
+    b = tmp_path / "vol__vs__diam__by__sex.svg"
+    c = tmp_path / "age__vs__adc__by__sex.svg"
+    for p in (a, b, c):
+        p.write_text("<svg></svg>", encoding="utf-8")
+    groups = rp._group_dda_trivariate_figures([a, b, c])
+    assert list(groups) == ["age__vs__adc", "vol__vs__diam"]
+    assert len(groups["vol__vs__diam"]) == 2
+
+
 def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
     a = tmp_path / "age__by__sex.svg"
     b = tmp_path / "sex__by__adc_value.svg"
@@ -225,6 +255,15 @@ def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
     html = render_dda(report_cfg, report_art)
     assert "🔑 Age (1)" in html
     assert "🔑 Sex (1)" in html
+
+
+def test_render_dda_trivariate_key_dropdowns(report_cfg, report_art, tmp_path):
+    a = tmp_path / "tumor_volume__vs__max_diameter_cm__by__high_grade.svg"
+    a.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
+    report_art.dda_trivariate_figures = [a]
+    html = render_dda(report_cfg, report_art)
+    assert "3️⃣ DDA - trivariate (1)" in html
+    assert "Tumor volume (cm³) vs Max diameter (cm) (1)" in html
 
 
 def test_dda_continuous_for_report_rounds_to_two_decimals():
@@ -500,8 +539,18 @@ def test_render_inferential_interpretation():
 
 
 def test_eda_direction_phrase():
-    r = pd.Series({"predictor": "age", "test": "spearman", "effect": 0.3})
+    r = pd.Series({
+        "predictor": "age", "test": "spearman", "effect": 0.3,
+        "effect_label": "spearman_rho",
+    })
     assert "age" in rp._eda_direction_phrase(r, "event")
+    assert "higher rate" in rp._eda_direction_phrase(r, "event")
+
+    r_phi = pd.Series({
+        "predictor": "progesterone_pos", "test": "fisher_exact", "effect": -0.13,
+        "effect_label": "phi",
+    })
+    assert "lower rate" in rp._eda_direction_phrase(r_phi, "high_grade")
 
 
 def test_render_eda_interpretation(report_cfg):
