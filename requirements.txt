@@ -63,7 +63,7 @@ matplotlib>=3.8
 # Distribution plots (DDA), forest plots, validation charts, missingness bars.
 
 SciencePlots>=2.1
-# Publication matplotlib styles for DDA trivariate figures (`science` + `no-latex`).
+# Publication matplotlib styles for DDA / EDA / forest (`science` + `nature` + `no-latex`).
 
 seaborn>=0.13
 # EDA association plots, missingness heatmaps, and DDA bivariate figures.

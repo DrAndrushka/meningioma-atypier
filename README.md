@@ -45,7 +45,7 @@ meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
 ├── meningioma-cleaning.ipynb       # 🧹 Cohort cleaning → output/datasets/ (run first)
 ├── meningioma-modelling.ipynb      # 🧠 EDA + multivariable + report (run second)
-├── aesthetics_experiments.ipynb    # 🎨 Local graph / e-poster prototyping (optional)
+├── aesthetics_experiments.ipynb    # 🎨 Local graph / e-poster prototyping (optional, gitignored)
 ├── pytest.ini                      # 🧪 Test discovery (repo root)
 ├── pyrightconfig.json              # 🔍 basedpyright extraPaths for phase imports
 ├── requirements.txt                # 📦 Python dependencies
@@ -77,7 +77,7 @@ meningioma-atypier/
     │   ├── inferential.py
     │   ├── model_validation.py
     │   ├── model_calculator.py
-    │   ├── plot_style.py
+    │   ├── plot_style.py           # 🎨 Shared SciencePlots + SVG export pipeline
     │   └── report.py
     ├── config/                     # ⚙️ Pipeline config · `load("name")` (no numeric prefixes)
     │   ├── cohort.py               # load_raw + ANALYSIS_YEARS filter
@@ -127,11 +127,12 @@ flowchart LR
 | Stage | Module | What it produces |
 |-------|--------|------------------|
 | Cleaning | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log (`n_rows` / `n_columns`), derived columns; `schema_coercion.csv` audits value→value changes (incl. → missing) |
-| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** seaborn plots (`run_dda_bivariate` → `output/dda/figures_bivariate/`); optional **trivariate** SciencePlots figures (`run_dda_trivariate` → `output/dda/figures_trivariate/`, OLS + LOESS by group) |
-| Missingness / MICE | `cleaning_phase/missingness_resolution.py` | Missingness heatmap, formal MICE imputed frames + diagnostics |
+| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + univariate SVGs; optional **bivariate** (`run_dda_bivariate` → `output/dda/figures_bivariate/`); optional **trivariate** (`run_dda_trivariate` → `output/dda/figures_trivariate/`, OLS + LOESS by group). All figures use the shared `plot_style` pipeline |
+| Missingness / MICE | `cleaning_phase/missingness_resolution.py` | Missingness bars + co-missingness heatmap, formal MICE imputed frames + diagnostics |
 | EDA | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
 | Diagnostic accuracy | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
-| Inferential | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot, Streamlit JSON — **one block per model variant** |
+| Inferential | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot (log OR; CI-excludes-1 highlighted), Streamlit JSON — **one block per model variant** |
+| Plotting | `modelling_phase/plot_style.py` | **One figure pipeline** for DDA / EDA / forest / missingness: SciencePlots `science`+`nature`+`no-latex`, Okabe–Ito palette, `n=` badges, `save_figure` / `figure_to_svg_bytes`, clinician labels |
 | Validation | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope → merged into calculator JSON |
 | Report | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
 | 🌐 | `app.py` | Interactive risk calculator — default `*_experimental_model_1_model.json` |
@@ -317,7 +318,7 @@ cd heavy_machinery && python -m pytest   # from library folder
 | `output/inferential/tables/<target>__<model_id>__vif.csv` | VIF diagnostics per variant (also in report multivariable section) |
 | `output/inferential/tables/inferential_summary.csv` | All variants combined (CSV only; not duplicated in the HTML report) |
 | `output/inferential/tables/multivariable_cases.csv` | EPV / complete-case counts per variant |
-| `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot (log-scale OR axis) |
+| `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot (log-scale OR; significant CIs highlighted) |
 | `output/report/report.html` | Full narrative report — major sections collapse/expand |
 | `output/inferential/tables/<target>__<model_id>__calculator.json` | Calculator metadata (intercept, terms, z-scores) per variant |
 | `output/inferential/model_artifacts/<target>_<model_id>_model.json` | Streamlit-ready shrunken model with bootstrap validation |
@@ -334,7 +335,7 @@ cd heavy_machinery && python -m pytest   # from library folder
 - **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
 - **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has SVGs (grouped by the `(x, y)` pair key)
 - **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
-- **Publication-style figures** via `modelling_phase/plot_style.py` — consistent matplotlib defaults and clinician-friendly axis labels (no raw `snake_case` in titles)
+- **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`), Okabe–Ito colours, `n=` badges, single SVG export path, and clinician-friendly axis labels (no raw `snake_case` in titles)
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
 - **Multivariable section:** nested 📚 Literature-based models and 🧪 Experimental model dropdowns per target; per-variant VIF diagnostics (collapsed by default)
@@ -357,7 +358,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 | Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
 | Imputation (sensitivity) & metrics | scikit-learn, joblib |
 | Validation | pandera (schema checks) |
-| Visualization | matplotlib, seaborn, SciencePlots (trivariate), `modelling_phase/plot_style.py` (shared theme + label prettifier) |
+| Visualization | matplotlib, seaborn, **SciencePlots** (`science`+`nature`+`no-latex` for all pipeline SVGs), `modelling_phase/plot_style.py` (shared style / palette / `n=` / SVG export + label prettifier) |
 | Deployment | Streamlit |
 | Quality | pytest |
 
@@ -383,11 +384,12 @@ After running modelling §06, Streamlit JSON artifacts live under `output/infere
 
 | Commit | What landed |
 |--------|-------------|
+| *(uncommitted)* | **Unified figure pipeline** in `plot_style.py`: SciencePlots `science`+`nature`+`no-latex` for DDA / EDA / forest / missingness; Okabe–Ito palette; `n=` badges; shared `save_figure`. Forest plots highlight CIs that exclude 1 and pad OR annotations off the frame. `aesthetics_experiments.ipynb` gitignored (local prototyping only). |
 | *(uncommitted)* | **Config modules renamed** — drop numeric prefixes (`01_cohort.py` → `cohort.py`, …); call `load("name")`. Streamlit calculator always resolves `*_experimental_model_1_model.json` (`CALCULATOR_MODEL_ID`). Cleaning summary tracks `n_columns` (not `n_dropped`); cohort year filter logs into drop_log. |
 | `a7e03a3` | **Rank-biserial sign fix** in `eda._mwu_with_effect`: Kerby `r = 2U₁/(n₁·n₀) − 1` with groups always `(outcome==1, outcome==0)`; + means higher in the positive class. |
 | `e534a58` | **EPV** uses the **minority** class (not the labelled positive class). Richer **bivariate DDA** plots, including continuous partners. |
 | `aaa5f0d` | Bivariate DDA distribution plot generation (`run_dda_bivariate` → `output/dda/figures_bivariate/`). |
-| `c6dcc1f` | Aesthetics / e-poster graph experiments notebook (local prototyping). |
+| `c6dcc1f` | Aesthetics / e-poster graph experiments notebook (local prototyping; now gitignored). |
 | `e285589` | Cleaning ingest accepts **multiple** CSV/XLSX inputs. |
 | `cca03a5` | Streamlit **`model_artifacts/`** moved under `output/inferential/`. |
 | `cadb796` | FDR-focused **EDA association heatmap** + collapsible HTML report sections. |
@@ -419,9 +421,9 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Skewness, kurtosis** | Skew = tail heaviness on one side; kurtosis = tail weight vs normal (0 = normal-like). | Early warning for "this needs a non-parametric test later." **Alternative:** eyeballing histograms only — easy to miss in 40+ columns; numbers scale better. |
 | **Mode %, class imbalance** = top count ÷ rarest count | How dominant the most common category is. | Catches degenerate fields (e.g. 98% "absent") before χ² tests fail. **Alternative:** plotting only — tables catch imbalance across the whole schema at once. |
 | **Entropy** H = −Σ p·log₂(p); **balance** = H ÷ log₂(k) | H measures category diversity; balance scales it 0 (one class) → 1 (even split). | Quantifies whether a nominal field carries information or is nearly constant. **Alternative:** counting levels manually — entropy summarizes imbalance in one number. |
-| **Histogram + KDE, boxplot** | Bar counts per bin; smooth curve over the shape; box shows median and outliers. | Visual sanity check alongside the table — spots bimodality, typos, impossible values. **Alternative:** summary stats alone — miss two-peaked ADC distributions or data-entry spikes. |
-| **Bivariate seaborn plots** (`run_dda_bivariate`) | Selected `x` columns stratified / scatter-paired by partner columns → SVGs under `figures_bivariate/`. | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** only univariate plots — miss age/sex structure that later confounds associations. |
-| **Trivariate SciencePlots** (`run_dda_trivariate`) | Cont/cat × cont/cat compared across a group column → SVGs under `figures_trivariate/`. Cont×cont gets **OLS** (`straight-line fit`) + **LOESS** (`smooth trend`) with SciencePlots styling; cont×cat gets dodged box+strip; cat×cat gets count facets. Ordered categoricals keep level order. | Shows whether relationships differ by grade/sex (and similar) before modelling. **Alternative:** only bivariate — miss interaction-shaped patterns across a third grouping variable. |
+| **Histogram + KDE, boxplot** | Bar counts per bin; smooth curve over the shape; box shows median and outliers; corner `n=`. | Visual sanity check alongside the table — spots bimodality, typos, impossible values. **Alternative:** summary stats alone — miss two-peaked ADC distributions or data-entry spikes. |
+| **Bivariate plots** (`run_dda_bivariate`) | Selected `x` columns stratified / scatter-paired by partner columns → SVGs under `figures_bivariate/` (shared SciencePlots + Okabe–Ito). | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** only univariate plots — miss age/sex structure that later confounds associations. |
+| **Trivariate plots** (`run_dda_trivariate`) | Cont/cat × cont/cat compared across a group column → SVGs under `figures_trivariate/`. Cont×cont gets **OLS** (`straight-line fit`) + **LOESS** (`smooth trend`); cont×cat gets dodged box+strip; cat×cat gets count facets. Ordered categoricals keep level order. Optional `science_style=` override (default matches the global pipeline). | Shows whether relationships differ by grade/sex (and similar) before modelling. **Alternative:** only bivariate — miss interaction-shaped patterns across a third grouping variable. |
 
 ---
 
@@ -485,5 +487,5 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Adjusted OR** = e^β | Multiplicative change in odds per unit of encoded predictor, others held fixed. | Clinicians think in "odds of high-grade if sign present vs absent." **Alternative:** reporting only raw coefficients — not intuitive at the bedside. |
 | **Rubin pooling** θ̄ = mean(θᵢ); T = W + (1 + 1/m)·B | Average coefficient across the m formal-MICE datasets; total variance = within-model noise + between-imputation noise. | Only statistically valid way to merge MI results. **Alternative:** fit on one imputed set — ignores imputation uncertainty; **complete-case** — throws away ~30% of patients and can bias if missing is not random. |
 | **Barnard–Rubin df** | Small-sample correction for p-values and CIs when m is modest (publication profile m = 20). | Original Rubin df → ∞ too easily when between-variance is small. **Alternative:** normal z-test after MI — anti-conservative with small m. |
-| **Forest plot (log-scale OR)** | OR = 1 is null; CI crossing 1 means "not clearly different." Log axis keeps symmetric CIs readable. | Standard visual for multivariable clinical papers. **Alternative:** linear OR axis — squashes large ORs and stretches small ones, harder to read. |
+| **Forest plot (log-scale OR)** | OR = 1 is null; CI crossing 1 means "not clearly different." Log axis keeps symmetric CIs readable. Points whose CI excludes 1 are highlighted; OR text sits just outside the right frame. | Standard visual for multivariable clinical papers. **Alternative:** linear OR axis — squashes large ORs and stretches small ones, harder to read. |
 | **EPV check** (events per variable) | Minority-class events ÷ number of design columns in the final model. | With ~100 high-grade cases and many MRI features, overfitting is a real risk. Report marks **≥ 10 stable**, **5–10 borderline**, **< 5 underpowered**. **Alternative:** throwing in 30 predictors — apparent fit, nonsense coefficients. |

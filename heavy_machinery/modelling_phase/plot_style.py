@@ -1,25 +1,48 @@
-"""Shared plotting style + human-readable labels for figures and the report.
+"""One plotting pipeline for DDA / EDA / forest / missingness / report captions.
 
-Two jobs:
+Shared concerns only (do not duplicate these in phase modules):
 
-1. ``apply_plot_style()`` — one consistent, publication-quality matplotlib
-   look (readable fonts, light grid, no top/right spines, tight SVG export)
-   so exported figures don't clip or overlap.
-2. ``prettify_label`` / ``prettify_caption`` — turn machine column names and
-   figure file stems (``high_grade__experimental_model_1__forest``) into clean
-   captions (``High-grade — Experimental model 1 — Forest plot``). No more
-   double-underscores in the report or figure titles.
+1. SciencePlots session style (``science`` + ``nature`` + ``no-latex``)
+2. Okabe–Ito palette + ``n=`` badge
+3. SVG save / bytes export
+4. Human-readable labels for axes and report captions
 """
 
 from __future__ import annotations
 
-# Consistent palette (kept close to the colors already used across modules).
+from contextlib import contextmanager, nullcontext
+from io import BytesIO
+from pathlib import Path
+from typing import Iterator
+
+import matplotlib.pyplot as plt
+
+# Pipeline default — Nature typography without requiring a LaTeX install.
+SCIENCE_STYLE_DEFAULT: tuple[str, ...] = ("science", "nature", "no-latex")
+
+# Okabe–Ito (colorblind-friendlier than Set2 pastels).
+CATEGORICAL_COLORS: tuple[str, ...] = (
+    "#0072B2",  # blue
+    "#D55E00",  # vermillion
+    "#009E73",  # bluish green
+    "#CC79A7",  # reddish purple
+    "#E69F00",  # orange
+    "#56B4E9",  # sky blue
+    "#F0E442",  # yellow
+    "#000000",  # black
+)
+
+# Semantic roles mapped onto the same family.
 PALETTE = {
-    "primary": "#3b7ddd",
-    "accent": "#e76f51",
-    "good": "#2a9d8f",
-    "bad": "#e76f51",
-    "neutral": "#888888",
+    "primary": CATEGORICAL_COLORS[0],   # blue
+    "accent": CATEGORICAL_COLORS[1],    # vermillion
+    "good": CATEGORICAL_COLORS[2],     # green
+    "bad": CATEGORICAL_COLORS[1],      # vermillion
+    "neutral": "#666666",
+    "low_grade": CATEGORICAL_COLORS[0],
+    "high_grade": CATEGORICAL_COLORS[1],
+    "significant": CATEGORICAL_COLORS[1],
+    "nonsignificant": "#7A7A7A",
 }
 
 # Tokens that should keep a fixed casing/spelling when prettifying.
@@ -155,34 +178,125 @@ def prettify_caption(stem: str) -> str:
     return " — ".join(p for p in parts if p)
 
 
-def apply_plot_style() -> None:
-    """Apply a consistent, high-quality matplotlib style for SVG export."""
+def normalize_science_styles(
+    styles: str | list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    """Coerce a style name / list to a non-empty SciencePlots style list."""
+    if styles is None:
+        return list(SCIENCE_STYLE_DEFAULT)
+    if isinstance(styles, str):
+        styles = [styles]
+    out = [str(s).strip() for s in styles if str(s).strip()]
+    return out or list(SCIENCE_STYLE_DEFAULT)
+
+
+def categorical_palette(n: int) -> list[str]:
+    """Cycle Okabe–Ito colours to length ``n``."""
+    n = max(int(n), 1)
+    base = list(CATEGORICAL_COLORS)
+    if n <= len(base):
+        return base[:n]
+    return [base[i % len(base)] for i in range(n)]
+
+
+def annotate_total_n(ax: plt.Axes, n: int) -> None:
+    """Corner badge with total non-missing n used in the plot."""
+    ax.text(
+        0.98, 0.98, f"n={int(n)}",
+        transform=ax.transAxes, ha="right", va="top",
+        fontsize=9, fontweight="bold",
+        bbox={
+            "boxstyle": "round,pad=0.25",
+            "facecolor": "white",
+            "edgecolor": "#cccccc",
+            "alpha": 0.9,
+        },
+    )
+
+
+@contextmanager
+def science_style_context(
+    styles: str | list[str] | tuple[str, ...] | None = None,
+) -> Iterator[None]:
+    """Temporary SciencePlots context (for overrides / tests)."""
+    import scienceplots  # noqa: F401
+
+    with plt.style.context(normalize_science_styles(styles)):
+        _apply_export_overrides()
+        yield
+
+
+def maybe_science_style(
+    styles: str | list[str] | tuple[str, ...] | None = None,
+):
+    """No-op if ``styles`` is None (global ``apply_plot_style`` already active)."""
+    if styles is None:
+        return nullcontext()
+    return science_style_context(styles)
+
+
+def _apply_export_overrides() -> None:
+    """SVG-friendly overrides that SciencePlots does not set for this pipeline."""
     import matplotlib as mpl
 
     mpl.rcParams.update({
-        # Crisp export; SVG keeps text as text, dpi guards any raster insets.
         "figure.dpi": 120,
-        "savefig.dpi": 150,
+        "savefig.dpi": 300,
         "savefig.bbox": "tight",
         "savefig.facecolor": "white",
         "figure.facecolor": "white",
-        # (modules call tight_layout()/bbox_inches="tight" explicitly, so we
-        # leave autolayout off to avoid double-layout warnings.)
-        # Readable typography.
-        "font.size": 11,
-        "axes.titlesize": 13,
-        "axes.titleweight": "semibold",
         "axes.titlepad": 12,
-        "axes.labelsize": 11,
-        "xtick.labelsize": 9.5,
-        "ytick.labelsize": 9.5,
-        "legend.fontsize": 9.5,
-        "legend.frameon": False,
-        # Clean frame + light grid.
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-        "axes.grid": True,
+        "legend.frameon": True,
+        "legend.framealpha": 0.95,
         "axes.axisbelow": True,
-        "grid.alpha": 0.25,
-        "grid.linewidth": 0.6,
     })
+
+
+def apply_plot_style(
+    styles: str | list[str] | tuple[str, ...] | None = None,
+) -> None:
+    """Apply SciencePlots + export overrides for the whole plotting session."""
+    import scienceplots  # noqa: F401
+
+    plt.style.use(normalize_science_styles(styles))
+    _apply_export_overrides()
+
+
+def save_figure(
+    fig: plt.Figure,
+    path: Path | str,
+    *,
+    close: bool = True,
+    pad_inches: float | None = None,
+) -> Path:
+    """Single SVG export path for every phase module."""
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    kwargs: dict = {"format": "svg", "bbox_inches": "tight"}
+    if pad_inches is not None:
+        kwargs["pad_inches"] = pad_inches
+    fig.savefig(out, **kwargs)
+    if close:
+        plt.close(fig)
+    return out
+
+
+def figure_to_svg_bytes(
+    fig: plt.Figure,
+    *,
+    close: bool = True,
+    pad_inches: float | None = None,
+    tight_layout: bool = True,
+) -> bytes:
+    """SVG bytes (association heatmap / in-memory exports)."""
+    if tight_layout:
+        fig.tight_layout()
+    buf = BytesIO()
+    kwargs: dict = {"format": "svg", "bbox_inches": "tight"}
+    if pad_inches is not None:
+        kwargs["pad_inches"] = pad_inches
+    fig.savefig(buf, **kwargs)
+    if close:
+        plt.close(fig)
+    return buf.getvalue()

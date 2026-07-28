@@ -12,6 +12,7 @@ import seaborn as sns
 
 import dda
 from dda import run_dda
+from plot_style import normalize_science_styles, save_figure
 
 
 def test_ensure_dirs(tmp_output):
@@ -19,11 +20,11 @@ def test_ensure_dirs(tmp_output):
     assert figs.is_dir() and tabs.is_dir()
 
 
-def test_save_fig(tmp_path):
+def test_save_figure(tmp_path):
     fig, ax = plt.subplots()
     ax.plot([1, 2], [1, 2])
     p = tmp_path / "x.svg"
-    dda._save_fig(fig, p)
+    save_figure(fig, p)
     assert p.exists()
 
 
@@ -220,9 +221,9 @@ def test_plot_trivariate_skips_high_cardinality_by(tiny_df, tmp_path):
 
 
 def test_normalize_science_styles():
-    assert dda._normalize_science_styles(None) == ["science", "no-latex"]
-    assert dda._normalize_science_styles("ieee") == ["ieee"]
-    assert dda._normalize_science_styles(["science", "nature", "no-latex"]) == [
+    assert normalize_science_styles(None) == ["science", "nature", "no-latex"]
+    assert normalize_science_styles("ieee") == ["ieee"]
+    assert normalize_science_styles(["science", "nature", "no-latex"]) == [
         "science", "nature", "no-latex",
     ]
 

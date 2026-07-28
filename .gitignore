@@ -34,6 +34,7 @@ dupes.csv
 
 # Notebooks
 .ipynb_checkpoints/
+aesthetics_experiments.ipynb
 
 # R (formal MICE engine, heavy_machinery/scripts/run_mice.R). The engine itself is tracked;
 # these are stray runtime artifacts. MICE exchange/run files live under output/

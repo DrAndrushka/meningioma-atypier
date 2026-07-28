@@ -27,7 +27,7 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
-from plot_style import apply_plot_style, prettify_label
+from plot_style import PALETTE, apply_plot_style, prettify_label, save_figure
 
 apply_plot_style()
 
@@ -537,14 +537,22 @@ def _forest_plot(
         return
     plot_df = plot_df.sort_values("or")
     n = len(plot_df)
+    # CI excluding 1 → visually distinct (reviewer: mute non-significant).
+    sig = (plot_df["or_ci_lo"] > 1.0) | (plot_df["or_ci_hi"] < 1.0)
+    colors = [
+        PALETTE["significant"] if bool(s) else PALETTE["nonsignificant"]
+        for s in sig
+    ]
     fig, ax = plt.subplots(figsize=(8.5, max(3.2, 0.55 * n + 1.2)))
     y = np.arange(n)
-    ax.errorbar(plot_df["or"], y,
-                xerr=[plot_df["or"] - plot_df["or_ci_lo"],
-                      plot_df["or_ci_hi"] - plot_df["or"]],
-                fmt="o", color="#264653", ecolor="#2a9d8f", capsize=3,
-                markersize=6, linewidth=0, elinewidth=1.4, zorder=3)
-    ax.axvline(1.0, color="grey", linestyle="--", linewidth=1, zorder=1)
+    for yi, (_, r), color in zip(y, plot_df.iterrows(), colors):
+        ax.errorbar(
+            r["or"], yi,
+            xerr=[[r["or"] - r["or_ci_lo"]], [r["or_ci_hi"] - r["or"]]],
+            fmt="o", color=color, ecolor=color, capsize=3,
+            markersize=6, linewidth=0, elinewidth=1.4, zorder=3,
+        )
+    ax.axvline(1.0, color=PALETTE["neutral"], linestyle="--", linewidth=1, zorder=1)
     ax.set_yticks(y)
     ax.set_yticklabels([prettify_label(c) for c in plot_df["predictor_col"]])
     ax.set_ylim(-0.6, n - 0.4)
@@ -552,21 +560,30 @@ def _forest_plot(
     ax.grid(axis="x", alpha=0.25)
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("Adjusted odds ratio (95% CI, log scale)")
-    # OR (95% CI) annotation at the right margin — no overlap with points.
-    x_text = plot_df["or_ci_hi"].max() * 1.25
+    # OR (95% CI) just outside the right spine — small gap from the frame.
+    x_hi = float(plot_df["or_ci_hi"].max())
+    if not np.isfinite(x_hi) or x_hi <= 0:
+        x_hi = 1.0
+    ax.set_xlim(right=x_hi * 1.2)
     for yi, (_, r) in zip(y, plot_df.iterrows()):
-        ax.annotate(f"{r['or']:.2f} ({r['or_ci_lo']:.2f}–{r['or_ci_hi']:.2f})",
-                    xy=(x_text, yi), va="center", ha="left", fontsize=8.5,
-                    color="#444444", annotation_clip=False)
-    ax.set_xlim(right=x_text)
+        ax.annotate(
+            f"{r['or']:.2f} ({r['or_ci_lo']:.2f}–{r['or_ci_hi']:.2f})",
+            xy=(1.0, yi),
+            xycoords=("axes fraction", "data"),
+            xytext=(10, 0),
+            textcoords="offset points",
+            va="center",
+            ha="left",
+            fontsize=8.5,
+            color="#444444",
+            annotation_clip=False,
+        )
     title = f"Multivariable logistic regression — {prettify_label(target)}"
     if model_title:
         title += f"\n{model_title}"
     ax.set_title(title)
-    fig.tight_layout()
     stem = artifact_base(target, model_id)
-    fig.savefig(figs_dir / f"{stem}__forest.svg", format="svg", bbox_inches="tight")
-    plt.close(fig)
+    save_figure(fig, figs_dir / f"{stem}__forest.svg")
 
 
 # ---------------------------------------------------------------------------

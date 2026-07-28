@@ -1,11 +1,8 @@
 """Descriptive data analysis (DDA) on every column before inferential testing.
 
 Summary stats plus histogram/box/bar plots where appropriate. No p-values.
-Optional bivariate seaborn plots via ``run_dda_bivariate``
-(``{x: [partners]}`` — categorical and continuous partners).
-Optional trivariate SciencePlots figures via ``run_dda_trivariate``
-(``{(x, y): [group, …]}`` — cont/cat × cont/cat compared across groups;
-OLS + LOESS when both axes continuous, with Bokeh-style legend labels).
+Optional bivariate / trivariate figures. Style, palette, ``n=`` badges, and SVG
+export all go through ``plot_style`` (one pipeline for the whole project).
 Artifacts → ``output/dda/``.
 """
 
@@ -21,7 +18,15 @@ from scipy.stats import skew, kurtosis, trim_mean
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
 from schema_infer import ColSpec
-from heavy_machinery.modelling_phase.plot_style import PALETTE, apply_plot_style, prettify_label
+from heavy_machinery.modelling_phase.plot_style import (
+    PALETTE,
+    annotate_total_n,
+    apply_plot_style,
+    categorical_palette,
+    maybe_science_style,
+    prettify_label,
+    save_figure,
+)
 
 apply_plot_style()
 
@@ -36,12 +41,6 @@ def _ensure_dirs(root: Path) -> tuple[Path, Path]:
     figs.mkdir(parents=True, exist_ok=True)
     tabs.mkdir(parents=True, exist_ok=True)
     return figs, tabs
-
-
-def _save_fig(fig: plt.Figure, path: Path) -> None:
-    fig.tight_layout()
-    fig.savefig(path, format="svg", bbox_inches="tight")
-    plt.close(fig)
 
 
 # CSV tables are saved raw (NaN preserved). Use cleaning.format_table_for_display in the notebook.
@@ -215,19 +214,22 @@ def _plot_continuous(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
         return paths
 
     label = prettify_label(name)
+    n = int(len(nn))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     sns.histplot(nn, kde=True, ax=ax, color=PALETTE["primary"])
     ax.set_title(f"{label} — distribution")
     ax.set_xlabel(label); ax.set_ylabel("Count")
+    annotate_total_n(ax, n)
     p = out_dir / f"{name}__hist.svg"
-    _save_fig(fig, p); paths.append(p)
+    save_figure(fig, p); paths.append(p)
 
     fig, ax = plt.subplots(figsize=(6.5, 3.2))
     sns.boxplot(x=nn, ax=ax, color=PALETTE["primary"])
     ax.set_title(f"{label} — box plot")
     ax.set_xlabel(label)
+    annotate_total_n(ax, n)
     p = out_dir / f"{name}__box.svg"
-    _save_fig(fig, p); paths.append(p)
+    save_figure(fig, p); paths.append(p)
     return paths
 
 
@@ -258,11 +260,12 @@ def _plot_ordinal(
     ax.set_title(f"{label} — distribution")
     ax.set_xlabel(label); ax.set_ylabel("Count")
     ax.bar_label(ax.containers[0], fontsize=9, padding=2)
+    annotate_total_n(ax, int(len(nn)))
     long_labels = any(len(str(o)) > 6 for o in order)
     plt.setp(ax.get_xticklabels(), rotation=35 if long_labels else 0,
              ha="right" if long_labels else "center")
     p = out_dir / f"{name}__bar.svg"
-    _save_fig(fig, p)
+    save_figure(fig, p)
     return [p]
 
 
@@ -280,9 +283,10 @@ def _plot_nominal(s: pd.Series, name: str, out_dir: Path, top_n: int = 15) -> li
     sns.barplot(x=vc.values, y=vc.index.astype(str), ax=ax, color=PALETTE["primary"])
     ax.set_title(f"{label} — counts"); ax.set_xlabel("Count"); ax.set_ylabel("")
     ax.bar_label(ax.containers[0], fontsize=9, padding=3)
+    annotate_total_n(ax, int(len(nn)))
     ax.margins(x=0.12)  # headroom so value labels don't clip the right edge
     p = out_dir / f"{name}__bar.svg"
-    _save_fig(fig, p)
+    save_figure(fig, p)
     return [p]
 
 
@@ -299,9 +303,10 @@ def _plot_binary(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     ax.set_title(f"{label} — present vs absent")
     ax.set_xlabel(""); ax.set_ylabel("Count")
     ax.bar_label(ax.containers[0], fontsize=10, padding=3)
+    annotate_total_n(ax, int(len(nn)))
     ax.margins(y=0.12)
     p = out_dir / f"{name}__bar.svg"
-    _save_fig(fig, p)
+    save_figure(fig, p)
     return [p]
 
 
@@ -316,6 +321,7 @@ def _plot_datetime(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
             color=PALETTE["primary"])
     ax.set_title(f"{label} — records over time")
     ax.set_xlabel("Month"); ax.set_ylabel("Count")
+    annotate_total_n(ax, int(len(nn)))
     # Thin x ticks so dense monthly axes don't overlap.
     step = max(1, len(monthly) // 18)
     ticks = list(range(0, len(monthly), step))
@@ -323,59 +329,13 @@ def _plot_datetime(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     ax.set_xticklabels([str(monthly.index[i]) for i in ticks])
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
     p = out_dir / f"{name}__timeline.svg"
-    _save_fig(fig, p)
+    save_figure(fig, p)
     return [p]
 
 
 # ---------------------------------------------------------------------------
 # Bivariate distributions (x × partner via seaborn)
 # ---------------------------------------------------------------------------
-
-# Okabe–Ito inspired — distinct, colorblind-friendlier than Set2 pastels.
-_BIVARIATE_COLORS = (
-    "#0072B2",  # blue
-    "#D55E00",  # vermillion
-    "#009E73",  # bluish green
-    "#CC79A7",  # reddish purple
-    "#E69F00",  # orange
-    "#56B4E9",  # sky blue
-    "#F0E442",  # yellow
-    "#000000",  # black
-)
-
-# Default SciencePlots stack for trivariate figures.
-# Variants: ["science", "nature", "no-latex"] | ["science", "ieee", "no-latex"]
-#           | ["science", "bright", "grid", "no-latex"]
-_SCIENCE_STYLES_DEFAULT: tuple[str, ...] = ("science", "no-latex")
-
-
-def _bivariate_palette(n: int) -> list:
-    """Cycle a distinct bivariate palette to length ``n``."""
-    n = max(int(n), 1)
-    base = list(_BIVARIATE_COLORS)
-    if n <= len(base):
-        return base[:n]
-    return [base[i % len(base)] for i in range(n)]
-
-
-def _normalize_science_styles(
-    styles: str | list[str] | tuple[str, ...] | None = None,
-) -> list[str]:
-    """Coerce a style name / list to a non-empty SciencePlots style list."""
-    if styles is None:
-        return list(_SCIENCE_STYLES_DEFAULT)
-    if isinstance(styles, str):
-        styles = [styles]
-    out = [str(s).strip() for s in styles if str(s).strip()]
-    return out or list(_SCIENCE_STYLES_DEFAULT)
-
-
-def _science_style(styles: str | list[str] | tuple[str, ...] | None = None):
-    """Publication matplotlib style context for trivariate figures (SciencePlots)."""
-    import scienceplots  # noqa: F401
-
-    return plt.style.context(_normalize_science_styles(styles))
-
 
 def _display_level(level, *, by_col: str = "") -> str:
     """Human-readable group level; ``high_grade`` bool → Low/High grade."""
@@ -404,17 +364,6 @@ def _level_counts(s: pd.Series, order: list) -> dict:
     return {lv: int(vc.get(lv, 0)) for lv in order}
 
 
-def _annotate_total_n(ax: plt.Axes, n: int) -> None:
-    """Corner badge with total non-missing n used in the plot."""
-    ax.text(
-        0.98, 0.98, f"n={n}",
-        transform=ax.transAxes, ha="right", va="top",
-        fontsize=10, fontweight="bold",
-        bbox={"boxstyle": "round,pad=0.25", "facecolor": "white",
-              "edgecolor": "#cccccc", "alpha": 0.9},
-    )
-
-
 def _plot_continuous_density_by_categorical(
     plot_df: pd.DataFrame,
     cont_col: str,
@@ -440,7 +389,7 @@ def _plot_continuous_density_by_categorical(
         x_lo, x_hi = (x_lo, x_lo + 1.0) if np.isfinite(x_lo) else (0.0, 1.0)
     clip = (x_lo, x_hi)
 
-    palette = _bivariate_palette(len(order))
+    palette = categorical_palette(len(order))
     fig, ax = plt.subplots(figsize=(8, 4.5))
     for level, color in zip(order, palette):
         sub = plot_df.loc[plot_df[cat_col] == level, cont_col].astype(float).dropna()
@@ -469,8 +418,8 @@ def _plot_continuous_density_by_categorical(
         title=f"{cont_label} distribution by {cat_label}",
     )
     ax.legend(title=cat_label, frameon=True)
-    _annotate_total_n(ax, len(plot_df))
-    _save_fig(fig, path)
+    annotate_total_n(ax, len(plot_df))
+    save_figure(fig, path)
     return path
 
 
@@ -516,19 +465,19 @@ def _plot_bivariate(
         fig, ax = plt.subplots(figsize=(8, 4.5))
         sns.scatterplot(
             data=plot_df, x=x_col, y=by_col, ax=ax,
-            alpha=0.55, color=_BIVARIATE_COLORS[0], edgecolor="none",
+            alpha=0.55, color=PALETTE["primary"], edgecolor="none",
         )
         sns.regplot(
             data=plot_df, x=x_col, y=by_col, ax=ax,
-            scatter=False, color=_BIVARIATE_COLORS[1],
+            scatter=False, color=PALETTE["accent"],
         )
         ax.set(
             xlabel=x_label, ylabel=by_label,
             title=f"{x_label} vs {by_label}",
         )
-        _annotate_total_n(ax, n_total)
+        annotate_total_n(ax, n_total)
         path = out_dir / f"{file_stem}.svg"
-        _save_fig(fig, path)
+        save_figure(fig, path)
         return path
 
     # Continuous ↔ categorical — hist + KDE (aesthetics-style)
@@ -550,7 +499,7 @@ def _plot_bivariate(
     x_order = _ordered_levels(plot_df[x_col])
     hue_order = _ordered_levels(plot_df[by_col])
     hue_n = _level_counts(plot_df[by_col], hue_order)
-    palette = _bivariate_palette(len(hue_order))
+    palette = categorical_palette(len(hue_order))
     sns.countplot(
         data=plot_df, x=x_col, hue=by_col,
         order=x_order, hue_order=hue_order,
@@ -572,11 +521,11 @@ def _plot_bivariate(
             )
             labeled.append(f"{lab} (n={n_lv})")
         ax.legend(handles, labeled, title=by_label, frameon=True)
-    _annotate_total_n(ax, n_total)
+    annotate_total_n(ax, n_total)
     ax.margins(y=0.14)
     plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
     path = out_dir / f"{file_stem}.svg"
-    _save_fig(fig, path)
+    save_figure(fig, path)
     return path
 
 
@@ -681,8 +630,8 @@ def _plot_trivariate(
     - continuous × categorical → dodged box + strip, hue = ``by``
     - categorical × categorical → count bars faceted by ``by``
 
-    ``science_style`` selects SciencePlots sheets (default ``science`` + ``no-latex``;
-    try ``nature`` / ``ieee``). Corner badge shows total n on single-axis plots.
+    ``science_style`` selects SciencePlots sheets (default ``science`` + ``nature`` +
+    ``no-latex``; try ``ieee``). Corner badge shows total n on single-axis plots.
     High-cardinality categoricals are skipped.
     """
     plot_df = df[[x_col, y_col, by_col]].dropna()
@@ -711,11 +660,11 @@ def _plot_trivariate(
     )
     by_order = _ordered_levels(plot_df[by_col])
     by_counts = _level_counts(plot_df[by_col], by_order)
-    palette = _bivariate_palette(len(by_order))
+    palette = categorical_palette(len(by_order))
     n_total = int(len(plot_df))
     level_labs = [_display_level(lv, by_col=by_col) for lv in by_order]
 
-    with _science_style(science_style):
+    with maybe_science_style(science_style):
         if x_cont and y_cont:
             fig, ax = plt.subplots(figsize=(7.2, 4.5))
             y_floor = float(plot_df[y_col].min()) >= 0
@@ -755,8 +704,8 @@ def _plot_trivariate(
             )
             ax.minorticks_on()
             ax.legend(loc="upper left", frameon=True, fancybox=False, framealpha=0.95)
-            _annotate_total_n(ax, n_total)
-            _save_fig(fig, path)
+            annotate_total_n(ax, n_total)
+            save_figure(fig, path)
             return path
 
         if x_cont ^ y_cont:
@@ -811,15 +760,15 @@ def _plot_trivariate(
             )
             ax.minorticks_on()
             ax.legend(loc="best", frameon=True, framealpha=0.95, title=by_label)
-            _annotate_total_n(ax, n_total)
-            _save_fig(fig, path)
+            annotate_total_n(ax, n_total)
+            save_figure(fig, path)
             return path
 
         # categorical × categorical × by
         x_order = _ordered_levels(plot_df[x_col])
         y_order = _ordered_levels(plot_df[y_col])
         n_panels = len(by_order)
-        y_palette = _bivariate_palette(len(y_order))
+        y_palette = categorical_palette(len(y_order))
         fig, axes = plt.subplots(
             1, n_panels, figsize=(max(3.6 * n_panels, 7.2), 4.5), squeeze=False,
         )
@@ -846,7 +795,7 @@ def _plot_trivariate(
             ax.minorticks_on()
             ax.legend(title=y_label, frameon=True, fontsize=8, framealpha=0.95)
         fig.suptitle(f"{x_label} × {y_label} by {by_label}  (n={n_total})", y=1.02)
-        _save_fig(fig, path)
+        save_figure(fig, path)
         return path
 
 
@@ -871,7 +820,7 @@ def run_dda_trivariate(
         )
 
     ``science_style`` — SciencePlots sheet name or list (default
-    ``["science", "no-latex"]``). Try ``nature`` / ``ieee`` / ``bright``+``grid``.
+    ``["science", "nature", "no-latex"]``). Try ``ieee`` / ``bright``+``grid``.
 
     Writes SVGs under ``output/dda/figures_trivariate/`` (clears prior SVGs there).
 

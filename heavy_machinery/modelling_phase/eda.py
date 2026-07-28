@@ -22,7 +22,15 @@ from statsmodels.stats.proportion import proportion_confint
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
-from plot_style import apply_plot_style, prettify_label
+from plot_style import (
+    PALETTE,
+    annotate_total_n,
+    apply_plot_style,
+    categorical_palette,
+    figure_to_svg_bytes,
+    prettify_label,
+    save_figure,
+)
 
 apply_plot_style()
 
@@ -377,13 +385,6 @@ def _association_test(
 # Per-pair plotting
 # ---------------------------------------------------------------------------
 
-def _polish_ax(ax: plt.Axes) -> None:
-    ax.yaxis.grid(True, linestyle="--", alpha=0.35, linewidth=0.8)
-    ax.set_axisbelow(True)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-
-
 def _categorical_fig_width(n_levels: int) -> float:
     return max(3.2, min(6.0, 1.4 * n_levels + 1.2))
 
@@ -455,7 +456,7 @@ def _plot_binary_target_rates(
     lo_a, hi_a = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
     ax.errorbar(
         x, props_a, yerr=_errorbar_yerr(props_a, lo_a, hi_a),
-        fmt="o", color="#3b7ddd", markersize=8, capsize=3,
+        fmt="o", color=PALETTE["primary"], markersize=8, capsize=3,
         linewidth=1.4, elinewidth=1.1,
         markeredgecolor="white", markeredgewidth=1.2, zorder=3,
     )
@@ -510,19 +511,21 @@ def _plot_pair(
         groups = _level_order(sub[target], target_spec)
         n_g = len(groups)
         fig.set_size_inches(_categorical_fig_width(n_g), 4)
+        palette = categorical_palette(n_g)
         sns.boxplot(
             x=target, y=xcol, data=sub, order=groups, hue=target,
-            ax=ax, palette="Set2", legend=False,
+            ax=ax, palette=palette, legend=False,
             width=0.55, linewidth=1.2, fliersize=3,
         )
         sns.stripplot(
             x=target, y=xcol, data=sub, order=groups, ax=ax,
             color="#333333", size=2.5, alpha=0.35, jitter=0.22,
         )
-        _polish_ax(ax)
+
         ax.set_xlabel(tlabel)
         ax.set_ylabel(xlabel)
         ax.set_title(f"{xlabel} by {tlabel}")
+        annotate_total_n(ax, len(sub))
 
     elif target_mode == "binary" and pred_kind in ("ordinal", "nominal", "binary"):
         fig.set_size_inches(_categorical_fig_width(
@@ -531,19 +534,21 @@ def _plot_pair(
             ax, sub, target, predictor, positive_class,
             pred_levels=_level_order(sub[predictor], pred_spec),
         )
+        annotate_total_n(ax, len(sub))
 
     elif target_mode == "continuous" and pred_kind in ("ordinal", "nominal", "binary"):
         groups = _level_order(sub[predictor], pred_spec)
         fig.set_size_inches(_categorical_fig_width(len(groups)), 4)
         sns.boxplot(
             x=predictor, y=target, data=sub, order=groups, hue=predictor,
-            ax=ax, palette="Set2", legend=False,
+            ax=ax, palette=categorical_palette(len(groups)), legend=False,
             width=0.55, linewidth=1.2, fliersize=3,
         )
-        _polish_ax(ax)
+
         ax.set_xlabel(plabel)
         ax.set_ylabel(tlabel)
         ax.set_title(f"{tlabel} by {plabel}")
+        annotate_total_n(ax, len(sub))
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in (
         "ordinal", "nominal", "binary",
@@ -560,27 +565,31 @@ def _plot_pair(
         ax.set_xlabel(tlabel)
         ax.set_ylabel(plabel)
         ax.set_title(f"{tlabel} share within {plabel}")
+        annotate_total_n(ax, len(sub))
 
     elif target_mode == "continuous" and pred_kind in ("continuous", "count"):
         sub = sub.assign(_x=sub[predictor].astype(float), _y=sub[target].astype(float))
         sns.regplot(data=sub, x="_x", y="_y", ax=ax,
-                    scatter_kws={"alpha": 0.25, "s": 12}, line_kws={"color": "#e76f51"})
-        _polish_ax(ax)
+                    scatter_kws={"alpha": 0.25, "s": 12, "color": PALETTE["primary"]},
+                    line_kws={"color": PALETTE["accent"]})
+
         ax.set_xlabel(plabel)
         ax.set_ylabel(tlabel)
         ax.set_title(f"{tlabel} vs {plabel}")
+        annotate_total_n(ax, len(sub))
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in ("continuous", "count"):
         groups = _level_order(sub[target], target_spec)
         fig.set_size_inches(_categorical_fig_width(len(groups)), 4)
         sns.boxplot(
             x=target, y=predictor, data=sub, order=groups, hue=target,
-            ax=ax, palette="Set2", legend=False,
+            ax=ax, palette=categorical_palette(len(groups)), legend=False,
         )
-        _polish_ax(ax)
+
         ax.set_xlabel(tlabel)
         ax.set_ylabel(plabel)
         ax.set_title(f"{plabel} by {tlabel}")
+        annotate_total_n(ax, len(sub))
 
     else:
         plt.close(fig)
@@ -589,9 +598,7 @@ def _plot_pair(
     title = ax.get_title()
     if title:
         ax.set_title(title, pad=14)
-    fig.tight_layout(pad=1.0)
-    fig.savefig(figs_dir / f"{safe}.svg", format="svg", bbox_inches="tight")
-    plt.close(fig)
+    save_figure(fig, figs_dir / f"{safe}.svg")
 
 
 def _heatmap_signed_effect(row: pd.Series) -> float | None:
@@ -790,8 +797,6 @@ def association_heatmap_svg(
     fdr_alpha: float = 0.05,
 ) -> bytes | None:
     """Seaborn target × predictor heatmap (wide layout, 1″ square cells) as SVG."""
-    import io
-
     built = _heatmap_build_frames(
         out, target_order=target_order, fdr_alpha=fdr_alpha,
     )
@@ -842,10 +847,7 @@ def association_heatmap_svg(
     bottom = 0.30 if n_p > 12 else 0.22
     fig.subplots_adjust(left=left, bottom=bottom, right=0.90, top=0.90)
 
-    buf = io.BytesIO()
-    fig.savefig(buf, format="svg", bbox_inches="tight", pad_inches=0.35)
-    plt.close(fig)
-    return buf.getvalue()
+    return figure_to_svg_bytes(fig, pad_inches=0.35, tight_layout=False)
 
 
 def plot_association_heatmap(
