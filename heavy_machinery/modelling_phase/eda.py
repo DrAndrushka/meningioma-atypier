@@ -23,16 +23,45 @@ from statsmodels.stats.proportion import proportion_confint
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
 from plot_style import (
+    FIG_WIDTH_MEDIUM,
     PALETTE,
-    annotate_total_n,
     apply_plot_style,
     categorical_palette,
+    deterministic_rng,
+    errorbar_lengths,
+    figure_size,
     figure_to_svg_bytes,
+    format_p,
+    level_tick_labels,
+    lowess_curve,
+    n_subtitle,
+    place_legend,
     prettify_label,
+    prettify_level,
+    raincloud,
     save_figure,
+    set_titles,
+    width_for_levels,
 )
 
 apply_plot_style()
+
+# Test / effect-size names as they should appear on a figure.
+_TEST_LABELS = {
+    "mann_whitney_u": "Mann–Whitney U",
+    "mann_whitney_u_days": "Mann–Whitney U",
+    "spearman": "Spearman",
+    "chi2": "χ²",
+    "fisher_exact": "Fisher exact",
+    "kruskal_wallis": "Kruskal–Wallis",
+}
+_EFFECT_SYMBOLS = {
+    "rank_biserial_r": "r",
+    "spearman_rho": "ρ",
+    "phi": "φ",
+    "cramers_v": "V",
+    "epsilon_sq": "ε²",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +415,80 @@ def _association_test(
 # ---------------------------------------------------------------------------
 
 def _categorical_fig_width(n_levels: int) -> float:
-    return max(3.2, min(6.0, 1.4 * n_levels + 1.2))
+    return width_for_levels(n_levels, per_level=0.95, base=1.9)
+
+
+def _result_subtitle(result: dict | None, n: int, *, fdr_alpha: float) -> str:
+    """``n = 352 · Mann–Whitney U · r = 0.19 · p = 0.008 · q = 0.041`` .
+
+    The figure carries the test that produced it. A box plot with no statistic
+    invites the reader to eyeball a difference; naming the test, the effect
+    size, and the FDR-adjusted q-value keeps the figure and the association
+    table telling the same story.
+    """
+    if not result:
+        return n_subtitle(n)
+
+    parts = [f"n = {int(n)}"]
+    test = str(result.get("test") or "")
+    if test and test != "skip":
+        parts.append(_TEST_LABELS.get(test, test.replace("_", " ")))
+
+    effect, label = result.get("effect"), str(result.get("effect_label") or "")
+    symbol = _EFFECT_SYMBOLS.get(label, label.replace("_", " "))
+    if symbol and effect is not None and np.isfinite(np.asarray(effect, dtype=float)):
+        parts.append(f"{symbol} = {float(effect):.2f}")
+
+    p_txt = format_p(result.get("p"))
+    if p_txt:
+        parts.append(f"p {p_txt}")
+    q_val = result.get("p_fdr")
+    q_txt = format_p(q_val)
+    if q_txt:
+        try:
+            significant = float(q_val) < fdr_alpha
+        except (TypeError, ValueError):
+            significant = False
+        suffix = f" (FDR-significant at {fdr_alpha:g})" if significant else ""
+        parts.append(f"q {q_txt}{suffix}")
+    return " · ".join(parts)
+
+
+def _group_arrays(
+    sub: pd.DataFrame, group_col: str, value_col: str, order: Sequence,
+) -> tuple[list[np.ndarray], list[int]]:
+    """Values of ``value_col`` split by ``group_col`` in the given level order."""
+    groups = [
+        pd.to_numeric(sub.loc[sub[group_col] == lv, value_col], errors="coerce")
+        .dropna().to_numpy(dtype=float)
+        for lv in order
+    ]
+    return groups, [int(g.size) for g in groups]
+
+
+def _plot_groups_raincloud(
+    ax: plt.Axes,
+    sub: pd.DataFrame,
+    *,
+    group_col: str,
+    value_col: str,
+    order: Sequence,
+    seed_key: tuple,
+) -> None:
+    """Distribution of a continuous variable across groups, without occlusion.
+
+    Replaces the box-plus-overlaid-strip pairing, which drew every outlier twice
+    (once as a whisker flier, once as a strip point) and scattered raw points
+    across the box so the median line was hidden.
+    """
+    groups, counts = _group_arrays(sub, group_col, value_col, order)
+    raincloud(
+        ax, groups, colors=categorical_palette(len(order)),
+        rng=deterministic_rng(*seed_key),
+    )
+    ax.set_xticks(np.arange(len(order)))
+    ax.set_xticklabels(level_tick_labels(order, counts, column=group_col))
+    ax.set_xlim(-0.6, len(order) - 0.4)
 
 
 def _level_order(s: pd.Series, spec: ColSpec | None) -> list:
@@ -405,17 +507,6 @@ def _level_order(s: pd.Series, spec: ColSpec | None) -> list:
     return sorted(obs, key=str)
 
 
-def _errorbar_yerr(props, lo, hi) -> np.ndarray:
-    """Matplotlib needs non-negative error bar lengths (Wilson CI vs k/n can disagree slightly)."""
-    props_a = np.clip(np.asarray(props, dtype=float), 0.0, 1.0)
-    lo_a = np.asarray(lo, dtype=float)
-    hi_a = np.asarray(hi, dtype=float)
-    return np.vstack([
-        np.maximum(0.0, props_a - lo_a),
-        np.maximum(0.0, hi_a - props_a),
-    ])
-
-
 def _annotate_above(
     ax: plt.Axes, xs: np.ndarray, ys: np.ndarray, labels: Sequence[str],
 ) -> None:
@@ -423,7 +514,7 @@ def _annotate_above(
         ax.annotate(
             lab, xy=(xi, y), xytext=(0, 5),
             textcoords="offset points", ha="center", va="bottom",
-            fontsize=9, color="#333333",
+            fontsize=plt.rcParams["font.size"] * 0.85, color="#333333",
         )
 
 
@@ -436,11 +527,18 @@ def _plot_binary_target_rates(
     *,
     pred_levels: Sequence,
 ) -> None:
-    """P(target = positive_class) by predictor level (binary target only)."""
+    """P(target = positive_class) by predictor level, with Wilson 95% CIs.
+
+    A dashed line marks the cohort-wide rate: a level's rate only means
+    something against the baseline it is being compared with, and the CI shows
+    whether the gap survives the subgroup's sample size.
+    """
     levels = list(pred_levels)
     n_lv = len(levels)
     y_pos, pos_used = _encode_binary_target(sub[target], positive_class)
-    pos_label = str(pos_used) if pos_used is not None else str(positive_class)
+    pos_label = prettify_level(
+        pos_used if pos_used is not None else positive_class, target,
+    )
     props, lo, hi, ns = [], [], [], []
     for lv in levels:
         mask = sub[predictor] == lv
@@ -451,29 +549,34 @@ def _plot_binary_target_rates(
         props.append(k / n if n else 0.0)
         lo.append(ci_lo)
         hi.append(ci_hi)
+
     x = np.arange(n_lv)
-    props_a = np.clip(np.asarray(props, dtype=float), 0.0, 1.0)
-    lo_a, hi_a = np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+    pct = np.clip(np.asarray(props, dtype=float), 0.0, 1.0) * 100.0
+    lo_a = np.asarray(lo, dtype=float) * 100.0
+    hi_a = np.asarray(hi, dtype=float) * 100.0
+
+    baseline = float(y_pos.mean()) * 100.0 if len(y_pos) else np.nan
+    if np.isfinite(baseline):
+        ax.axhline(
+            baseline, color=PALETTE["neutral"], linestyle="--", linewidth=1.0,
+            zorder=1, label=f"Cohort rate ({baseline:.0f}%)",
+        )
     ax.errorbar(
-        x, props_a, yerr=_errorbar_yerr(props_a, lo_a, hi_a),
-        fmt="o", color=PALETTE["primary"], markersize=8, capsize=3,
-        linewidth=1.4, elinewidth=1.1,
-        markeredgecolor="white", markeredgewidth=1.2, zorder=3,
+        x, pct, yerr=errorbar_lengths(pct, lo_a, hi_a),
+        fmt="o", color=PALETTE["primary"], markersize=6, capsize=3,
+        linestyle="none", elinewidth=1.1,
+        markeredgecolor="white", markeredgewidth=0.9, zorder=3,
     )
-    pad = 0.35 if n_lv <= 4 else 0.5
+    pad = 0.45 if n_lv <= 4 else 0.6
     ax.set_xlim(-pad, n_lv - 1 + pad)
-    ymax_ci = float(np.nanmax(hi_a)) if len(hi_a) else 0.0
-    ax.set_ylim(0, max(0.45, ymax_ci + 0.30))
-    _annotate_above(ax, x, hi_a, [f"{p:.0%}\n(n={n})" for p, n in zip(props_a, ns)])
+    ymax = float(np.nanmax(hi_a)) if hi_a.size else 0.0
+    ax.set_ylim(0, min(105.0, max(ymax + 22.0, 30.0)))
+    _annotate_above(ax, x, hi_a, [f"{p:.0f}%" for p in pct])
     ax.set_xticks(x)
-    ax.set_xticklabels(
-        [str(lv) for lv in levels],
-        rotation=30 if n_lv > 4 else 0,
-        ha="center" if n_lv <= 4 else "right",
-    )
+    ax.set_xticklabels(level_tick_labels(levels, ns, column=predictor))
     ax.set_xlabel(prettify_label(predictor))
-    ax.set_ylabel(f"P({prettify_label(target)} = {pos_label})")
-    ax.set_title(f"{prettify_label(target)} rate by {prettify_label(predictor)}", pad=14)
+    ax.set_ylabel(f"{prettify_label(target)} = {pos_label} (%)")
+    place_legend(ax, loc="upper right")
 
 
 def _plot_pair(
@@ -487,7 +590,14 @@ def _plot_pair(
     pred_spec: ColSpec | None,
     positive_class,
     figs_dir: Path,
+    result: dict | None = None,
+    fdr_alpha: float = 0.05,
 ) -> None:
+    """One self-contained figure per (target, predictor) pair.
+
+    Every figure names its test, effect size, and FDR-adjusted q-value, and
+    every categorical axis carries its denominators.
+    """
     safe = f"{target}__{predictor}"
     tlabel = prettify_label(target)
     plabel = prettify_label(predictor)
@@ -495,110 +605,164 @@ def _plot_pair(
     if sub.empty:
         return
 
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=figure_size(FIG_WIDTH_MEDIUM))
+    title = ""
 
     # Continuous / count predictor → distribution of predictor by target groups
     if pred_kind in ("continuous", "count", "datetime"):
         if pred_kind == "datetime":
             t = pd.to_datetime(sub[predictor], errors="coerce")
             sub = sub.assign(_x=(t - t.min()).dt.days.astype(float))
-            xcol = "_x"
             xlabel = f"{plabel} (days since first)"
         else:
-            sub = sub.assign(_x=sub[predictor].astype(float))
-            xcol = "_x"
+            sub = sub.assign(_x=pd.to_numeric(sub[predictor], errors="coerce"))
             xlabel = plabel
         groups = _level_order(sub[target], target_spec)
-        n_g = len(groups)
-        fig.set_size_inches(_categorical_fig_width(n_g), 4)
-        palette = categorical_palette(n_g)
-        sns.boxplot(
-            x=target, y=xcol, data=sub, order=groups, hue=target,
-            ax=ax, palette=palette, legend=False,
-            width=0.55, linewidth=1.2, fliersize=3,
+        fig.set_size_inches(*figure_size(_categorical_fig_width(len(groups))))
+        _plot_groups_raincloud(
+            ax, sub, group_col=target, value_col="_x", order=groups,
+            seed_key=("eda", target, predictor),
         )
-        sns.stripplot(
-            x=target, y=xcol, data=sub, order=groups, ax=ax,
-            color="#333333", size=2.5, alpha=0.35, jitter=0.22,
-        )
-
         ax.set_xlabel(tlabel)
         ax.set_ylabel(xlabel)
-        ax.set_title(f"{xlabel} by {tlabel}")
-        annotate_total_n(ax, len(sub))
+        title = f"{xlabel} by {tlabel}"
 
     elif target_mode == "binary" and pred_kind in ("ordinal", "nominal", "binary"):
-        fig.set_size_inches(_categorical_fig_width(
-            sub[predictor].nunique()), 4)
+        levels = _level_order(sub[predictor], pred_spec)
+        fig.set_size_inches(*figure_size(_categorical_fig_width(len(levels))))
         _plot_binary_target_rates(
-            ax, sub, target, predictor, positive_class,
-            pred_levels=_level_order(sub[predictor], pred_spec),
+            ax, sub, target, predictor, positive_class, pred_levels=levels,
         )
-        annotate_total_n(ax, len(sub))
+        title = f"{tlabel} rate by {plabel}"
 
     elif target_mode == "continuous" and pred_kind in ("ordinal", "nominal", "binary"):
         groups = _level_order(sub[predictor], pred_spec)
-        fig.set_size_inches(_categorical_fig_width(len(groups)), 4)
-        sns.boxplot(
-            x=predictor, y=target, data=sub, order=groups, hue=predictor,
-            ax=ax, palette=categorical_palette(len(groups)), legend=False,
-            width=0.55, linewidth=1.2, fliersize=3,
+        fig.set_size_inches(*figure_size(_categorical_fig_width(len(groups))))
+        _plot_groups_raincloud(
+            ax, sub, group_col=predictor, value_col=target, order=groups,
+            seed_key=("eda", target, predictor),
         )
-
         ax.set_xlabel(plabel)
         ax.set_ylabel(tlabel)
-        ax.set_title(f"{tlabel} by {plabel}")
-        annotate_total_n(ax, len(sub))
+        title = f"{tlabel} by {plabel}"
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in (
         "ordinal", "nominal", "binary",
     ):
         pred_order = _level_order(sub[predictor], pred_spec)
         target_order = _level_order(sub[target], target_spec)
-        ct = pd.crosstab(sub[predictor], sub[target], normalize="index")
-        ct = ct.reindex(index=pred_order, columns=target_order, fill_value=0.0)
-        fig.set_size_inches(max(5, 0.9 * ct.shape[1] + 2), max(3.5, 0.5 * ct.shape[0] + 2))
-        annot_fs = 9 if max(ct.shape) <= 8 else 7
-        sns.heatmap(ct, annot=True, fmt=".0%", cmap="Blues", ax=ax, vmin=0, vmax=1,
-                    annot_kws={"fontsize": annot_fs}, linewidths=0.5,
-                    linecolor="white", cbar_kws={"label": "row share"})
+        counts = pd.crosstab(sub[predictor], sub[target])
+        counts = counts.reindex(index=pred_order, columns=target_order, fill_value=0)
+        row_totals = counts.sum(axis=1).replace(0, np.nan)
+        shares = counts.div(row_totals, axis=0).fillna(0.0)
+        fig.set_size_inches(
+            *figure_size(
+                max(4.2, 0.95 * shares.shape[1] + 2.2),
+                height=max(3.0, 0.55 * shares.shape[0] + 1.8),
+            ),
+        )
+        annot = np.array([
+            [f"{shares.iat[i, j]:.0%}\n({int(counts.iat[i, j])})"
+             for j in range(shares.shape[1])]
+            for i in range(shares.shape[0])
+        ], dtype=object)
+        annot_fs = 8 if max(shares.shape) <= 8 else 6.5
+        sns.heatmap(
+            shares, annot=annot, fmt="", cmap="Blues", ax=ax, vmin=0, vmax=1,
+            annot_kws={"fontsize": annot_fs}, linewidths=0.5,
+            linecolor="white", cbar_kws={"label": "Share within predictor level"},
+        )
+        ax.tick_params(which="both", length=0)
+        ax.set_xticklabels(level_tick_labels(target_order, column=target), rotation=0)
+        ax.set_yticklabels(
+            level_tick_labels(pred_order, row_totals.fillna(0).astype(int),
+                              column=predictor),
+            rotation=0,
+        )
         ax.set_xlabel(tlabel)
         ax.set_ylabel(plabel)
-        ax.set_title(f"{tlabel} share within {plabel}")
-        annotate_total_n(ax, len(sub))
+        title = f"{tlabel} share within {plabel}"
 
     elif target_mode == "continuous" and pred_kind in ("continuous", "count"):
-        sub = sub.assign(_x=sub[predictor].astype(float), _y=sub[target].astype(float))
-        sns.regplot(data=sub, x="_x", y="_y", ax=ax,
-                    scatter_kws={"alpha": 0.25, "s": 12, "color": PALETTE["primary"]},
-                    line_kws={"color": PALETTE["accent"]})
-
+        x = pd.to_numeric(sub[predictor], errors="coerce").to_numpy(dtype=float)
+        y = pd.to_numeric(sub[target], errors="coerce").to_numpy(dtype=float)
+        ax.scatter(
+            x, y, s=12, alpha=0.4, color=PALETTE["primary"],
+            edgecolors="none", zorder=2,
+        )
+        # LOESS, not OLS: the reported test is Spearman, so the figure must not
+        # assert a linear relationship that was never fitted or checked.
+        curve = lowess_curve(x, y)
+        if curve is not None:
+            ax.plot(
+                curve[0], curve[1], color=PALETTE["accent"], linewidth=1.8,
+                solid_capstyle="round", zorder=3, label="LOESS trend",
+            )
+            place_legend(ax, loc="best")
         ax.set_xlabel(plabel)
         ax.set_ylabel(tlabel)
-        ax.set_title(f"{tlabel} vs {plabel}")
-        annotate_total_n(ax, len(sub))
+        title = f"{tlabel} vs {plabel}"
 
     elif target_mode in ("ordinal", "nominal") and pred_kind in ("continuous", "count"):
         groups = _level_order(sub[target], target_spec)
-        fig.set_size_inches(_categorical_fig_width(len(groups)), 4)
-        sns.boxplot(
-            x=target, y=predictor, data=sub, order=groups, hue=target,
-            ax=ax, palette=categorical_palette(len(groups)), legend=False,
+        fig.set_size_inches(*figure_size(_categorical_fig_width(len(groups))))
+        _plot_groups_raincloud(
+            ax, sub, group_col=target, value_col=predictor, order=groups,
+            seed_key=("eda", target, predictor),
         )
-
         ax.set_xlabel(tlabel)
         ax.set_ylabel(plabel)
-        ax.set_title(f"{plabel} by {tlabel}")
-        annotate_total_n(ax, len(sub))
+        title = f"{plabel} by {tlabel}"
 
     else:
         plt.close(fig)
         return
 
-    title = ax.get_title()
-    if title:
-        ax.set_title(title, pad=14)
+    set_titles(ax, title, _result_subtitle(result, len(sub), fdr_alpha=fdr_alpha))
     save_figure(fig, figs_dir / f"{safe}.svg")
+
+
+def _plot_pairs(
+    df: pd.DataFrame,
+    out: pd.DataFrame,
+    schema: dict[str, ColSpec],
+    *,
+    figs_dir: Path,
+    fdr_alpha: float,
+) -> None:
+    """Draw one figure per tested pair, carrying its FDR-adjusted result."""
+    for _, row in out.iterrows():
+        target, pred = row.get("target"), row.get("predictor")
+        if str(row.get("test") or "") == "skip":
+            continue
+        if target not in df.columns or pred not in df.columns:
+            continue
+        pred_spec = schema.get(pred)
+        if pred_spec is None:
+            continue
+        try:
+            _plot_pair(
+                df, target, pred,
+                target_mode=str(row.get("target_kind")),
+                pred_kind=pred_spec.kind,
+                target_spec=schema.get(target),
+                pred_spec=pred_spec,
+                positive_class=row.get("positive_class"),
+                figs_dir=figs_dir,
+                result=row.to_dict(),
+                fdr_alpha=fdr_alpha,
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"EDA plot skipped for {target} × {pred}: {exc}",
+                stacklevel=2,
+            )
+
+
+# Effect sizes that carry a direction; everything else is magnitude-only and is
+# marked on the heatmap so a red cell is never read as "positive association".
+_SIGNED_EFFECTS = frozenset({"spearman_rho", "rank_biserial_r", "phi"})
+_UNSIGNED_EFFECTS = frozenset({"cramers_v", "epsilon_sq"})
 
 
 def _heatmap_signed_effect(row: pd.Series) -> float | None:
@@ -613,11 +777,16 @@ def _heatmap_signed_effect(row: pd.Series) -> float | None:
     if not np.isfinite(eff):
         return None
     label = str(row.get("effect_label") or "")
-    if label in ("spearman_rho", "rank_biserial_r", "phi"):
+    if label in _SIGNED_EFFECTS:
         return eff
-    if label in ("cramers_v", "epsilon_sq"):
+    if label in _UNSIGNED_EFFECTS:
         return abs(eff)
     return eff
+
+
+def _heatmap_is_unsigned(row: pd.Series) -> bool:
+    """True when the cell's effect size has magnitude but no direction."""
+    return str(row.get("effect_label") or "") in _UNSIGNED_EFFECTS
 
 
 def _heatmap_coerce_p(p: Any) -> float | None:
@@ -655,7 +824,11 @@ def _heatmap_cell_text(
     *,
     fdr_alpha: float,
 ) -> str:
-    """Annotate only FDR-significant cells; others stay colour-only."""
+    """Annotate only FDR-significant cells; others stay colour-only.
+
+    Two decimals: effect sizes here live in [-1, 1], where one decimal collapses
+    0.24 and 0.16 onto the same printed value.
+    """
     if str(row.get("test") or "") == "skip":
         return ""
     if not _heatmap_fdr_significant(row, fdr_alpha=fdr_alpha):
@@ -669,11 +842,9 @@ def _heatmap_cell_text(
         return ""
     if not np.isfinite(eff):
         return ""
-    if abs(eff) < 0.05:
-        return "0*"
     if abs(eff) >= 10:
         return f"{eff:.0f}*"
-    return f"{eff:.1f}*"
+    return f"{eff:.2f}*"
 
 
 def _heatmap_color_limits(effect_mat: pd.DataFrame) -> tuple[float, float]:
@@ -702,6 +873,22 @@ def _heatmap_truncated_rdbu():
 
 
 _HEATMAP_CELL_IN = 1.0  # square 1″ × 1″ cells
+_UNTESTED_COLOR = "#dcdcdc"  # pairs with no test — distinct from a null effect
+
+
+def _hatch_unsigned_cells(ax: plt.Axes, unsigned_mat: pd.DataFrame) -> None:
+    """Overlay a hatch on cells whose effect size carries magnitude only."""
+    from matplotlib.patches import Rectangle
+
+    values = unsigned_mat.to_numpy(dtype=bool)
+    for i in range(values.shape[0]):
+        for j in range(values.shape[1]):
+            if not values[i, j]:
+                continue
+            ax.add_patch(Rectangle(
+                (j, i), 1, 1, fill=False, hatch="///",
+                edgecolor="#ffffff", linewidth=0.0, zorder=2,
+            ))
 
 
 def _predictor_any_fdr_significant(
@@ -725,8 +912,12 @@ def _heatmap_build_frames(
     *,
     target_order: Sequence[str],
     fdr_alpha: float,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str]] | None:
-    """Build plotted matrices and prettified names of omitted predictors."""
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]] | None:
+    """Build plotted matrices and prettified names of omitted predictors.
+
+    Returns ``(effect, annotation, unsigned-mask, excluded)`` — the mask flags
+    cells whose effect size has no direction.
+    """
     if out is None or out.empty:
         return None
 
@@ -737,6 +928,7 @@ def _heatmap_build_frames(
 
     effect_mat = pd.DataFrame(np.nan, index=targets, columns=preds, dtype=float)
     annot_mat = pd.DataFrame("", index=targets, columns=preds, dtype=object)
+    unsigned_mat = pd.DataFrame(False, index=targets, columns=preds, dtype=bool)
     for _, row in out.iterrows():
         t, p = row.get("target"), row.get("predictor")
         if t not in effect_mat.index or p not in effect_mat.columns:
@@ -744,6 +936,7 @@ def _heatmap_build_frames(
         signed = _heatmap_signed_effect(row)
         if signed is not None:
             effect_mat.loc[t, p] = signed
+            unsigned_mat.loc[t, p] = _heatmap_is_unsigned(row)
         annot_mat.loc[t, p] = _heatmap_cell_text(row, fdr_alpha=fdr_alpha)
 
     non_fdr = [
@@ -757,6 +950,7 @@ def _heatmap_build_frames(
 
     effect_mat = effect_mat[plotted_cols]
     annot_mat = annot_mat[plotted_cols]
+    unsigned_mat = unsigned_mat[plotted_cols]
     pred_order = (
         effect_mat.abs()
         .max(axis=0)
@@ -766,7 +960,8 @@ def _heatmap_build_frames(
     )
     effect_mat = effect_mat[pred_order]
     annot_mat = annot_mat[pred_order]
-    return effect_mat, annot_mat, excluded
+    unsigned_mat = unsigned_mat[pred_order]
+    return effect_mat, annot_mat, unsigned_mat, excluded
 
 
 def heatmap_uncorrelated_predictors(
@@ -786,8 +981,7 @@ def heatmap_uncorrelated_predictors(
             prettify_label(p)
             for p in out["predictor"].dropna().unique()
         )
-    _, _, excluded = built
-    return excluded
+    return built[-1]
 
 
 def association_heatmap_svg(
@@ -796,20 +990,28 @@ def association_heatmap_svg(
     target_order: Sequence[str],
     fdr_alpha: float = 0.05,
 ) -> bytes | None:
-    """Seaborn target × predictor heatmap (wide layout, 1″ square cells) as SVG."""
+    """Seaborn target × predictor heatmap (wide layout, 1″ square cells) as SVG.
+
+    Direction and magnitude are kept distinguishable: cells whose effect size is
+    magnitude-only (Cramér's V, ε²) are hatched, so a saturated red cell driven
+    by an unsigned statistic cannot be misread as a positive association.
+    Untested pairs get their own grey, which a near-zero effect (nearly white on
+    a diverging map) would otherwise be confused with.
+    """
     built = _heatmap_build_frames(
         out, target_order=target_order, fdr_alpha=fdr_alpha,
     )
     if built is None:
         return None
-    effect_mat, annot_mat, _ = built
+    effect_mat, annot_mat, unsigned_mat, _ = built
 
     vmin, vmax = _heatmap_color_limits(effect_mat)
     n_t, n_p = effect_mat.shape
     fig_w = _HEATMAP_CELL_IN * n_p + 3.6
     fig_h = _HEATMAP_CELL_IN * n_t + 2.8
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=False)
-    annot_fs = 10 if n_p <= 18 else 9
+    annot_fs = 9 if n_p <= 18 else 8
+    ax.set_facecolor(_UNTESTED_COLOR)
     sns.heatmap(
         effect_mat,
         annot=annot_mat.values,
@@ -823,19 +1025,23 @@ def association_heatmap_svg(
         linecolor="white",
         ax=ax,
         cbar_kws={
-            "label": (
-                "Signed effect (rho / rank-biserial; "
-                "Cramér's V & ε² on positive scale)"
-            ),
+            "label": "Effect size (signed where the test has a direction)",
             "shrink": 0.82,
         },
         xticklabels=[prettify_label(p) for p in effect_mat.columns],
         yticklabels=[prettify_label(t) for t in effect_mat.index],
         annot_kws={"fontsize": annot_fs},
     )
+    _hatch_unsigned_cells(ax, unsigned_mat)
+    ax.tick_params(which="both", length=0)
     ax.set_xlabel("Predictor", labelpad=10)
     ax.set_ylabel("Target", labelpad=14)
-    ax.set_title("Association strength overview (* = FDR-significant)", pad=12)
+    ax.set_title(
+        "Association strength overview\n"
+        "* = FDR-significant · hatched = magnitude only (no direction) · "
+        "grey = not tested · predictors never FDR-significant are omitted",
+        pad=12,
+    )
     x_rot = 55 if n_p > 10 else 40
     x_fs = 7.5 if n_p > 18 else 8.5
     plt.setp(ax.get_xticklabels(), rotation=x_rot, ha="right", fontsize=x_fs)
@@ -964,22 +1170,6 @@ def screen_associations(
             })
             rows.append(row)
 
-            try:
-                _plot_pair(
-                    df, target, pred,
-                    target_mode=target_mode,
-                    pred_kind=spec.kind,
-                    target_spec=target_spec,
-                    pred_spec=pred_spec,
-                    positive_class=pos_used,
-                    figs_dir=figs_dir,
-                )
-            except Exception as exc:
-                warnings.warn(
-                    f"EDA plot skipped for {target} × {pred}: {exc}",
-                    stacklevel=2,
-                )
-
     out = pd.DataFrame(rows)
     if out.empty:
         out = pd.DataFrame(columns=[
@@ -1011,6 +1201,14 @@ def screen_associations(
            .reset_index(drop=True))
     # display-only rounding: integers stay int, fractions -> 3 sig figs (raw df returned)
     _format_table_for_csv(out).to_csv(tabs_dir / "associations.csv", index=False)
+
+    # Figures are drawn only after FDR adjustment so each one can report the
+    # q-value that decides whether its association survives multiplicity.
+    _plot_pairs(
+        df, out, schema,
+        figs_dir=figs_dir,
+        fdr_alpha=fdr_alpha,
+    )
     try:
         plot_association_heatmap(
             out, targets=targets, figs_dir=figs_dir, fdr_alpha=fdr_alpha,

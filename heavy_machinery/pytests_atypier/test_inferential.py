@@ -321,3 +321,97 @@ def test_run_inferential_loads_from_disk(tiny_df, tiny_schema, tmp_output):
                 output_root=tmp_output,
             )
     assert "target" in out.columns
+
+
+# ---------------------------------------------------------------------------
+# Forest plot
+# ---------------------------------------------------------------------------
+
+def _pooled(**overrides) -> pd.DataFrame:
+    base = pd.DataFrame([
+        {"predictor_col": "hyperostosis", "or": 2.31,
+         "or_ci_lo": 1.38, "or_ci_hi": 3.89, "z_sd": np.nan},
+        {"predictor_col": "adc_value", "or": 0.61,
+         "or_ci_lo": 0.46, "or_ci_hi": 0.82, "z_sd": 0.17},
+        {"predictor_col": "mass_effect", "or": 1.05,
+         "or_ci_lo": 0.60, "or_ci_hi": 1.84, "z_sd": np.nan},
+    ])
+    for key, val in overrides.items():
+        base[key] = val
+    return base
+
+
+def test_forest_row_label_states_the_contrast_for_standardised_predictors():
+    """A per-SD odds ratio read as per-unit understates the predictor."""
+    rows = _pooled()
+    binary = inf._forest_row_label(rows.iloc[0])
+    continuous = inf._forest_row_label(rows.iloc[1])
+    assert binary == "Hyperostosis"
+    assert "per 1 SD" in continuous and "0.17" in continuous
+
+
+def test_forest_row_label_ignores_a_missing_or_zero_sd():
+    row = _pooled().iloc[0].copy()
+    row["z_sd"] = 0.0
+    assert "per 1 SD" not in inf._forest_row_label(row)
+
+
+def test_or_tick_labels_are_plain_decimals():
+    """Log axes default to 6×10⁻¹; an odds ratio axis must read as a number."""
+    assert inf._or_tick(1.0) == "1"
+    assert inf._or_tick(2.0) == "2"
+    assert inf._or_tick(0.6) == "0.6"
+    assert inf._or_tick(0.0) == ""
+
+
+def test_forest_plot_colours_by_direction_not_significance(tmp_path):
+    """Colour separates raises-the-odds from lowers-the-odds, not p < 0.05."""
+    import matplotlib.pyplot as plt
+    from plot_style import PALETTE
+
+    fig_before = plt.gcf()
+    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
+                     n_cases=352, n_events=105, epv=17.5)
+    assert (tmp_path / "event__m1__forest.svg").exists()
+
+    svg = (tmp_path / "event__m1__forest.svg").read_text()
+    raises = PALETTE["accent"].lstrip("#").lower()
+    lowers = PALETTE["primary"].lstrip("#").lower()
+    assert raises in svg.lower(), "no colour for odds-raising predictors"
+    assert lowers in svg.lower(), "no colour for odds-lowering predictors"
+    plt.close(fig_before)
+
+
+def test_forest_plot_states_sample_size_and_epv(tmp_path):
+    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
+                     n_cases=352, n_events=105, epv=17.5)
+    svg = (tmp_path / "event__m1__forest.svg").read_text()
+    for token in ("352", "105", "17.5"):
+        assert token in svg, f"{token} missing from the figure"
+
+
+def test_forest_plot_skips_an_empty_model(tmp_path):
+    empty = _pooled().assign(**{"or": np.nan})
+    inf._forest_plot(empty, "event", tmp_path, model_id="m1")
+    assert not list(tmp_path.glob("*.svg"))
+
+
+def test_artifact_model_id_strips_target_and_suffix():
+    assert inf._artifact_model_id("high_grade_yao_et_al_2022_model", "high_grade") == (
+        "yao_et_al_2022"
+    )
+    assert inf._artifact_model_id("high_grade_model", "high_grade") == ""
+
+
+def test_case_counts_reads_the_matching_variant():
+    cases = pd.DataFrame([
+        {"target": "event", "model_id": "m1", "n_complete_cases": 352,
+         "n_outcome_events": 105, "epv": 17.5},
+        {"target": "event", "model_id": "m2", "n_complete_cases": 300,
+         "n_outcome_events": 90, "epv": 9.0},
+    ])
+    assert inf._case_counts(cases, "event", "m2") == {
+        "n_cases": 300, "n_events": 90, "epv": 9.0,
+    }
+    assert inf._case_counts(cases, "event", "nope")["n_cases"] is None
+    assert inf._case_counts(pd.DataFrame(), "event", "m1")["epv"] is None

@@ -76,12 +76,22 @@ def test_apply_derivations_writes_derived_summary_row(tmp_path):
         {"step": "final", "detail": "final", "n_rows": 3, "n_columns": 1, "criterion": ""},
     ]).to_csv(cleaning_dir / "cleaning_summary.csv", index=False)
 
-    df = pd.DataFrame({"x": [1, 2, 3]})
-    schema = {"x": ColSpec("x", "continuous")}
+    df = pd.DataFrame({"x": [1, 2, 3], "y": [10, 20, 30]})
+    schema = {
+        "x": ColSpec("x", "continuous"),
+        "y": ColSpec("y", "continuous"),
+    }
     derivations = [
-        _derivations.Apply(name="x2", source="x", fn=lambda s: s * 2, kind="continuous"),
+        _derivations.Apply(
+            name="x2", source="x", fn=lambda s: s * 2, kind="continuous",
+            reason="double x for demo",
+        ),
+        _derivations.Apply(
+            name="y_half", source="y", fn=lambda s: s / 2, kind="continuous",
+            reason="half y for demo",
+        ),
     ]
-    # Run twice to confirm the derived row is replaced, not duplicated.
+    # Run twice to confirm derived rows are replaced, not duplicated.
     for _ in range(2):
         _derivations.apply_derivations(
             df, schema, derivations,
@@ -89,10 +99,14 @@ def test_apply_derivations_writes_derived_summary_row(tmp_path):
         )
     summary = pd.read_csv(cleaning_dir / "cleaning_summary.csv")
     derived = summary[summary["step"] == "derived"]
-    assert len(derived) == 1
-    assert "x2" in derived.iloc[0]["detail"]
-    assert derived.iloc[0]["n_columns"] == 2
-    assert summary.loc[summary["step"] == "final", "n_columns"].iloc[0] == 2
+    assert len(derived) == 2
+    assert derived.iloc[0]["detail"] == "added x2 ← x"
+    assert derived.iloc[0]["criterion"] == "double x for demo"
+    assert derived.iloc[0]["n_columns"] == 3
+    assert derived.iloc[1]["detail"] == "added y_half ← y"
+    assert derived.iloc[1]["criterion"] == "half y for demo"
+    assert derived.iloc[1]["n_columns"] == 4
+    assert summary.loc[summary["step"] == "final", "n_columns"].iloc[0] == 4
     steps = summary["step"].tolist()
     assert steps.index("derived") < steps.index("final")
 

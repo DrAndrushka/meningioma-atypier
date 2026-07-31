@@ -19,7 +19,7 @@ from typing import Any, Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
+from matplotlib.ticker import FuncFormatter, LogLocator
 import statsmodels.api as sm
 from scipy.stats import t as t_dist
 from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -27,7 +27,15 @@ from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from schema_infer import ColSpec
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
-from plot_style import PALETTE, apply_plot_style, prettify_label, save_figure
+from plot_style import (
+    FIG_WIDTH_MEDIUM,
+    PALETTE,
+    apply_plot_style,
+    figure_size,
+    prettify_label,
+    save_figure,
+    set_titles,
+)
 
 apply_plot_style()
 
@@ -524,6 +532,35 @@ def fit_multivariable_logistic(
 # Forest plot
 # ---------------------------------------------------------------------------
 
+def _or_tick(value: float, _pos: int | None = None) -> str:
+    """Log-axis tick as a plain odds ratio (0.5, 1, 2, 5) with no exponents."""
+    if value <= 0:
+        return ""
+    if value >= 1:
+        return f"{value:g}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def _forest_row_label(row: pd.Series) -> str:
+    """Predictor name plus the contrast its odds ratio actually describes.
+
+    Continuous predictors are z-standardised before fitting, so their OR is per
+    one standard deviation, not per natural unit. Without saying so, a column
+    labelled "Edema volume (cm³)" invites the reader to take OR 1.17 as
+    per-cm³ and dismiss the strongest continuous effect in the model.
+    """
+    label = prettify_label(row["predictor_col"])
+    sd = row.get("z_sd")
+    try:
+        sd = float(sd)
+    except (TypeError, ValueError):
+        return label
+    if not np.isfinite(sd) or sd <= 0:
+        return label
+    digits = 0 if abs(sd) >= 10 else 2
+    return f"{label}\nper 1 SD ({sd:.{digits}f})"
+
+
 def _forest_plot(
     pooled: pd.DataFrame,
     target: str,
@@ -531,32 +568,55 @@ def _forest_plot(
     *,
     model_id: str = "",
     model_title: str = "",
+    n_cases: int | None = None,
+    n_events: int | None = None,
+    epv: float | None = None,
 ) -> None:
+    """Rubin-pooled adjusted odds ratios for one model variant.
+
+    Colour encodes *direction* (raises vs lowers the odds), not significance:
+    the previous split on "CI excludes 1" turned a continuous scale into an
+    on/off light and disagreed with the FDR-adjusted screening stage next door.
+    Whether an interval clears 1 is already visible where it crosses the
+    reference line.
+
+    Rows are ordered by effect magnitude so the strongest predictor is on top
+    in every variant, which is what makes the seven forests comparable.
+    """
     plot_df = pooled.dropna(subset=["or"]).copy()
     if plot_df.empty:
         return
-    plot_df = plot_df.sort_values("or")
+    plot_df["_strength"] = np.abs(np.log(plot_df["or"].astype(float)))
+    plot_df = plot_df.sort_values("_strength")  # strongest last → top of the axis
     n = len(plot_df)
-    # CI excluding 1 → visually distinct (reviewer: mute non-significant).
-    sig = (plot_df["or_ci_lo"] > 1.0) | (plot_df["or_ci_hi"] < 1.0)
+
     colors = [
-        PALETTE["significant"] if bool(s) else PALETTE["nonsignificant"]
-        for s in sig
+        PALETTE["accent"] if float(o) >= 1.0 else PALETTE["primary"]
+        for o in plot_df["or"]
     ]
-    fig, ax = plt.subplots(figsize=(8.5, max(3.2, 0.55 * n + 1.2)))
+    labels = [_forest_row_label(r) for _, r in plot_df.iterrows()]
+    height = max(0.52 * n + 1.5, 2.6) + 0.18 * sum("\n" in lab for lab in labels)
+    fig, ax = plt.subplots(figsize=figure_size(FIG_WIDTH_MEDIUM, height=height))
+
     y = np.arange(n)
     for yi, (_, r), color in zip(y, plot_df.iterrows(), colors):
         ax.errorbar(
             r["or"], yi,
             xerr=[[r["or"] - r["or_ci_lo"]], [r["or_ci_hi"] - r["or"]]],
             fmt="o", color=color, ecolor=color, capsize=3,
-            markersize=6, linewidth=0, elinewidth=1.4, zorder=3,
+            markersize=5.5, linewidth=0, elinewidth=1.4, zorder=3,
         )
     ax.axvline(1.0, color=PALETTE["neutral"], linestyle="--", linewidth=1, zorder=1)
     ax.set_yticks(y)
-    ax.set_yticklabels([prettify_label(c) for c in plot_df["predictor_col"]])
+    ax.set_yticklabels(labels)
     ax.set_ylim(-0.6, n - 0.4)
     ax.set_xscale("log")
+    # Plain decimals, not 6×10⁻¹ — an odds ratio axis is read, not decoded.
+    # Minor ticks are thinned to round steps so 0.6/0.7/0.8/0.9 stop colliding
+    # either side of the reference line.
+    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=(0.2, 0.3, 0.5, 2.0, 3.0, 5.0)))
+    for axis_fmt in (ax.xaxis.set_major_formatter, ax.xaxis.set_minor_formatter):
+        axis_fmt(FuncFormatter(_or_tick))
     ax.grid(axis="x", alpha=0.25)
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("Adjusted odds ratio (95% CI, log scale)")
@@ -574,16 +634,122 @@ def _forest_plot(
             textcoords="offset points",
             va="center",
             ha="left",
-            fontsize=8.5,
+            fontsize=plt.rcParams["font.size"] * 0.85,
             color="#444444",
             annotation_clip=False,
         )
-    title = f"Multivariable logistic regression — {prettify_label(target)}"
-    if model_title:
-        title += f"\n{model_title}"
-    ax.set_title(title)
+
+    title = model_title or f"Multivariable logistic regression — {prettify_label(target)}"
+    parts: list[str] = []
+    if n_cases:
+        parts.append(f"n = {int(n_cases)}")
+    if n_events:
+        parts.append(f"{int(n_events)} events")
+    if epv is not None and np.isfinite(epv):
+        parts.append(f"EPV {float(epv):.1f}")
+    parts.append("right of the line raises the odds")
+    set_titles(ax, title, " · ".join(parts))
     stem = artifact_base(target, model_id)
     save_figure(fig, figs_dir / f"{stem}__forest.svg")
+
+
+# ---------------------------------------------------------------------------
+# Performance figures (built from the validated Streamlit artifacts)
+# ---------------------------------------------------------------------------
+
+def _case_counts(cases_df: pd.DataFrame, target: str, model_id: str) -> dict:
+    """``n_cases`` / ``n_events`` / ``epv`` for one target × variant, if known."""
+    empty = {"n_cases": None, "n_events": None, "epv": None}
+    if cases_df is None or cases_df.empty or "target" not in cases_df.columns:
+        return empty
+    hit = cases_df.loc[cases_df["target"].astype(str) == str(target)]
+    if "model_id" in cases_df.columns:
+        hit = hit.loc[hit["model_id"].astype(str).fillna("") == str(model_id or "")]
+    if hit.empty:
+        return empty
+    row = hit.iloc[0]
+
+    def _num(key):
+        val = row.get(key)
+        return None if pd.isna(val) else float(val)
+
+    n_cases, n_events, epv = (
+        _num("n_complete_cases"), _num("n_outcome_events"), _num("epv"),
+    )
+    return {
+        "n_cases": int(n_cases) if n_cases is not None else None,
+        "n_events": int(n_events) if n_events is not None else None,
+        "epv": epv,
+    }
+
+
+def _artifact_model_id(stem: str, target: str) -> str:
+    """``high_grade_yao_et_al_2022_model`` → ``yao_et_al_2022``.
+
+    Artifacts are named ``{target}_{model_id}_model.json``; the in-file
+    ``model_name`` is a display title, not the id.
+    """
+    out = stem[: -len("_model")] if stem.endswith("_model") else stem
+    if out == target:
+        return ""  # single-model artifact: ``{target}_model.json``
+    return out[len(target) + 1:] if out.startswith(f"{target}_") else out
+
+
+def _write_performance_figures(
+    artifact_paths: Sequence[Path],
+    figs_dir: Path,
+    model_variants: Sequence[InferentialModelVariant],
+) -> list[Path]:
+    """ROC / calibration / decision curve per variant, plus one comparison figure.
+
+    Sourced from the enriched Streamlit artifacts so the figures and the
+    calculator quote exactly the same bootstrap-validated numbers.
+    """
+    from performance_plots import (
+        write_model_comparison_figure,
+        write_performance_figures,
+    )
+
+    titles = {v.model_id: (v.title or v.model_id) for v in model_variants}
+    written: list[Path] = []
+    by_target: dict[str, list[dict]] = {}
+
+    for path in artifact_paths:
+        path = Path(path)
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        validation = artifact.get("validation")
+        target = str(artifact.get("target") or "")
+        if not validation or not target:
+            continue
+        model_id = _artifact_model_id(path.stem, target)
+
+        stem = artifact_base(target, model_id)
+        label = titles.get(model_id, model_id)
+        try:
+            written.extend(write_performance_figures(validation, figs_dir, stem))
+        except Exception as exc:  # one bad variant must not sink the stage
+            warnings.warn(
+                f"Performance figures skipped for {stem}: {exc}", stacklevel=2,
+            )
+            continue
+        by_target.setdefault(target, []).append(
+            {"label": label, "model_id": model_id, "validation": validation},
+        )
+
+    for target, entries in by_target.items():
+        try:
+            path = write_model_comparison_figure(entries, figs_dir, target=target)
+        except Exception as exc:
+            warnings.warn(
+                f"Model comparison figure skipped for {target}: {exc}", stacklevel=2,
+            )
+            continue
+        if path is not None:
+            written.append(path)
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -794,6 +960,16 @@ def run_inferential(
     positive_class = positive_class or {}
     model_variants = normalize_inferential_variants(predictors, variants)
 
+    # Computed before fitting so each forest plot can state the sample size,
+    # event count, and EPV it was built on.
+    cases_df = summarize_multivariable_cases(
+        imputed_frames[0], schema,
+        targets=targets,
+        variants=model_variants,
+        positive_class=positive_class,
+        vif_threshold=vif_threshold,
+    )
+
     all_rows = []
     for variant in model_variants:
         for target in _variant_targets(variant, targets):
@@ -835,10 +1011,12 @@ def run_inferential(
             (tabs_dir / f"{stem}__calculator.json").write_text(
                 json.dumps(meta, indent=2), encoding="utf-8",
             )
+            case_row = _case_counts(cases_df, target, variant.model_id)
             _forest_plot(
                 pooled_df, target, figs_dir,
                 model_id=variant.model_id,
                 model_title=variant.title,
+                **case_row,
             )
             all_rows.append(pooled_df)
 
@@ -848,25 +1026,19 @@ def run_inferential(
             tabs_dir / "inferential_summary.csv", index=False)
         return empty
 
-    cases_df = summarize_multivariable_cases(
-        imputed_frames[0], schema,
-        targets=targets,
-        variants=model_variants,
-        positive_class=positive_class,
-        vif_threshold=vif_threshold,
-    )
     _format_table_for_csv(cases_df).to_csv(
         tabs_dir / "multivariable_cases.csv", index=False)
 
     from model_calculator import write_streamlit_artifacts
 
-    write_streamlit_artifacts(
+    artifact_paths = write_streamlit_artifacts(
         output_root,
         cases_df=cases_df,
         cohort_df=imputed_frames[0],
         schema=schema,
         vif_threshold=vif_threshold,
     )
+    _write_performance_figures(artifact_paths, figs_dir, model_variants)
 
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]

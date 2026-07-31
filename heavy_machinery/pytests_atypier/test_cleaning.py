@@ -82,29 +82,19 @@ def test_schema_coercion_table(tmp_output):
     assert list(table.columns) == [
         "column", "kind", "value_before", "value_after", "n", "n_after",
     ]
-    # sentinel → missing
+    # sentinel → missing (kept as its own row)
     nav = table[
         (table["column"] == "vol")
         & (table["value_before"] == "NAV SECTRA - NOSŪTĪTS")
         & (table["value_after"] == "(missing)")
     ]
     assert len(nav) == 1 and int(nav.iloc[0]["n"]) == 1
-    # comma decimal → float
-    comma = table[
-        (table["column"] == "vol")
-        & (table["value_before"] == "2,1")
-        & (table["value_after"] == "2.1")
-    ]
-    assert len(comma) == 1
-    # running non-null count: starts high, only drops on → (missing)
-    # vol before: 1.5, NAV, 2,1, None, 3 → 4 non-null; 1 loss (NAV)
-    vol_rows = table[table["column"] == "vol"].reset_index(drop=True)
-    assert vol_rows["n_after"].is_monotonic_decreasing
-    miss_rows = vol_rows[vol_rows["value_after"] == "(missing)"]
-    keep_rows = vol_rows[vol_rows["value_after"] != "(missing)"]
-    assert int(miss_rows.iloc[0]["n_after"]) == 3  # 4 - 1
-    if not keep_rows.empty:
-        assert (keep_rows["n_after"] == 3).all()
+    # comma decimal folds into a style summary row
+    folded = table[table["value_before"].astype(str).str.startswith("comma decimal")]
+    assert len(folded) == 1
+    assert "vol" in str(folded.iloc[0]["column"])
+    assert "dot decimal" in str(folded.iloc[0]["value_after"])
+    assert int(folded.iloc[0]["n"]) >= 1
     # binary unknown → missing
     assert any(
         r["column"] == "flag" and r["value_before"] == "maybe" and r["value_after"] == "(missing)"
@@ -142,6 +132,76 @@ def test_schema_coercion_datetime_style_collapse(tmp_output):
     assert len(nav) == 1
     # Not one row per concrete timestamp
     assert len(table) <= 3
+
+
+def test_schema_coercion_numeric_format_collapse(tmp_output):
+    df = pd.DataFrame({
+        "vol": ["01", "1.10", "2,50", "bad", "3.0"],
+        "n_lesions": ["02", "3", "04", "1", "05"],
+    })
+    schema = {
+        "vol": ColSpec("vol", "continuous"),
+        "n_lesions": ColSpec("n_lesions", "count"),
+    }
+    apply_schema(df, schema, output_root=tmp_output)
+    table = pd.read_csv(tmp_output / "cleaning" / "schema_coercion.csv")
+    miss = table[
+        (table["column"] == "vol") & (table["value_after"] == "(missing)")
+    ]
+    assert len(miss) == 1
+    assert miss.iloc[0]["value_before"] == "bad"
+
+    leading = table[table["value_before"].astype(str).str.startswith("leading-zero integer")]
+    assert len(leading) == 1
+    assert "integer" in str(leading.iloc[0]["value_after"])
+    assert "e.g." in str(leading.iloc[0]["value_before"])
+    assert int(leading.iloc[0]["n"]) >= 2
+
+    trailing = table[table["value_before"].astype(str).str.startswith("trailing-zero decimal")]
+    assert len(trailing) >= 1
+    assert "e.g." in str(trailing.iloc[0]["value_after"])
+
+    comma = table[table["value_before"].astype(str).str.startswith("comma decimal")]
+    assert len(comma) == 1
+    assert "dot decimal" in str(comma.iloc[0]["value_after"])
+
+    # No leftover raw per-value format rows for these columns
+    leftover = table[
+        table["column"].isin(["vol", "n_lesions"])
+        & ~table["value_after"].eq("(missing)")
+        & ~table["value_before"].astype(str).str.contains(r"e\.g\.", regex=True)
+    ]
+    assert leftover.empty
+
+
+def test_schema_coercion_id_collapse(tmp_output):
+    df = pd.DataFrame({
+        "pid": [1.0, 2.0, "NAV", 3.0],
+        "sid": [10.0, 20.0, 30.0, 40.0],
+    })
+    schema = {
+        "pid": ColSpec("pid", "id", nulls=["NAV"]),
+        "sid": ColSpec("sid", "id"),
+    }
+    apply_schema(df, schema, output_root=tmp_output)
+    table = pd.read_csv(tmp_output / "cleaning" / "schema_coercion.csv")
+    id_miss = table[
+        (table["kind"] == "id") & (table["value_after"] == "(missing)")
+    ]
+    assert len(id_miss) == 1
+    assert id_miss.iloc[0]["column"] == "pid"
+    assert id_miss.iloc[0]["value_before"] == "NAV"
+    folded = table[
+        (table["kind"] == "id")
+        & (table["value_before"] == "(various)")
+        & (table["value_after"] == "(string)")
+    ]
+    assert len(folded) == 1
+    assert "pid" in folded.iloc[0]["column"]
+    assert "sid" in folded.iloc[0]["column"]
+    assert int(folded.iloc[0]["n"]) >= 1
+    # No per-id value rows left (only missing + one fold row)
+    assert len(table[table["kind"] == "id"]) == 2
 
 
 def test_coerce_binary():

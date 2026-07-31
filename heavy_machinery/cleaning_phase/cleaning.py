@@ -432,6 +432,151 @@ def _coercion_changes(
 
 _COERCION_COLUMNS = ("column", "kind", "value_before", "value_after", "n", "n_after")
 
+_NUMERIC_COERCION_KINDS = frozenset({"continuous", "count"})
+
+
+def _parse_audit_number(token: Any) -> float | None:
+    """Parse an audit display token as float (comma decimals allowed)."""
+    if token is None:
+        return None
+    text = str(token).strip()
+    if not text or text.startswith("(") and text.endswith(")"):
+        return None
+    try:
+        return float(text.replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
+
+def _numerically_equivalent_audit(before: Any, after: Any) -> bool:
+    """True when before/after tokens are the same number (format-only change)."""
+    left = _parse_audit_number(before)
+    right = _parse_audit_number(after)
+    if left is None or right is None:
+        return False
+    return bool(left == right)
+
+
+def _numeric_format_style(token: Any) -> str:
+    """Label the written form of a numeric audit token."""
+    text = str(token).strip()
+    if re.search(r",\d", text) or ("," in text and "." not in text):
+        return "comma decimal"
+    if re.fullmatch(r"-?0\d+", text):
+        return "leading-zero integer"
+    if re.fullmatch(r"-?0\d+\.\d+", text):
+        return "leading-zero decimal"
+    if re.fullmatch(r"-?\d+\.0+", text) or re.fullmatch(r"-?\d+\.\d*0+", text):
+        return "trailing-zero decimal"
+    if re.fullmatch(r"-?\d+", text):
+        return "integer"
+    if re.fullmatch(r"-?\d+\.\d+", text):
+        return "dot decimal"
+    return "numeric text"
+
+
+def collapse_id_coercion_rows(table: pd.DataFrame) -> pd.DataFrame:
+    """Keep id → ``(missing)`` rows; fold other id coercions into one summary row.
+
+    ``astype("string")`` on id columns creates one before→after row per distinct
+    identifier. Those are noise in the audit unless the value became missing.
+    """
+    if table.empty or "kind" not in table.columns:
+        return table
+
+    is_id = table["kind"].astype(str).eq("id")
+    if not bool(is_id.any()):
+        return table
+
+    to_missing = (
+        table["value_after"].astype(str).eq("(missing)")
+        if "value_after" in table.columns
+        else pd.Series(False, index=table.index)
+    )
+    keep = table.loc[~is_id | to_missing].copy()
+    fold = table.loc[is_id & ~to_missing]
+    if fold.empty:
+        return keep.reset_index(drop=True)
+
+    cols = sorted({str(c) for c in fold["column"].tolist() if str(c).strip()})
+    row = {c: "" for c in table.columns}
+    row["column"] = ", ".join(cols)
+    row["kind"] = "id"
+    if "value_before" in row:
+        row["value_before"] = "(various)"
+    if "value_after" in row:
+        row["value_after"] = "(string)"
+    if "n" in row and "n" in fold.columns:
+        row["n"] = int(pd.to_numeric(fold["n"], errors="coerce").fillna(0).sum())
+    if "n_after" in row:
+        row["n_after"] = ""  # not meaningful once multiple columns are merged
+    return pd.concat([keep, pd.DataFrame([row], columns=table.columns)], ignore_index=True)
+
+
+def collapse_numeric_format_coercion_rows(table: pd.DataFrame) -> pd.DataFrame:
+    """Fold continuous/count format-only changes by style (``01→1``, ``1.10→1.1``).
+
+    Losses to ``(missing)`` and true value remaps stay as individual rows.
+    Format-equivalent rows collapse into one summary per
+    ``(before_style → after_style)`` with total ``n`` and an example.
+    """
+    if table.empty or "kind" not in table.columns:
+        return table
+    if "value_before" not in table.columns or "value_after" not in table.columns:
+        return table
+
+    is_num = table["kind"].astype(str).isin(_NUMERIC_COERCION_KINDS)
+    if not bool(is_num.any()):
+        return table
+
+    to_missing = table["value_after"].astype(str).eq("(missing)")
+    format_only = pd.Series(
+        [
+            _numerically_equivalent_audit(b, a)
+            for b, a in zip(table["value_before"], table["value_after"])
+        ],
+        index=table.index,
+    )
+    fold_mask = is_num & ~to_missing & format_only
+    fold = table.loc[fold_mask].copy()
+    if fold.empty:
+        return table.reset_index(drop=True)
+
+    keep = table.loc[~fold_mask].copy()
+    fold["_before_style"] = fold["value_before"].map(_numeric_format_style)
+    fold["_after_style"] = fold["value_after"].map(_numeric_format_style)
+
+    summary_rows: list[dict[str, Any]] = []
+    group_cols = ["_before_style", "_after_style"]
+    for (before_style, after_style), grp in fold.groupby(group_cols, sort=True):
+        cols = sorted({str(c) for c in grp["column"].tolist() if str(c).strip()})
+        kinds = sorted({str(k) for k in grp["kind"].tolist() if str(k).strip()})
+        # Prefer the most common concrete example in this style bucket.
+        ex = (
+            grp.assign(_n=pd.to_numeric(grp["n"], errors="coerce").fillna(0))
+            .sort_values("_n", ascending=False)
+            .iloc[0]
+        )
+        row = {c: "" for c in table.columns}
+        row["column"] = ", ".join(cols)
+        row["kind"] = "/".join(kinds) if kinds else "continuous"
+        row["value_before"] = f"{before_style} (e.g. {ex['value_before']})"
+        row["value_after"] = f"{after_style} (e.g. {ex['value_after']})"
+        row["n"] = int(pd.to_numeric(grp["n"], errors="coerce").fillna(0).sum())
+        if "n_after" in row:
+            row["n_after"] = ""
+        summary_rows.append(row)
+
+    return pd.concat(
+        [keep, pd.DataFrame(summary_rows, columns=table.columns)],
+        ignore_index=True,
+    )
+
+
+def collapse_coercion_audit_rows(table: pd.DataFrame) -> pd.DataFrame:
+    """Apply id + numeric-format collapses for the coerced-value audit."""
+    return collapse_numeric_format_coercion_rows(collapse_id_coercion_rows(table))
+
 
 def write_schema_coercion_table(
     rows: list[dict[str, Any]],
@@ -461,6 +606,7 @@ def write_schema_coercion_table(
             g["n_after"] = vals
             out_parts.append(g)
         table = pd.concat(out_parts, ignore_index=True).drop(columns=["_to_missing"])
+        table = collapse_coercion_audit_rows(table)
     table.to_csv(path, index=False)
     return path
 

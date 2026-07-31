@@ -17,6 +17,11 @@ from sklearn.metrics import brier_score_loss, roc_auc_score, roc_curve
 
 from schema_infer import ColSpec
 
+# Chart colours travel with the artifact so the Streamlit calculator matches the
+# report; both come from the pipeline's shared Okabe–Ito palette.
+_APPARENT_COLOR = "#666666"
+_CORRECTED_COLOR = "#0072B2"
+
 
 def build_complete_case_frame(
     df: pd.DataFrame,
@@ -59,6 +64,103 @@ def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     X = sm.add_constant(pd.DataFrame({"logit_pred": logit_pred}), has_constant="add")
     cal_model = sm.Logit(y, X).fit(disp=False)
     return float(cal_model.params["logit_pred"])
+
+
+def _calibration_intercept(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Calibration-in-the-large: offset of the logit with the slope fixed at 1."""
+    eps = 1e-6
+    p = np.clip(np.asarray(y_pred, dtype=float), eps, 1 - eps)
+    offset = np.log(p / (1 - p))
+    y = pd.Series(y_true).reset_index(drop=True).astype(int)
+    X = sm.add_constant(pd.DataFrame({"_": np.zeros(len(y))}), has_constant="add")
+    fit = sm.Logit(y, X[["const"]], offset=offset).fit(disp=False)
+    return float(fit.params["const"])
+
+
+def _calibration_data(
+    y_true: np.ndarray, y_pred: np.ndarray, *, n_bins: int = 10,
+) -> dict[str, Any]:
+    """Binned observed-vs-predicted risk plus a LOESS smooth of the same data.
+
+    Bins are risk quantiles, so each carries a comparable number of patients;
+    equal-width bins would leave the high-risk end nearly empty at this
+    prevalence. Counts travel with each bin so the reader can weight them.
+    """
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    n = int(y.size)
+
+    edges = np.unique(np.quantile(p, np.linspace(0.0, 1.0, int(n_bins) + 1)))
+    bins: list[dict[str, Any]] = []
+    if edges.size >= 2:
+        idx = np.clip(np.digitize(p, edges[1:-1], right=True), 0, edges.size - 2)
+        for b in range(edges.size - 1):
+            mask = idx == b
+            n_b = int(mask.sum())
+            if n_b == 0:
+                continue
+            bins.append({
+                "predicted": _round_metric(float(p[mask].mean()), 4),
+                "observed": _round_metric(float(y[mask].mean()), 4),
+                "events": int(y[mask].sum()),
+                "n": n_b,
+            })
+
+    smooth: dict[str, list[float]] = {}
+    if n >= 20 and float(np.std(p)) > 0:
+        # it=0 is required for a binary outcome: LOWESS's robustness iterations
+        # treat the 1s as outliers among their mostly-0 neighbours and drag the
+        # whole curve to the floor.
+        curve = lowess(y, p, frac=0.66, it=0, return_sorted=True)
+        smooth = {
+            "predicted": [round(float(v), 4) for v in curve[:, 0]],
+            "observed": [round(float(np.clip(v, 0.0, 1.0)), 4) for v in curve[:, 1]],
+        }
+
+    return {
+        "title": "Calibration (apparent, development sample)",
+        "bins": bins,
+        "smooth": smooth,
+        "observed_rate": _round_metric(float(y.mean()), 4),
+    }
+
+
+def _net_benefit_data(
+    y_true: np.ndarray, y_pred: np.ndarray, *, max_threshold: float = 0.8,
+) -> dict[str, Any]:
+    """Decision-curve net benefit for the model, treat-all, and treat-none.
+
+    Net benefit = TP/n − FP/n · t/(1−t): the share of true positives found,
+    penalised by false positives at the exchange rate a clinician implies by
+    acting at threshold ``t``.
+    """
+    y = np.asarray(y_true, dtype=float)
+    p = np.asarray(y_pred, dtype=float)
+    n = int(y.size)
+    if n == 0:
+        return {"thresholds": [], "model": [], "treat_all": []}
+
+    prevalence = float(y.mean())
+    thresholds = np.round(np.arange(0.01, float(max_threshold) + 1e-9, 0.01), 4)
+    odds = thresholds / (1.0 - thresholds)
+
+    model_nb, all_nb = [], []
+    for t, w in zip(thresholds, odds):
+        flagged = p >= t
+        tp = float((flagged & (y == 1)).sum())
+        fp = float((flagged & (y == 0)).sum())
+        model_nb.append(round(tp / n - (fp / n) * w, 5))
+        all_nb.append(round(prevalence - (1.0 - prevalence) * w, 5))
+
+    return {
+        "title": "Decision curve (apparent, development sample)",
+        "thresholds": [float(t) for t in thresholds],
+        "model": model_nb,
+        "treat_all": all_nb,
+        "prevalence": _round_metric(prevalence, 4),
+    }
 
 
 def _round_metric(x: float, decimals: int = 3) -> float:
@@ -189,12 +291,12 @@ def bootstrap_internal_validation(
                 {
                     "value_field": "apparent",
                     "label": "Apparent (development sample)",
-                    "color": "#2E86AB",
+                    "color": _APPARENT_COLOR,
                 },
                 {
                     "value_field": "optimism_corrected",
                     "label": "Optimism-corrected",
-                    "color": "#E94F37",
+                    "color": _CORRECTED_COLOR,
                 },
             ],
         },
@@ -211,6 +313,15 @@ def bootstrap_internal_validation(
                 }
             ],
         },
+        "calibration": {
+            **_calibration_data(y_arr, y_pred_apparent),
+            "slope_apparent": _round_metric(slope_app),
+            "slope_corrected": _round_metric(slope_corr),
+            "intercept_apparent": _round_metric(
+                _calibration_intercept(y_arr, y_pred_apparent)
+            ),
+        },
+        "decision_curve": _net_benefit_data(y_arr, y_pred_apparent),
         "corrected_calibration_slope": slope_corr,
     }
 

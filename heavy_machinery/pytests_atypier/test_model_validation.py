@@ -25,6 +25,62 @@ def tiny_model_df() -> tuple[pd.DataFrame, list[str], dict]:
     return df, design_cols, coefficients
 
 
+@pytest.fixture
+def separable_model_df() -> tuple[pd.DataFrame, list[str], dict]:
+    """A frame where the predictor genuinely carries signal, unlike pure noise."""
+    rng = np.random.default_rng(7)
+    n = 300
+    score = rng.normal(0, 1, n)
+    event = (rng.uniform(size=n) < 1 / (1 + np.exp(-(score * 1.5 - 0.8)))).astype(int)
+    df = pd.DataFrame({"event": event, "score": score})
+    return df, ["score"], {"const": -0.8, "score": 1.5}
+
+
+def test_calibration_block_bins_every_patient(separable_model_df):
+    df, design_cols, coefficients = separable_model_df
+    out = bootstrap_internal_validation(
+        df, "event", design_cols, coefficients, n_bootstrap=20,
+    )
+    cal = out["calibration"]
+    assert sum(b["n"] for b in cal["bins"]) == len(df)
+    assert all(0.0 <= b["observed"] <= 1.0 for b in cal["bins"])
+    assert all(b["events"] <= b["n"] for b in cal["bins"])
+    assert cal["slope_apparent"] == 1.0
+    assert "slope_corrected" in cal and "intercept_apparent" in cal
+
+
+def test_calibration_smooth_tracks_risk_not_the_floor(separable_model_df):
+    """LOWESS robustness iterations flatten a binary outcome to zero — it=0."""
+    df, design_cols, coefficients = separable_model_df
+    out = bootstrap_internal_validation(
+        df, "event", design_cols, coefficients, n_bootstrap=20,
+    )
+    smooth = out["calibration"]["smooth"]
+    assert smooth["predicted"], "no smoothed calibration curve"
+    observed = np.asarray(smooth["observed"], dtype=float)
+    # A model with real signal must not smooth to a flat line at zero.
+    assert observed.max() > 0.4
+    assert observed[-1] > observed[0]
+
+
+def test_decision_curve_matches_the_net_benefit_definition(separable_model_df):
+    df, design_cols, coefficients = separable_model_df
+    out = bootstrap_internal_validation(
+        df, "event", design_cols, coefficients, n_bootstrap=20,
+    )
+    dca = out["decision_curve"]
+    assert len(dca["thresholds"]) == len(dca["model"]) == len(dca["treat_all"])
+
+    prevalence = float(df["event"].mean())
+    assert dca["prevalence"] == pytest.approx(prevalence, abs=5e-4)
+    # Treat-all is prevalence − (1 − prevalence)·odds(t), by definition.
+    t = dca["thresholds"][9]
+    expected = prevalence - (1 - prevalence) * (t / (1 - t))
+    assert dca["treat_all"][9] == pytest.approx(expected, abs=1e-3)
+    # At a threshold below every predicted risk, the model equals treat-all.
+    assert dca["model"][0] == pytest.approx(dca["treat_all"][0], abs=0.02)
+
+
 def test_bootstrap_internal_validation(tiny_model_df):
     df, design_cols, coefficients = tiny_model_df
     out = bootstrap_internal_validation(

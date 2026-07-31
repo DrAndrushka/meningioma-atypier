@@ -189,21 +189,95 @@ def test_render_cleaning(report_cfg, report_art):
     assert "<section" in render_cleaning(report_cfg, report_art)
 
 
+def test_summary_with_derived_step_one_row_per_column():
+    summary = pd.DataFrame([
+        {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 2, "criterion": ""},
+        {"step": "final", "detail": "done", "n_rows": 10, "n_columns": 2, "criterion": ""},
+    ])
+    derivation_log = pd.DataFrame([
+        {
+            "derivation": "high_grade",
+            "source": "who_grade",
+            "reason": "WHO grade 2/3 = high-grade.",
+            "schema_action": "added ColSpec (binary) for high_grade",
+        },
+        {
+            "derivation": "age_bins_10",
+            "source": "age",
+            "reason": "Age groups (10-year bins).",
+            "schema_action": "added ColSpec (ordinal) for age_bins_10",
+        },
+    ])
+    out = rp._summary_with_derived_step(summary, derivation_log)
+    derived = out[out["step"] == "derived"]
+    assert len(derived) == 2
+    assert derived.iloc[0]["detail"] == "added high_grade ← who_grade"
+    assert derived.iloc[0]["criterion"] == "WHO grade 2/3 = high-grade."
+    assert derived.iloc[0]["n_columns"] == 3
+    assert derived.iloc[1]["detail"] == "added age_bins_10 ← age"
+    assert derived.iloc[1]["criterion"] == "Age groups (10-year bins)."
+    assert derived.iloc[1]["n_columns"] == 4
+    assert out.loc[out["step"] == "final", "n_columns"].iloc[0] == 4
+
+
 def test_render_cleaning_coercion_audit(report_cfg, report_art):
     report_art.cleaning_summary = pd.DataFrame([{
         "step": "final", "detail": "done", "n_rows": 10, "n_columns": 5, "criterion": "",
     }])
-    report_art.schema_coercion = pd.DataFrame([{
-        "column": "tumor_volume",
-        "kind": "continuous",
-        "value_before": "NAV SECTRA - NOSŪTĪTS",
-        "value_after": "(missing)",
-        "n": 21,
-    }])
+    report_art.schema_coercion = pd.DataFrame([
+        {
+            "column": "tumor_volume",
+            "kind": "continuous",
+            "value_before": "NAV SECTRA - NOSŪTĪTS",
+            "value_after": "(missing)",
+            "n": 21,
+        },
+        {
+            "column": "tumor_volume",
+            "kind": "continuous",
+            "value_before": "01",
+            "value_after": "1",
+            "n": 3,
+        },
+        {
+            "column": "tumor_volume",
+            "kind": "continuous",
+            "value_before": "1.10",
+            "value_after": "1.1",
+            "n": 2,
+        },
+        {
+            "column": "pid",
+            "kind": "id",
+            "value_before": "1.0",
+            "value_after": "1.0",
+            "n": 1,
+        },
+        {
+            "column": "pid",
+            "kind": "id",
+            "value_before": "2.0",
+            "value_after": "2.0",
+            "n": 1,
+        },
+        {
+            "column": "pid",
+            "kind": "id",
+            "value_before": "NAV",
+            "value_after": "(missing)",
+            "n": 1,
+        },
+    ])
     html = render_cleaning(report_cfg, report_art)
-    assert "Coerced value audit (1)" in html
+    # continuous missing + leading-zero fold + trailing-zero fold + id missing + id fold
+    assert "Coerced value audit (5)" in html
     assert "NAV SECTRA - NOSŪTĪTS" in html
     assert "(missing)" in html
+    assert "(various)" in html
+    assert "leading-zero integer" in html
+    assert "trailing-zero decimal" in html
+    assert "<td>01</td>" not in html
+    assert "<td>1.10</td>" not in html
 
 
 def test_render_schema(report_cfg, report_art):

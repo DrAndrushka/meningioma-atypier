@@ -283,9 +283,11 @@ def build_auc_comparison_figure(
             values.append(float(auc_row[field]))
             colors.append(str(entry.get("color", "#555555")))
     else:
+        from performance_plots import APPARENT_COLOR, CORRECTED_COLOR
+
         labels = ["Apparent", "Optimism-corrected"]
         values = [float(auc_row["apparent"]), float(auc_row["optimism_corrected"])]
-        colors = ["#2E86AB", "#E94F37"]
+        colors = [APPARENT_COLOR, CORRECTED_COLOR]
 
     title = chart_cfg.get("title", "AUC before and after internal validation")
     figsize = _COMPACT_CHART_FIGSIZE if compact else _DEFAULT_AUC_FIGSIZE
@@ -318,62 +320,27 @@ def build_roc_validation_figure(
     *,
     compact: bool = False,
 ) -> plt.Figure | None:
-    """ROC plot from artifact curve coordinates; legend AUC from curve or metrics."""
-    roc_cfg = validation.get("roc_curves")
-    if not roc_cfg:
-        return None
+    """ROC plot from artifact curve coordinates.
 
-    curves = roc_cfg.get("curves")
-    if not curves:
-        return None
+    Delegates to the shared renderer so the calculator, the HTML report, and the
+    exported SVG are the same figure in the same style.
+    """
+    from performance_plots import roc_figure
 
-    auc_row = _find_auc_metric(validation)
-    figsize = _COMPACT_CHART_FIGSIZE if compact else _DEFAULT_ROC_FIGSIZE
-    fig, ax = plt.subplots(figsize=figsize)
-    plotted = False
+    width = _COMPACT_CHART_FIGSIZE[0] if compact else _DEFAULT_ROC_FIGSIZE[0]
+    return roc_figure(validation, title="Discrimination", width=width)
 
-    for curve in curves:
-        fpr = curve.get("fpr")
-        tpr = curve.get("tpr")
-        if not fpr or not tpr:
-            continue
-        if len(fpr) != len(tpr):
-            raise ValueError(
-                f"ROC curve {curve.get('series', '?')!r} has mismatched fpr/tpr lengths"
-            )
-        label = str(curve.get("label", curve.get("series", "Model")))
-        if "auc" in curve:
-            auc_val = float(curve["auc"])
-        elif curve.get("auc_from_metrics") and auc_row:
-            auc_val = float(auc_row.get("optimism_corrected", np.nan))
-            label = f"{label} (AUC = {auc_val:.3f})"
-        else:
-            auc_val = None
-        if auc_val is not None and "AUC" not in label:
-            label = f"{label} (AUC = {auc_val:.3f})"
-        color = curve.get("color", None)
-        linewidth = 1.5 if compact else 2
-        ax.plot(fpr, tpr, color=color, linewidth=linewidth, label=label)
-        plotted = True
 
-    if not plotted:
-        plt.close(fig)
-        return None
+def build_calibration_validation_figure(
+    validation: dict[str, Any],
+    *,
+    compact: bool = False,
+) -> plt.Figure | None:
+    """Observed vs predicted risk — the calculator's own honesty check."""
+    from performance_plots import calibration_figure
 
-    ax.plot([0, 1], [0, 1], linestyle="--", color="#888888", linewidth=1, label="Coinflip")
-    ax.set_xlim(0.0, 1.0)
-    ax.set_ylim(0.0, 1.0)
-    ax.set_xlabel("FPR", fontsize=8 if compact else 10)
-    ax.set_ylabel("TPR", fontsize=8 if compact else 10)
-    ax.set_title(roc_cfg.get("title", "ROC curve"), fontsize=8 if compact else 11)
-    legend_font = 6 if compact else 9
-    ax.legend(loc="lower right", fontsize=legend_font)
-    ax.grid(alpha=0.3)
-    ax.set_aspect("equal")
-    if compact:
-        ax.tick_params(labelsize=7)
-    fig.tight_layout()
-    return fig
+    width = _COMPACT_CHART_FIGSIZE[0] if compact else _DEFAULT_ROC_FIGSIZE[0]
+    return calibration_figure(validation, title="Calibration", width=width)
 
 
 def render_auc_validation_charts(validation: dict[str, Any]) -> None:

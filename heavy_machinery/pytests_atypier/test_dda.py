@@ -85,9 +85,38 @@ def test_stats_id():
 
 
 def test_plot_continuous(tmp_path):
+    """Histogram and marginal box ship as one panel-aligned figure."""
     s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
     paths = dda._plot_continuous(s, "age", tmp_path)
-    assert len(paths) == 2
+    assert len(paths) == 1
+    assert paths[0].name == "age__distribution.svg"
+    assert paths[0].exists()
+
+
+def test_plot_continuous_skips_kde_when_a_single_value_dominates():
+    """A structural spike (zero-inflation) is not smoothable — histogram only."""
+    spiked = np.concatenate([np.zeros(80), np.linspace(1.0, 50.0, 20)])
+    assert dda._has_point_mass(spiked)
+    assert not dda._has_point_mass(np.linspace(0.0, 50.0, 100))
+
+
+def _marker_positions(path: Path) -> list[tuple[str, str]]:
+    """Plotted marker coordinates from an SVG (the jittered raw points)."""
+    import re
+
+    return re.findall(r'<use [^>]*x="([^"]+)" y="([^"]+)"', path.read_text())
+
+
+def test_plot_continuous_is_reproducible(tmp_path):
+    """Jittered strips must land identically between runs of the same pipeline.
+
+    Guards against seeding jitter with ``hash()``, which is salted per process
+    and silently moves every point when the pipeline is re-run.
+    """
+    s = pd.Series(np.linspace(1.0, 50.0, 60))
+    first = _marker_positions(dda._plot_continuous(s, "age", tmp_path)[0])
+    second = _marker_positions(dda._plot_continuous(s, "age", tmp_path)[0])
+    assert first and first == second
 
 
 def test_ordinal_bar_order():
@@ -107,6 +136,28 @@ def test_plot_nominal(tmp_path):
     assert len(paths) == 1
 
 
+def test_plot_nominal_pools_the_rare_tail_and_says_so(tmp_path):
+    """The pooled tail is disclosed rather than silently dropped."""
+    levels = [f"l{i}" for i in range(20)]
+    s = pd.Series(levels * 2)
+    captured = {}
+    original = dda._plot_category_proportions
+
+    def spy(series, name, out_dir, *, order, note=None):
+        captured["order"] = order
+        captured["note"] = note
+        return original(series, name, out_dir, order=order, note=note)
+
+    dda._plot_category_proportions = spy
+    try:
+        dda._plot_nominal(s, "site", tmp_path, top_n=5)
+    finally:
+        dda._plot_category_proportions = original
+
+    assert len(captured["order"]) == 5
+    assert "15" in captured["note"] and "30" in captured["note"]
+
+
 def test_plot_binary(tmp_path):
     s = pd.Series([True, False, True], dtype="boolean")
     paths = dda._plot_binary(s, "event", tmp_path)
@@ -117,6 +168,17 @@ def test_plot_datetime(tmp_path):
     s = pd.Series(pd.to_datetime(["2018-01-01", "2018-02-01", "2019-01-01"]))
     paths = dda._plot_datetime(s, "entry_year", tmp_path)
     assert len(paths) == 1
+
+
+def test_plot_datetime_keeps_empty_months_as_gaps(tmp_path):
+    """Months without records must stay on the axis, not be collapsed away."""
+    s = pd.Series(pd.to_datetime(["2018-01-05", "2018-06-05"]))
+    dda._plot_datetime(s, "mri_date", tmp_path)
+    # 2018-01 .. 2018-06 is six monthly slots for two records.
+    monthly = s.dt.to_period("M").value_counts()
+    full = pd.period_range(monthly.index.min(), monthly.index.max(), freq="M")
+    assert len(full) == 6
+    assert (tmp_path / "mri_date__timeline.svg").exists()
 
 
 def test_run_dda(tiny_df, tiny_schema, tmp_output):

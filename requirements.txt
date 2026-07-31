@@ -35,7 +35,7 @@
 # 📊 Core analysis pipeline
 #    cleaning → schema → DDA → EDA → diagnostic accuracy → MICE →
 #    multivariable logistic (literature + experimental variants) →
-#    bootstrap validation → HTML report
+#    bootstrap validation → performance figures → HTML report
 # ───────────────────────────────────────────────────────────────────────────────
 
 pandas>=2.2,<4
@@ -45,11 +45,14 @@ numpy>=2.0,<3
 # Numeric arrays underpinning stats, design matrices, and imputation.
 
 scipy>=1.11
-# Classical tests (Mann–Whitney, χ², Fisher, skew/kurtosis) and calibration root-finding.
+# Classical tests (Mann–Whitney, χ², Fisher, skew/kurtosis), calibration root-finding,
+# and the figure maths in plot_style.py — confidence intervals for percentages
+# (Wilson) and the smooth curves drawn over histograms.
 
 statsmodels>=0.14
 # Multivariable logistic regression (Logit), VIF, Wilson-style proportion CIs, calibration,
-# and DDA trivariate LOESS smooths (nonparametric.smoothers_lowess).
+# and the LOESS trend lines used wherever a figure shows a relationship without
+# assuming it is a straight line (DDA scatter plots, EDA, calibration curves).
 
 scikit-learn>=1.4
 # RF chained imputation sensitivity method (IterativeImputer + RandomForestRegressor)
@@ -60,13 +63,18 @@ joblib>=1.3
 # Parallel RF sensitivity-imputation draws (missingness_resolution.py).
 
 matplotlib>=3.8
-# Distribution plots (DDA), forest plots, validation charts, missingness bars.
+# Every figure the pipeline exports: distribution and comparison plots (DDA),
+# association plots (EDA), forest plots, and the model-performance figures
+# (ROC, calibration, decision curve, model comparison). All go through the one
+# shared style in modelling_phase/plot_style.py.
 
 SciencePlots>=2.1
-# Publication matplotlib styles for DDA / EDA / forest (`science` + `nature` + `no-latex`).
+# Publication matplotlib styles for every pipeline figure (`science` + `nature` + `no-latex`).
 
 seaborn>=0.13
-# EDA association plots, missingness heatmaps, and DDA bivariate figures.
+# Heatmaps only — the EDA association overview, the per-pair share tables, and
+# the missingness overlap map. Other figures are drawn directly on matplotlib
+# so their statistics (intervals, denominators) are explicit rather than implied.
 openpyxl>=3.1
 # Read Excel cohort exports when the raw file is .xlsx (CSV also supported).
 
@@ -89,8 +97,9 @@ streamlit>=1.28
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🧪 Tests (heavy_machinery/pytests_atypier/)
-#    200+ tests: cleaning, handoff, EDA, diagnostic accuracy, inferential pooling,
-#    multi-variant artifacts, report rendering, calculator.
+#    267 tests: cleaning, handoff, EDA, diagnostic accuracy, inferential pooling,
+#    multi-variant artifacts, report rendering, calculator, plus the shared
+#    figure toolkit and the model-performance figures.
 # ───────────────────────────────────────────────────────────────────────────────
 
 pytest>=8.0

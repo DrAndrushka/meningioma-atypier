@@ -34,7 +34,11 @@ from inferential import (
     parse_model_key,
 )
 
-from cleaning import format_number, format_table_for_display
+from cleaning import (
+    collapse_coercion_audit_rows,
+    format_number,
+    format_table_for_display,
+)
 from plot_style import prettify_caption, prettify_label
 
 
@@ -964,6 +968,54 @@ def _inferential_model_heading(
     return ""
 
 
+# Per-variant performance figures, in the order a reader should meet them:
+# can it rank patients → is the number right → is acting on it worthwhile.
+_PERFORMANCE_FIGURE_ORDER = ("roc", "calibration", "decision_curve")
+
+
+def _render_model_performance(stem: str, art: Artifacts) -> str:
+    """Collapsible ROC / calibration / decision-curve block for one variant."""
+    figs = [
+        p
+        for suffix in _PERFORMANCE_FIGURE_ORDER
+        for p in art.inferential_figures
+        if p.stem == f"{stem}__{suffix}"
+    ]
+    if not figs:
+        return ""
+    return details_block(
+        "📈 Model performance",
+        '<p>Bootstrap internal validation on the development sample. '
+        '<strong>ROC</strong> shows whether the model ranks patients correctly; '
+        '<strong>calibration</strong> whether a predicted risk matches the '
+        'observed rate; the <strong>decision curve</strong> whether acting on '
+        'the model beats treating everyone or no one. All three are apparent '
+        '(in-sample) and therefore optimistic — the optimism-corrected '
+        'statistics are quoted on each figure.</p>'
+        + svg_grid(figs),
+    )
+
+
+def _render_model_comparison(target: str, art: Artifacts) -> str:
+    """Across-variant comparison figure shown once, above the individual models."""
+    fig = next(
+        (p for p in art.inferential_figures
+         if p.stem == f"{target}__model_comparison"),
+        None,
+    )
+    if fig is None:
+        return ""
+    return (
+        '<p>Every variant on the same three axes. The gap between the hollow '
+        '(apparent) and filled (optimism-corrected) markers is how much of each '
+        "model's performance was overfitting.</p>"
+        '<div class="figure-card">'
+        + _figure_img_html(fig)
+        + f'<div class="caption">{_esc(prettify_caption(fig.stem))}</div>'
+        + "</div>"
+    )
+
+
 def _inferential_target_meta(art: Artifacts, target: str, *, model_key_name: str) -> str:
     """One-line EPV / sample-size summary for a multivariable target × model."""
     if art.inferential_cases is None or art.inferential_cases.empty:
@@ -1166,11 +1218,14 @@ def _summary_with_derived_step(
     summary: pd.DataFrame,
     derivation_log: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Insert a ``derived`` row into the cleaning summary naming the new columns."""
+    """Insert one ``derived`` row per new column into the cleaning summary.
+
+    Uses derivation ``reason`` as ``criterion`` so each column's rule is visible.
+    """
     if (derivation_log is None or derivation_log.empty
             or "derivation" not in derivation_log.columns):
         return summary
-    # Source pipeline may already bake in the 'derived' row — don't duplicate it.
+    # Source pipeline may already bake in the 'derived' rows — don't duplicate.
     if "step" in summary.columns and (summary["step"] == "derived").any():
         return summary
 
@@ -1178,33 +1233,56 @@ def _summary_with_derived_step(
     if "schema_action" in created.columns:
         mask = created["schema_action"].astype(str).str.startswith("added ColSpec")
         created = created[mask]
-    cols = [str(c) for c in created["derivation"].tolist() if str(c).strip()]
-    if not cols:
+    if created.empty:
         return summary
 
-    new_row = {c: "" for c in summary.columns}
-    if "step" in new_row:
-        new_row["step"] = "derived"
-    if "detail" in new_row:
-        new_row["detail"] = f"added {len(cols)} column(s): " + ", ".join(cols)
-    if "n_rows" in new_row and "step" in summary.columns:
+    n_rows_val = ""
+    base_cols: int | None = None
+    if "step" in summary.columns:
         fin = summary[summary["step"] == "final"]
         if not fin.empty:
-            new_row["n_rows"] = fin.iloc[0]["n_rows"]
-    if "n_columns" in new_row and "step" in summary.columns:
-        fin = summary[summary["step"] == "final"]
-        if not fin.empty and pd.notna(fin.iloc[0].get("n_columns")):
-            try:
-                new_row["n_columns"] = int(fin.iloc[0]["n_columns"]) + len(cols)
-            except (TypeError, ValueError):
-                new_row["n_columns"] = ""
-    if "criterion" in new_row:
-        new_row["criterion"] = ""
+            if "n_rows" in summary.columns:
+                n_rows_val = fin.iloc[0]["n_rows"]
+            if "n_columns" in summary.columns and pd.notna(fin.iloc[0].get("n_columns")):
+                try:
+                    base_cols = int(fin.iloc[0]["n_columns"])
+                except (TypeError, ValueError):
+                    base_cols = None
 
-    new_df = pd.DataFrame([new_row], columns=summary.columns)
-    # Place 'derived' just before the 'final' row when present.
+    rows: list[dict] = []
+    for i, (_, entry) in enumerate(created.iterrows()):
+        col = str(entry.get("derivation", "")).strip()
+        if not col:
+            continue
+        source = str(entry.get("source", "") or "").strip()
+        reason = str(entry.get("reason", "") or "").strip()
+        new_row = {c: "" for c in summary.columns}
+        if "step" in new_row:
+            new_row["step"] = "derived"
+        if "detail" in new_row:
+            new_row["detail"] = (
+                f"added {col} ← {source}" if source else f"added {col}"
+            )
+        if "n_rows" in new_row:
+            new_row["n_rows"] = n_rows_val
+        if "n_columns" in new_row and base_cols is not None:
+            new_row["n_columns"] = base_cols + i + 1
+        if "criterion" in new_row:
+            new_row["criterion"] = reason
+        rows.append(new_row)
+
+    if not rows:
+        return summary
+
+    new_df = pd.DataFrame(rows, columns=summary.columns)
+    # Place derived rows just before the 'final' row when present.
     if "step" in summary.columns and (summary["step"] == "final").any():
         pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
+        if "n_columns" in summary.columns and base_cols is not None:
+            summary = summary.copy()
+            summary.loc[summary["step"] == "final", "n_columns"] = (
+                base_cols + len(rows)
+            )
         return pd.concat(
             [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
     return pd.concat([summary, new_df], ignore_index=True)
@@ -1236,10 +1314,10 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
         body.append(table_to_html(summary))
 
     if has_coercion:
-        coer = art.schema_coercion.copy()
+        coer = collapse_coercion_audit_rows(art.schema_coercion.copy())
         if "n" in coer.columns:
             coer = _format_count_cols(coer, ["n", "n_after"] if "n_after" in coer.columns else ["n"])
-        n_rows = len(art.schema_coercion)
+        n_rows = len(coer)
         body.append(details_block(
             f"Coerced value audit ({n_rows})",
             "<p>Value-level changes from schema application "
@@ -1248,6 +1326,15 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
             "Datetime columns are summarized by format style "
             "(e.g. <code>DD.MM.YYYY.</code> → <code>YYYY-MM-DD 00:00:00</code>), "
             "not one row per timestamp. "
+            "ID columns keep only losses to <code>(missing)</code>; "
+            "other id string coercions are folded into one "
+            "<code>(various)</code> → <code>(string)</code> row. "
+            "Numeric format-only changes are grouped by style "
+            "(e.g. <code>leading-zero integer (e.g. 01)</code> → "
+            "<code>integer (e.g. 1)</code>, "
+            "<code>trailing-zero decimal (e.g. 1.10)</code> → "
+            "<code>dot decimal (e.g. 1.1)</code>); "
+            "losses to <code>(missing)</code> stay listed. "
             "<code>n_after</code> is a running non-null count within each column "
             "(starts at pre-coercion non-nulls; only drops on losses to "
             "<code>(missing)</code>).</p>"
@@ -1377,21 +1464,24 @@ def _group_dda_trivariate_figures(
 
 
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
-    """📊 DDA story: univariate tables/figures, then bi-/trivariate seaborn plots."""
+    """📊 DDA story: univariate tables/figures, then bi-/trivariate plots."""
     body = [
-        '<p>Descriptive pass before association testing. '
-        '<strong>Univariate</strong> tables and figures summarize each column '
-        'on its own; <strong>bivariate</strong> plots show selected pairs '
-        '(grouped by the dict key / x column); '
+        '<p>Descriptive pass before association testing — no p-values appear '
+        'in this section. <strong>Univariate</strong> tables and figures '
+        'summarize each column on its own; <strong>bivariate</strong> plots '
+        'show selected pairs (grouped by the dict key / x column); '
         '<strong>trivariate</strong> plots compare selected pairs across '
-        'prespecified groups (SciencePlots scatter / box / counts; '
-        'OLS + LOESS when both axes are continuous).</p>',
+        'prespecified groups. Percentages carry 95% Wilson confidence '
+        'intervals and their denominators; trends are LOESS smoothers, not '
+        'fitted models.</p>',
     ]
 
     # --- 1️⃣ Univariate ---
     uni: list[str] = [
-        '<p>Tables describe distribution shape and balance; '
-        'figures show the same information visually.</p>',
+        '<p>Tables describe distribution shape and balance; figures show the '
+        'same information visually. Continuous columns get a histogram with '
+        'an aligned box plot and raw observations; categorical columns get '
+        'percentages with Wilson intervals and <code>k/n</code>.</p>',
     ]
 
     if art.dda_overall is not None and not art.dda_overall.empty:
@@ -1454,6 +1544,10 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         biv_parts = [
             '<p>One figure per pair from '
             '<code>{x_col: [partner, …]}</code>. '
+            'Continuous×continuous: scatter with a LOESS trend; '
+            'continuous×categorical: raincloud (density + box + raw points) '
+            'per level; categorical×categorical: percentages within each '
+            'x level with Wilson intervals. '
             'Open a key below to browse that x column’s plots.</p>',
         ]
         for x_key, figs in groups.items():
@@ -1480,10 +1574,10 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         tri_parts = [
             '<p>One figure per triple from '
             '<code>{(x, y): [group, …]}</code> (SciencePlots). '
-            'Continuous×continuous: scatter with OLS '
-            '(<em>straight-line fit</em>) + LOESS (<em>smooth trend</em>); '
-            'continuous×categorical: dodged box + strip; '
-            'categorical×categorical: count panels by group. '
+            'Continuous×continuous: scatter with one LOESS trend per group; '
+            'continuous×categorical: dodged box with its raw points alongside; '
+            'categorical×categorical: within-x percentages with Wilson '
+            'intervals, panelled by group on a shared 0–100 axis. '
             'Open a pair below to browse its group plots.</p>',
         ]
         for pair_key, figs in groups.items():
@@ -1968,8 +2062,10 @@ def _render_eda_heatmap_overview(
         "1″ square cells). Only predictors FDR-significant for at least one target "
         "appear in the matrix (strongest left); others are listed below. "
         "Only FDR-significant cells show effect values (marked with *); "
-        "non-significant cells are colour-only. FDR threshold "
-        f"α = {cfg.fdr_alpha:g}.</p>",
+        "non-significant cells are colour-only. <strong>Hatched</strong> cells "
+        "carry a magnitude-only effect size (Cramér's V, ε²) whose colour "
+        "encodes strength, not direction; grey cells were not tested. "
+        f"FDR threshold α = {cfg.fdr_alpha:g}.</p>",
         '<div class="figure-card eda-heatmap-overview">',
         img,
         "</div>",
@@ -2251,6 +2347,7 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
             art.inferential_model_experimental,
         )
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
+        body.append(_render_model_comparison(target, art))
 
         literature_keys = [
             mkey for mkey in model_keys
@@ -2284,6 +2381,8 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                     blocks.append(details_block(
                         "🔢 VIF diagnostics",
                         table_to_html(art.inferential_vif[mkey])))
+
+                blocks.append(_render_model_performance(stem, art))
 
                 tbl = art.inferential_multivariable[mkey].copy()
                 tbl = tbl.drop(columns=["model_title"], errors="ignore")

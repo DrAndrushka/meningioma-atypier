@@ -1,11 +1,16 @@
-"""EDA screening helpers — sign convention for Mann–Whitney / ϕ effects."""
+"""EDA screening helpers — effect sign conventions and figure content."""
 
 from __future__ import annotations
+
+import matplotlib
+
+matplotlib.use("Agg")
 
 import numpy as np
 import pandas as pd
 
 import eda
+from schema_infer import ColSpec
 
 
 def test_mwu_rank_biserial_positive_when_group1_higher():
@@ -52,3 +57,99 @@ def test_heatmap_signed_effect_keeps_phi_sign():
     assert eda._heatmap_signed_effect(row) == -0.13
     row_v = pd.Series({"effect": 0.18, "effect_label": "cramers_v"})
     assert eda._heatmap_signed_effect(row_v) == 0.18
+
+
+def test_heatmap_flags_magnitude_only_effects():
+    """Unsigned effects are marked so red never silently means 'positive'."""
+    assert eda._heatmap_is_unsigned(pd.Series({"effect_label": "cramers_v"}))
+    assert eda._heatmap_is_unsigned(pd.Series({"effect_label": "epsilon_sq"}))
+    assert not eda._heatmap_is_unsigned(pd.Series({"effect_label": "phi"}))
+    assert not eda._heatmap_is_unsigned(pd.Series({"effect_label": "spearman_rho"}))
+
+
+def test_heatmap_cell_text_keeps_two_decimals():
+    """One decimal collapses distinguishable effect sizes onto one label."""
+    row = pd.Series({"test": "chi2", "p_fdr": 0.01, "effect": 0.243})
+    assert eda._heatmap_cell_text(row, fdr_alpha=0.05) == "0.24*"
+    weak = pd.Series({"test": "chi2", "p_fdr": 0.01, "effect": 0.164})
+    assert eda._heatmap_cell_text(weak, fdr_alpha=0.05) == "0.16*"
+    # Non-significant cells stay colour-only.
+    ns = pd.Series({"test": "chi2", "p_fdr": 0.4, "effect": 0.24})
+    assert eda._heatmap_cell_text(ns, fdr_alpha=0.05) == ""
+
+
+# ---------------------------------------------------------------------------
+# Figure content
+# ---------------------------------------------------------------------------
+
+def test_result_subtitle_reports_test_effect_and_fdr():
+    row = {
+        "test": "mann_whitney_u", "effect": 0.187,
+        "effect_label": "rank_biserial_r", "p": 0.0081, "p_fdr": 0.0412,
+    }
+    text = eda._result_subtitle(row, 352, fdr_alpha=0.05)
+    assert "n = 352" in text
+    assert "Mann–Whitney U" in text
+    assert "r = 0.19" in text
+    assert "p = 0.008" in text
+    assert "q = 0.041" in text
+    assert "FDR-significant" in text
+
+
+def test_result_subtitle_omits_the_flag_when_not_significant():
+    row = {"test": "chi2", "effect": 0.06, "effect_label": "phi",
+           "p": 0.264, "p_fdr": 0.264}
+    text = eda._result_subtitle(row, 352, fdr_alpha=0.05)
+    assert "q = 0.264" in text
+    assert "FDR-significant" not in text
+
+
+def _tiny_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec]]:
+    rng = np.random.default_rng(0)
+    n = 60
+    high = rng.choice([False, True], n)
+    df = pd.DataFrame({
+        "high_grade": high,
+        "age": rng.normal(65, 10, n),
+        "margin": np.where(high, "irregular", "regular"),
+    })
+    schema = {
+        "high_grade": ColSpec("high_grade", "binary"),
+        "age": ColSpec("age", "continuous"),
+        "margin": ColSpec("margin", "nominal"),
+    }
+    return df, schema
+
+
+def test_screen_associations_plots_every_tested_pair(tmp_path):
+    df, schema = _tiny_cohort()
+    out = eda.screen_associations(
+        df, schema, targets=["high_grade"], predictors=["age", "margin"],
+        output_root=tmp_path,
+    )
+    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.svg")}
+    assert {"high_grade__age", "high_grade__margin"} <= figs
+    assert set(out["predictor"]) == {"age", "margin"}
+
+
+def test_pair_figures_carry_the_fdr_adjusted_q_value(tmp_path):
+    """Figures are drawn after FDR adjustment, so they can quote q."""
+    df, schema = _tiny_cohort()
+    captured: list[dict] = []
+    original = eda._plot_pair
+
+    def spy(*args, **kwargs):
+        captured.append(kwargs.get("result") or {})
+        return original(*args, **kwargs)
+
+    eda._plot_pair = spy
+    try:
+        eda.screen_associations(
+            df, schema, targets=["high_grade"], predictors=["age", "margin"],
+            output_root=tmp_path,
+        )
+    finally:
+        eda._plot_pair = original
+
+    assert captured
+    assert all("p_fdr" in result for result in captured)

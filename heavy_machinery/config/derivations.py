@@ -334,7 +334,11 @@ def apply_derivations(
         out_dir.mkdir(parents=True, exist_ok=True)
         derivation_log.to_csv(out_dir / "derivation_log.csv", index=False)
         _update_cleaning_summary_derived(
-            output_root, new_cols, n_rows=len(out), n_columns=out.shape[1],
+            output_root,
+            new_cols,
+            n_rows=len(out),
+            n_columns=out.shape[1],
+            derivation_log=derivation_log,
         )
         # Append derived columns to the schema summary so they appear in the
         # report's Schema story. Append-only: we must NOT re-export the whole
@@ -381,8 +385,12 @@ def _update_cleaning_summary_derived(
     created_cols: list[str],
     n_rows: int,
     n_columns: int,
+    derivation_log: pd.DataFrame | None = None,
 ) -> None:
-    """Insert a ``derived`` row into cleaning_summary.csv naming the new columns.
+    """Insert one ``derived`` row per new column into cleaning_summary.csv.
+
+    ``detail`` names the column (and source when known); ``criterion`` carries
+    the derivation ``reason`` so the cleaning story shows why each column exists.
 
     Idempotent: any existing ``derived`` row is replaced, so re-running the
     derivations cell does not stack duplicate rows.
@@ -396,19 +404,38 @@ def _update_cleaning_summary_derived(
         return
 
     summary = summary[summary["step"] != "derived"].copy()
-    row = {c: "" for c in summary.columns}
-    row["step"] = "derived"
-    if "detail" in row:
-        row["detail"] = (
-            f"added {len(created_cols)} column(s): " + ", ".join(created_cols))
-    if "n_rows" in row:
-        row["n_rows"] = n_rows
-    if "n_columns" in row:
-        row["n_columns"] = n_columns
-    if "criterion" in row:
-        row["criterion"] = ""
 
-    new_df = pd.DataFrame([row], columns=summary.columns)
+    meta: dict[str, dict[str, str]] = {}
+    if derivation_log is not None and not derivation_log.empty:
+        for _, entry in derivation_log.iterrows():
+            name = str(entry.get("derivation", "")).strip()
+            if not name:
+                continue
+            meta[name] = {
+                "source": str(entry.get("source", "") or "").strip(),
+                "reason": str(entry.get("reason", "") or "").strip(),
+            }
+
+    base_cols = n_columns - len(created_cols)
+    rows: list[dict] = []
+    for i, col in enumerate(created_cols):
+        row = {c: "" for c in summary.columns}
+        row["step"] = "derived"
+        info = meta.get(col, {})
+        source = info.get("source", "")
+        if "detail" in row:
+            row["detail"] = (
+                f"added {col} ← {source}" if source else f"added {col}"
+            )
+        if "n_rows" in row:
+            row["n_rows"] = n_rows
+        if "n_columns" in row:
+            row["n_columns"] = base_cols + i + 1
+        if "criterion" in row:
+            row["criterion"] = info.get("reason", "")
+        rows.append(row)
+
+    new_df = pd.DataFrame(rows, columns=summary.columns)
     if (summary["step"] == "final").any():
         pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
         if "n_columns" in summary.columns:
