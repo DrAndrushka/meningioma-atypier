@@ -475,3 +475,20 @@ def test_model_vs_single_is_empty_when_there_are_no_artifacts():
     df = count_frame()
     correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
     assert mp.model_vs_single(df, {}, TARGET, correction).empty
+
+
+def test_a_model_with_zero_scorable_patients_is_reported_not_mislabelled():
+    """Distinct from the single-outcome-class note: here, every column exists but
+    no patient has every predictor recorded, so nobody is scorable at all.
+
+    ``truth.nunique()`` on an empty series is 0, not 2 — the same branch that
+    ``one outcome class only`` used to catch, which named the wrong cause.
+    """
+    df = count_frame().copy()
+    df["sign_0"] = pd.array([pd.NA] * len(df), dtype="boolean")
+    correction = mp.selection_correction(df, COUNT_MARKERS[1:], TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+    row = table.iloc[0]
+    assert row["n_scored"] == 0
+    assert pd.isna(row["auc_shared_apparent"])
+    assert "no patient had every predictor recorded" in row["note"]

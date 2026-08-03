@@ -524,17 +524,22 @@ def model_vs_single(
         note = ""
         auc = np.nan
         n_scored = 0
-        try:
+
+        names = [str(f["name"]) for f in (artifact.get("features") or [])]
+        missing_cols = [n for n in names if n not in df.columns]
+        if missing_cols:
+            note = f"not scorable on this set — cohort is missing model predictors: {missing_cols}"
+        else:
             probs = score_model_on(df, artifact)
             usable = probs.notna() & y.notna()
             n_scored = int(usable.sum())
             truth = y[usable].astype(int)
-            if n_scored and truth.nunique() == 2:
+            if n_scored == 0:
+                note = "not scorable on this set — no patient had every predictor recorded"
+            elif truth.nunique() == 2:
                 auc = float(roc_auc_score(truth, probs[usable]))
             else:
                 note = "not scorable on this set — one outcome class only"
-        except KeyError as exc:
-            note = f"not scorable on this set — {exc.args[0]}"
 
         rows.append({
             "model": name,
