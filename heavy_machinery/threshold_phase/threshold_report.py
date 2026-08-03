@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -205,6 +206,16 @@ table.report td.nowrap, table.report td.num { white-space: nowrap; }
            letter-spacing: 0; font-weight: 650; }
 .todo p { margin: 0 0 6px; }
 .todo .todo-why { font-size: 13px; color: var(--muted); margin-bottom: 0; }
+/* Written to be selected and pasted, so: no badges, no pills, nothing that
+   carries markup into a manuscript. Just prose with bold labels. */
+.manuscript {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 20px; margin: 14px 0;
+    line-height: 1.62;
+}
+.manuscript p { margin: 0 0 12px; }
+.manuscript p:last-child { margin-bottom: 0; }
+.manuscript b { color: var(--fg); }
 """
 
 
@@ -553,17 +564,35 @@ class Verdicts:
                 return hits
         return []
 
-    def grade_sentences(self) -> str:
-        """One clause per measurement: name, grade, and what limits it."""
-        bits = []
-        for v in sorted(self.items, key=lambda x: GRADE_ORDER.index(x.grade)
-                        if x.grade in GRADE_ORDER else len(GRADE_ORDER)):
+    def grade_sentences(self, *, compact: bool = False) -> str:
+        """One clause per measurement: name, grade, and what limits it.
+
+        ``compact`` groups measurements sharing a grade and drops the padding,
+        for the manuscript block where every word is paid for.
+        """
+        ordered = sorted(self.items, key=lambda x: GRADE_ORDER.index(x.grade)
+                         if x.grade in GRADE_ORDER else len(GRADE_ORDER))
+        if not compact:
+            bits = []
+            for v in ordered:
+                if not v.grade:
+                    continue
+                limit = (f" (limited by {v.limiting.lower()})" if v.limiting
+                         else " (all criteria met)")
+                bits.append(f"{_esc(v.metric)} <b>{_esc(v.grade)}</b>{limit}")
+            return _join_names(bits)
+
+        # Compact: one clause per (grade, limiting criterion) group.
+        groups: dict[tuple[str, str], list[str]] = {}
+        for v in ordered:
             if not v.grade:
                 continue
-            limit = (f" (limited by {v.limiting.lower()})" if v.limiting
-                     else " (all criteria met)")
-            bits.append(f"{_esc(v.metric)} <b>{_esc(v.grade)}</b>{limit}")
-        return _join_names(bits)
+            groups.setdefault((v.grade, v.limiting), []).append(v.metric)
+        bits = []
+        for (grade, limiting), names in groups.items():
+            limit = f" ({limiting.lower()})" if limiting else ""
+            bits.append(f"{_esc(_join_names(names))} <b>{_esc(grade)}</b>{limit}")
+        return "; ".join(bits)
 
 
 def metric_verdicts(data: ThresholdReportData) -> Verdicts:
@@ -2823,6 +2852,176 @@ exception — they came from other patients.</li>
 
 
 # ---------------------------------------------------------------------------
+# 12 — the manuscript block
+# ---------------------------------------------------------------------------
+def _literature_agreement(data: ThresholdReportData) -> list[str]:
+    """Published cut-points that fall inside our own bootstrap interval.
+
+    The strongest single result for a poster: a cut-point chosen on someone
+    else's patients landing inside the range ours moved across. Computed here
+    rather than remembered, because the interval moves with every run.
+    """
+    thresholds = data.table("thresholds")
+    risk = data.table("risk_curves")
+    if thresholds.empty or risk.empty or "rule" not in thresholds.columns:
+        return []
+    knee = risk.set_index("column")
+    out = []
+    for _, r in thresholds[thresholds["rule"] == "literature"].iterrows():
+        col = r.get("column")
+        if col not in knee.index:
+            continue
+        row = knee.loc[col]
+        lo, hi, cut = (row.get("steepest_lo"), row.get("steepest_hi"), r.get("cutoff"))
+        if pd.isna(lo) or pd.isna(hi) or pd.isna(cut):
+            continue
+        if float(lo) <= float(cut) <= float(hi):
+            source = str(r.get("source", ""))
+            author = source.split(",")[0].strip()
+            year = re.search(r"\b(19|20)\d{2}\b", source)
+            cite = f"{author} {year.group(0)}" if (author and year) else author
+            out.append(f"{r['metric']} {_num(cut, 2)} ({_esc(cite)}) in our "
+                       f"{_num(lo, 2)}–{_num(hi, 2)}")
+    return out
+
+
+def render_manuscript(data: ThresholdReportData, facts: CohortFacts) -> str:
+    """A short, copy-paste block for the ESNR manuscript. Every number templated.
+
+    Deliberately the only section written to be lifted verbatim. It carries no
+    explanation — the rest of the document is the explanation — so it stays
+    inside the word budget of an abstract or a methods paragraph.
+    """
+    v = facts.verdicts
+    verdict = primary_verdict(data)
+    mult = multiplicity_facts(data)
+    nb = net_benefit_facts(data)
+    counts = data.table("count_score")
+    calibration = data.table("calibration")
+    zero = data.table("zero_share")
+    nonzero = data.table("nonzero_curves")
+    summary = data.table("cohort_summary")
+
+    years = ""
+    first, last = _first(summary, "accrual_first_year"), _first(summary, "accrual_last_year")
+    if pd.notna(first) and pd.notna(last):
+        years = f" ({_int(first)}–{_int(last)})"
+
+    ladder = ""
+    if not counts.empty:
+        usable = counts[counts["n"] > 0]
+        if len(usable) >= 2:
+            ladder = (f"Observed risk rose monotonically with the count of criteria met, "
+                      f"{_pct(usable['risk'].iloc[0])} to {_pct(usable['risk'].iloc[-1])} "
+                      f"across 0–{_int(usable['n_criteria_met'].max())}. ")
+
+    # ADC's knee coinciding with the 50%-risk crossing is the sharpest negative
+    # result in the run, so it is named rather than folded into the grades.
+    restated = [x.metric for x in v.items if x.limiting == "Knee ≠ 50%-risk point"]
+    restated_text = ""
+    if restated:
+        restated_text = (f"{_esc(_join_names(restated))}'s steepest-rise point fell inside "
+                         f"the bootstrap interval of the 50%-risk crossing, restating that "
+                         f"crossing rather than marking a threshold. ")
+
+    zero_text = ""
+    if not zero.empty and not nonzero.empty and "zero_inflated" in zero.columns:
+        hits = zero[zero["zero_inflated"].map(_truthy)]
+        lost = nonzero[nonzero["nonlinearity_p"] >= evidence.ALPHA] \
+            if "nonlinearity_p" in nonzero.columns else pd.DataFrame()
+        if not hits.empty and not lost.empty:
+            share = _num(hits["pct_zero"].max(), 0)
+            zero_text = (
+                f"{_esc(_join_names(list(lost['metric'])))} are zero-inflated ({share}% "
+                f"zero) and their non-linearity vanished when refitted on non-zero values "
+                f"only ({', '.join('p ' + _num(p, 2) for p in lost['nonlinearity_p'])}), so "
+                f"the knee largely reflects edema present versus absent. ")
+
+    agreement = _literature_agreement(data)
+    agreement_text = ""
+    if agreement:
+        agreement_text = (f"Published cut-points fell inside our intervals: "
+                          f"{'; '.join(agreement)}. ")
+
+    slope = ""
+    if not calibration.empty:
+        uncut = calibration[calibration["model"].astype(str)
+                            .str.contains("Uncut", case=False, na=False)]
+        if not uncut.empty:
+            slope = (f", calibration slope {_num(uncut.iloc[0]['slope_corrected'])} "
+                     f"after correction")
+
+    nb_text = ""
+    if nb.available:
+        nb_text = (f"On decision-curve analysis the uncut model led over "
+                   f"{_num(nb.winner_share, 0)}% of threshold probabilities "
+                   f"({_pct(nb.lo)}–{_pct(nb.hi)}); no single cut-point led anywhere. ")
+
+    holm = ""
+    if mult.available:
+        holm = (f"{mult.n_holm} of {mult.n_tests} non-linearity tests — the pre-specified "
+                f"primary family — survived Holm adjustment"
+                + (f"; Bonferroni would drop "
+                   f"{_esc(_join_names(list(mult.dropped_by_bonferroni)))}"
+                   if mult.dropped_by_bonferroni else "") + ". ")
+
+    return f"""
+<p class="muted">Short enough to paste. Every number below is templated from this run, so
+re-running the notebook rewrites this block rather than leaving it stale. Nothing here is
+explained — the rest of the document is the explanation.</p>
+
+<div class="manuscript">
+
+<p><b>Aim.</b> To test whether pre-operative MRI measurements of meningioma carry a genuine
+<em>threshold</em> for WHO grade 2–3 — a value at which risk changes behaviour — rather
+than merely a cut-point, and whether combining cut-points beats the best single one.</p>
+
+<p><b>Methods.</b> {facts.n} operated patients with histological grading{years};
+{facts.events} ({_pct(facts.prevalence, 1)}) WHO grade 2–3. Mean ADC, tumour volume,
+peritumoral edema volume and the edema index were modelled as restricted cubic splines
+(3 knots) in clinical units, with a likelihood-ratio test for non-linearity. Cut-points came
+from five pre-specified selection rules, bootstrap-corrected for optimism
+({facts.n_boot} resamples). Threshold claims were graded against
+{len(evidence.CRITERIA)} criteria fixed before the verdicts were read: non-linearity, knee
+interiority, distinctness from the 50%-risk crossing, robustness to fitting scale, and
+reproducibility across {facts.m_draws} multiply-imputed datasets. Combination rules were
+compared on one denominator (all four measurements present); calibration and net benefit
+were assessed for the uncut model.</p>
+
+<p><b>Results.</b> {v.count_phrase(verb=True)} non-linear risk, but graded unevenly:
+{v.grade_sentences(compact=True)}. {restated_text}{zero_text}{agreement_text}Best single criterion:
+optimism-corrected Youden J {_num(_first(verdict, 'best_single_J_corrected'), 2)}; best
+combination {_num(_first(verdict, 'best_rule_J_corrected'), 2)} — a gain of
+{_num(_first(verdict, 'gain_vs_best_single'), 2)} that held in only
+{_pct(_first(verdict, 'winner_stability'))} of resampled cohorts. The same four
+measurements uncut reached AUC {_num(_first(verdict, 'continuous_AUC_corrected'))}{slope},
+beating every dichotomised rule. {ladder}{nb_text}{holm}</p>
+
+<p><b>Conclusion.</b> These measurements separate meningioma grades but do not support the
+threshold language usually applied to them: the claims are graded rather than categorical,
+and the edema ones rest on presence versus absence more than on magnitude. Combining
+cut-points bought no stable improvement, and dichotomising cost more than combining gained.
+The defensible outputs are the risk curves and a count of criteria met.</p>
+
+<p><b>Assumptions and limitations.</b> Retrospective single-centre surgical series: at
+{_pct(facts.prevalence)} high grade the predictive values do not transfer, though
+sensitivity and specificity do. All derived cut-points are optimistically biased and
+reported corrected. The {facts.m_draws} imputations are a stability check, not Rubin
+pooling — a cut-point chosen by maximisation does not meet Rubin's conditions — so the
+across-draw spread is a range, not a confidence interval. Grades depend on the
+pre-specified criteria; knee-interval width and AUC are reported but do not score.</p>
+
+</div>
+
+{warning_box(
+    f"Before this block goes anywhere: section 0 carries {len(METHODS_GAPS)} "
+    f"<code>TODO: ANDY</code> placeholders — WHO edition, b-values, ROI protocol, "
+    f"volumetry, ethics approval and the rest. The Methods paragraph above is not "
+    f"complete without them, and none of them can be derived from the data.")}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
 def build_report(cfg: ThresholdReportConfig, data: ThresholdReportData | None = None) -> str:
@@ -2852,6 +3051,8 @@ def build_report(cfg: ThresholdReportConfig, data: ThresholdReportData | None = 
         section_block("10 · Reference — every term, one line each",
                       render_reference(data, facts), open=False),
         section_block("11 · What not to claim", render_caveats(data, facts), open=False),
+        section_block("12 · For the manuscript — copy-paste",
+                      render_manuscript(data, facts), open=True),
     ]
 
     context = data.manifest.get("context", {})

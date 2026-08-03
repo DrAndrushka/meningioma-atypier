@@ -283,8 +283,12 @@ def artifacts(tmp_path):
     return _write_artifacts(tmp_path)
 
 
+CFG_ROOT: list = []
+
+
 @pytest.fixture
 def cfg(artifacts):
+    CFG_ROOT[:] = [artifacts]
     return tr.ThresholdReportConfig(output_root=artifacts)
 
 
@@ -763,6 +767,68 @@ def test_missing_accrual_columns_just_omit_the_sentence(cfg):
     html = tr.build_report(cfg)
     assert "Methods and cohort" in html
     assert "calendar years" not in html
+
+
+# --------------------------------------------------------------------------
+# The manuscript block
+# --------------------------------------------------------------------------
+def test_manuscript_block_is_the_last_section(cfg):
+    html = tr.build_report(cfg)
+    assert "For the manuscript" in html
+    assert html.index("For the manuscript") > html.index("What not to claim")
+    for label in ("<b>Aim.</b>", "<b>Methods.</b>", "<b>Results.</b>",
+                  "<b>Conclusion.</b>", "<b>Assumptions and limitations.</b>"):
+        assert label in html, label
+
+
+def test_manuscript_block_stays_short():
+    """Limited manuscript space is the whole point of the section."""
+    import re, html as H
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=CFG_ROOT[0]))
+    block = html[html.index('class="manuscript"'):]
+    block = block[:block.index("</div>", block.index("Assumptions and limitations"))]
+    words = H.unescape(re.sub(r"<[^>]+>", " ", block)).split()
+    assert len(words) < 600, f"manuscript block is {len(words)} words"
+
+
+def test_manuscript_numbers_follow_the_artifacts(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "32_shared_combination_verdict.csv"
+    verdict = pd.read_csv(path)
+    verdict["continuous_AUC_corrected"] = 0.81
+    verdict["winner_stability"] = 0.95
+    verdict.to_csv(path, index=False)
+    # Source line breaks fall inside sentences, so compare on collapsed space.
+    html = " ".join(tr.build_report(tr.ThresholdReportConfig(output_root=root)).split())
+    assert "AUC 0.81" in html
+    assert "held in only 95% of resampled cohorts" in html
+
+
+def test_manuscript_carries_no_badges_or_pills(cfg):
+    """It is written to be selected and pasted into a manuscript."""
+    html = tr.build_report(cfg)
+    block = html[html.index('class="manuscript"'):]
+    block = block[:block.index("</div>", block.index("Assumptions and limitations"))]
+    for markup in ('class="grade"', 'class="badge"', "<table", "<img"):
+        assert markup not in block, markup
+
+
+def test_compact_grades_group_measurements_sharing_a_limit():
+    items = (
+        tr.MetricVerdict("A", "a", True, grade="moderate", limiting="Scale robustness"),
+        tr.MetricVerdict("B", "b", True, grade="moderate", limiting="Scale robustness"),
+        tr.MetricVerdict("C", "c", True, grade="strong", limiting=""),
+    )
+    compact = tr.Verdicts(items).grade_sentences(compact=True)
+    assert "C <b>strong</b>" in compact
+    assert "A and B <b>moderate</b> (scale robustness)" in compact
+
+
+def test_literature_agreement_is_computed_not_remembered(tmp_path):
+    root = _write_artifacts(tmp_path)
+    data = tr.load_report_data(tr.ThresholdReportConfig(output_root=root))
+    # The fixture's published Volume cut-point (13.95) sits outside its knee CI.
+    assert tr._literature_agreement(data) == []
 
 
 def test_defence_section_cites_live_numbers(cfg):
