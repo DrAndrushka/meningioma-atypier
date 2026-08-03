@@ -220,3 +220,35 @@ def test_marker_panel_is_empty_not_broken_when_there_are_no_markers():
     panel = mp.marker_panel_table(df, [], TARGET)
     assert panel.empty
     assert mp.marker_panel_reading_view(panel).empty
+
+
+# --------------------------------------------------------------------------
+# Aim 1 — the figure
+# --------------------------------------------------------------------------
+import matplotlib.pyplot as plt
+
+
+def test_lr_forest_draws_one_row_per_marker_on_a_log_axis():
+    df = pd.DataFrame({
+        "a": pd.array([True, True, False, False, True, False, False, False],
+                      dtype="boolean"),
+        "b": pd.array([True, False, True, False, True, True, False, False],
+                      dtype="boolean"),
+        TARGET: pd.array([True, True, True, True, True, False, False, False],
+                         dtype="boolean"),
+    })
+    markers = [mp.BinaryMarker("a", "Sign A"), mp.BinaryMarker("b", "Sign B")]
+    panel = mp.marker_panel_table(df, markers, TARGET)
+
+    fig = mp.lr_forest_figure(panel)
+    ax = fig.axes[0]
+    assert ax.get_xscale() == "log"
+    assert len(ax.get_yticklabels()) == 2
+    plt.close(fig)
+
+
+def test_lr_forest_returns_a_figure_even_with_nothing_to_plot():
+    """An empty panel must not crash the notebook cell that saves figures."""
+    fig = mp.lr_forest_figure(pd.DataFrame(columns=["label", "lr_pos"]))
+    assert fig is not None
+    plt.close(fig)

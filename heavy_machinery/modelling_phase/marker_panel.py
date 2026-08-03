@@ -18,6 +18,7 @@ import math
 from collections.abc import Collection, Sequence
 from typing import NamedTuple
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -206,3 +207,47 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
         "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in panel.iterrows()],
         "LR+ (95% CI)": [_format_lr(r) for _, r in panel.iterrows()],
     })
+
+
+def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
+    """LR+ per marker with its interval, on a log axis with a line at 1.
+
+    Log scale because a likelihood ratio is a multiplier: 0.5 and 2 are the
+    same distance from "says nothing", and a linear axis hides that. Markers
+    whose interval crosses the line at 1 are drawn in the neutral colour, so
+    the ones carrying no information are visible as a group rather than as a
+    ranking.
+    """
+    usable = panel[panel["lr_pos"].notna()] if len(panel) else panel
+    if usable is None or usable.empty:
+        fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM, aspect=0.5))
+        ax.set_axis_off()
+        ax.text(0.5, 0.5, "No marker has an estimable likelihood ratio",
+                ha="center", va="center", transform=ax.transAxes)
+        return fig
+
+    ordered = usable.iloc[::-1]
+    y = np.arange(len(ordered), dtype=float)
+    values = ordered["lr_pos"].to_numpy(dtype=float)
+    xerr = ps.errorbar_lengths(values, ordered["lr_pos_lo"], ordered["lr_pos_hi"])
+    colors = [
+        ps.PALETTE["neutral"] if bool(flag) else ps.PALETTE["high_grade"]
+        for flag in ordered["chance_overlap"]
+    ]
+
+    height = max(2.0, 0.32 * len(ordered) + 1.0)
+    fig, ax = plt.subplots(figsize=(ps.FIG_WIDTH_MEDIUM, height))
+    ax.axvline(1.0, color=ps.PALETTE["neutral"], linewidth=0.9, linestyle="-.", zorder=1)
+    for i, color in enumerate(colors):
+        ax.errorbar(values[i], y[i], xerr=xerr[:, i: i + 1], fmt="o",
+                    color=color, ecolor=color, elinewidth=1.1, capsize=2.5,
+                    markersize=4, zorder=3)
+    ax.set_xscale("log")
+    ax.set_yticks(y)
+    ax.set_yticklabels(ordered["label"].astype(str))
+    ax.set_xlabel("Positive likelihood ratio (log scale)")
+    ps.set_titles(
+        ax, "How much a positive finding argues for high grade",
+        "A ratio of 1 says nothing; grey intervals cross it",
+    )
+    return fig
