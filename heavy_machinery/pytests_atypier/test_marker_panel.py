@@ -351,3 +351,57 @@ def test_count_score_figure_labels_the_axis_with_the_marker_count():
     ax = fig.axes[0]
     assert "3" in ax.get_xlabel()
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Aim 2 — the rule menu, and paying for having picked a winner
+# --------------------------------------------------------------------------
+def test_rule_menu_holds_singles_and_combinations_together():
+    menu = mp.rule_menu(count_frame(), COUNT_MARKERS, TARGET)
+    kinds = set(menu["kind"])
+    assert {"single", "and", "or", "count"} <= kinds
+    assert (menu["n_used"] > 0).all()
+
+
+def test_both_sides_of_the_head_to_head_are_corrected():
+    """The CHANGES.md regression.
+
+    A corrected combination scored against an *uncorrected* single flatters the
+    combination by the whole of the single's own selection optimism. Picking the
+    best of N single markers is a choice made on these patients too, so it costs
+    something, and that cost must be non-zero and recorded.
+    """
+    corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
+    assert list(corr["side"]) == ["best single", "best combination"]
+    assert corr["optimism"].notna().all()
+    assert (corr["optimism"] > 0).all()
+    assert corr["J_corrected"].notna().all()
+
+
+def test_the_reported_gain_is_corrected_on_both_sides():
+    corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
+    single = corr[corr["side"] == "best single"].iloc[0]
+    combo = corr[corr["side"] == "best combination"].iloc[0]
+    expected = combo["J_corrected"] - single["J_corrected"]
+    assert corr["gain_corrected"].iloc[0] == pytest.approx(expected, abs=1e-9)
+
+
+def test_selection_correction_is_deterministic_for_a_seed():
+    args = (count_frame(), COUNT_MARKERS, TARGET)
+    a = mp.selection_correction(*args, n_boot=40, seed=7)
+    b = mp.selection_correction(*args, n_boot=40, seed=7)
+    pd.testing.assert_frame_equal(a, b)
+
+
+def test_rule_reading_view_is_ranked_by_youden_j():
+    menu = mp.rule_menu(count_frame(), COUNT_MARKERS, TARGET)
+    view = mp.rule_reading_view(menu, top=5)
+    assert len(view) == 5
+    assert list(view["J"]) == sorted(view["J"], reverse=True)
+
+
+def test_rule_space_figure_draws():
+    menu = mp.rule_menu(count_frame(), COUNT_MARKERS, TARGET)
+    fig = mp.rule_space_figure(menu)
+    assert fig.axes
+    plt.close(fig)

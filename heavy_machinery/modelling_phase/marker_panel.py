@@ -361,3 +361,81 @@ def count_score_figure(
 ) -> plt.Figure:
     """Threshold-phase figure, drawn on markers instead of cut-points."""
     return cb.count_score_figure(counts, cutpoints=markers, prevalence=prevalence)
+
+
+DEFAULT_SEED = 20260801
+DEFAULT_N_BOOT = 500
+
+
+def rule_menu(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+    *,
+    max_size: int = 2,
+) -> pd.DataFrame:
+    """Singles, AND/OR pairs and count rules, all on one patient set.
+
+    Pairs only. ``max_size=3`` is available but an AND of three signs on this
+    many events lands in single figures, and a sensitivity computed from eight
+    patients is not a number worth printing.
+    """
+    return cb.full_rule_menu(df, markers, target, max_size=max_size)
+
+
+def rule_reading_view(menu: pd.DataFrame, *, top: int | None = 12) -> pd.DataFrame:
+    """Rules ranked by Youden J, in clinician-facing columns."""
+    return cb.combination_reading_view(menu, top=top)
+
+
+def selection_correction(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+    *,
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED,
+    max_size: int = 2,
+) -> pd.DataFrame:
+    """What the winner's advantage is worth once you pay for having picked it.
+
+    With a dozen markers there are hundreds of candidate rules, and the best of
+    hundreds beats the best single marker on the data that chose it even when
+    no rule is genuinely better. :func:`combinations.bootstrap_best_rule`
+    measures that gap by rebuilding the whole menu on each resample, taking its
+    winner, and scoring that same rule back on the original cohort.
+
+    It is run **twice**, with the same budget and seed. Correcting only the
+    combination and comparing it against an uncorrected single is the error
+    recorded in ``CHANGES.md``: it reported a gain of +0.008 that was really
+    +0.050, because choosing the best of the singles costs almost exactly as
+    much as choosing the best of the combinations.
+    """
+    sides = [
+        ("best single", ("single",)),
+        ("best combination", ("and", "or", "count")),
+    ]
+    rows: list[dict] = []
+    for label, kinds in sides:
+        result = cb.bootstrap_best_rule(
+            df, markers, target, n_boot=n_boot, seed=seed,
+            max_size=max_size, kinds=kinds,
+        )
+        rows.append({
+            "side": label,
+            "best_rule": result.get("best_rule", ""),
+            "J_apparent": result.get("J_apparent", np.nan),
+            "optimism": result.get("optimism", np.nan),
+            "J_corrected": result.get("J_corrected", np.nan),
+            "winner_stability": result.get("winner_stability", np.nan),
+            "n_bootstrap": result.get("n_bootstrap", 0),
+        })
+    out = pd.DataFrame(rows)
+    gain = float(out.loc[1, "J_corrected"] - out.loc[0, "J_corrected"])
+    out["gain_corrected"] = gain
+    return out
+
+
+def rule_space_figure(menu: pd.DataFrame, *, top: int = 12) -> plt.Figure:
+    """Every rule in sensitivity-specificity space, singles marked apart."""
+    return cb.combination_figure(menu, top=top)
