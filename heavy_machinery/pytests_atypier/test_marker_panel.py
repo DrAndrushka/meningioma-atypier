@@ -492,3 +492,26 @@ def test_a_model_with_zero_scorable_patients_is_reported_not_mislabelled():
     assert row["n_scored"] == 0
     assert pd.isna(row["auc_shared_apparent"])
     assert "no patient had every predictor recorded" in row["note"]
+
+
+# --------------------------------------------------------------------------
+# Does filling in the missing scans change the story?
+# --------------------------------------------------------------------------
+def test_imputation_stability_reports_reproduction_rates():
+    """Rubin's rules can average an estimate, but not a choice.
+
+    A different rule can win in each draw, so the honest output is "the same
+    rule won in X% of draws", not a pooled winner.
+    """
+    draws = [count_frame(seed=s) for s in (1, 2, 3)]
+    out = mp.imputation_stability(draws, COUNT_MARKERS, TARGET, n_boot=30)
+    items = dict(zip(out["item"], out["value"]))
+    assert items["Draws"] == 3
+    assert 0.0 <= items["Top marker reproduced"] <= 1.0
+    assert 0.0 <= items["Winning rule reproduced"] <= 1.0
+    assert 0.0 <= items["Combination still beat the best single"] <= 1.0
+
+
+def test_imputation_stability_says_so_when_there_are_no_draws():
+    out = mp.imputation_stability([], COUNT_MARKERS, TARGET)
+    assert dict(zip(out["item"], out["value"]))["Draws"] == 0

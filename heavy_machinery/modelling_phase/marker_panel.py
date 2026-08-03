@@ -552,3 +552,64 @@ def model_vs_single(
             "note": note,
         })
     return pd.DataFrame(rows)
+
+
+def imputation_stability(
+    draws: Sequence[pd.DataFrame],
+    markers: Sequence[BinaryMarker],
+    target: str,
+    *,
+    n_boot: int = 200,
+    seed: int = DEFAULT_SEED,
+) -> pd.DataFrame:
+    """How often the observed-data story survives filling in the missing scans.
+
+    Reported as reproduction rates, not pooled estimates. Rubin's rules average
+    an *estimate*; they cannot average a *choice*, and both headline answers
+    here are choices — which marker ranks first, which rule wins. A pooled
+    "winner" would be an average of things that are not on the same scale.
+
+    The modal answer is carried alongside each rate so a low rate is
+    interpretable: "the same rule won in 40% of draws, and the runner-up was
+    this one" says something; "40%" alone does not.
+    """
+    if not draws:
+        return pd.DataFrame([{"item": "Draws", "value": 0,
+                              "note": "no MICE draws were found"}])
+
+    top_markers: list[str] = []
+    winners: list[str] = []
+    combo_wins = 0
+    scored = 0
+
+    for i, draw in enumerate(draws):
+        kept, _ = usable_markers(draw, markers, target)
+        if len(kept) < 2:
+            continue
+        panel = marker_panel_table(draw, kept, target)
+        if not panel.empty:
+            top_markers.append(str(panel.iloc[0]["marker"]))
+        corr = selection_correction(draw, kept, target, n_boot=n_boot, seed=seed + i)
+        winners.append(str(corr.loc[1, "best_rule"]))
+        if float(corr.loc[0, "gain_corrected"]) > 0:
+            combo_wins += 1
+        scored += 1
+
+    def _rate(values: Sequence[str]) -> tuple[float, str]:
+        if not values:
+            return (np.nan, "")
+        counts = pd.Series(values).value_counts()
+        return (float(counts.iloc[0] / len(values)), str(counts.index[0]))
+
+    top_rate, top_mode = _rate(top_markers)
+    win_rate, win_mode = _rate(winners)
+    return pd.DataFrame([
+        {"item": "Draws", "value": int(len(draws)), "note": f"{scored} scorable"},
+        {"item": "Top marker reproduced", "value": top_rate,
+         "note": f"most often: {top_mode}" if top_mode else ""},
+        {"item": "Winning rule reproduced", "value": win_rate,
+         "note": f"most often: {win_mode}" if win_mode else ""},
+        {"item": "Combination still beat the best single",
+         "value": (combo_wins / scored) if scored else np.nan,
+         "note": "share of draws with a positive corrected gain"},
+    ])
