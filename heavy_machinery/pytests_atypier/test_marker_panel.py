@@ -303,3 +303,51 @@ def test_shared_cohort_is_empty_not_broken_when_no_patient_has_everything():
     })
     markers = [mp.BinaryMarker("a", "A"), mp.BinaryMarker("b", "B")]
     assert mp.shared_cohort_frame(df, markers, TARGET).empty
+
+
+# --------------------------------------------------------------------------
+# Aim 2 — the count score
+# --------------------------------------------------------------------------
+def count_frame(n: int = 240, seed: int = 3) -> pd.DataFrame:
+    """Three signs, each independently more common in high-grade tumors."""
+    rng = np.random.default_rng(seed)
+    y = rng.binomial(1, 0.3, n).astype(bool)
+    cols = {
+        f"sign_{i}": pd.array(rng.binomial(1, 0.15 + 0.45 * y).astype(bool),
+                              dtype="boolean")
+        for i in range(3)
+    }
+    cols[TARGET] = pd.array(y, dtype="boolean")
+    return pd.DataFrame(cols)
+
+
+COUNT_MARKERS = [mp.BinaryMarker(f"sign_{i}", f"Sign {i}") for i in range(3)]
+
+
+def test_count_score_has_a_row_for_every_possible_count():
+    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
+    assert list(counts["n_criteria_met"]) == [0, 1, 2, 3]
+    assert counts["n"].sum() == counts.attrs["n_scored"]
+
+
+def test_risk_climbs_with_the_number_of_signs_present():
+    """The literal claim the section makes. If this fails, the claim is wrong."""
+    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
+    risks = counts[counts["n"] >= 10]["risk"].to_numpy(dtype=float)
+    assert risks[0] < risks[-1]
+
+
+def test_count_thresholds_are_scored_as_tests():
+    rules = mp.count_thresholds(count_frame(), COUNT_MARKERS, TARGET)
+    assert list(rules["rule_label"]) == [
+        "≥ 1 of 3 criteria", "≥ 2 of 3 criteria", "≥ 3 of 3 criteria",
+    ]
+    assert rules["youden_J"].notna().all()
+
+
+def test_count_score_figure_labels_the_axis_with_the_marker_count():
+    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
+    fig = mp.count_score_figure(counts, COUNT_MARKERS)
+    ax = fig.axes[0]
+    assert "3" in ax.get_xlabel()
+    plt.close(fig)

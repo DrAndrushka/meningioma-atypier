@@ -327,3 +327,37 @@ def shared_cohort_audit(
         rows.append({"item": entry["marker"], "value": 0,
                      "note": f"excluded — {entry['reason']}"})
     return pd.DataFrame(rows)
+
+
+def count_score(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+) -> pd.DataFrame:
+    """Observed high-grade rate at each number of signs present.
+
+    The answer to the study aim that involves no choosing. Every other
+    comparison in this section picks a winner and then has to pay for having
+    picked it; this one asks a question with no winner in it, so the number it
+    produces is the number.
+    """
+    return cb.count_score_table(df, markers, target, complete_only=True)
+
+
+def count_thresholds(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+) -> pd.DataFrame:
+    """The count used as a test: "at least one sign", "at least two", …"""
+    return cb.count_threshold_table(df, markers, target, complete_only=True)
+
+
+def count_score_figure(
+    counts: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    *,
+    prevalence: float | None = None,
+) -> plt.Figure:
+    """Threshold-phase figure, drawn on markers instead of cut-points."""
+    return cb.count_score_figure(counts, cutpoints=markers, prevalence=prevalence)
