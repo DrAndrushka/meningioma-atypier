@@ -232,6 +232,48 @@ def test_best_rule_optimism_is_positive_on_noise():
     assert 0.0 <= out["winner_stability"] <= 1.0
 
 
+def test_shared_cohort_keeps_only_fully_measured_patients():
+    df = tiny_frame()
+    cps = [cb.CutPoint(A, 5.0), cb.CutPoint(B, 5.0)]
+    shared = cb.shared_cohort(df, cps, TARGET)
+    # Rows 4, 5 and 6 each miss one of the two measurements.
+    assert list(shared.index) == [0, 1, 2, 3, 7]
+    assert shared[["a", "b"]].notna().all().all()
+
+
+def test_shared_cohort_gives_every_rule_one_denominator():
+    df = two_signal_frame(n=300, seed=9).copy()
+    df.loc[:29, "a"] = np.nan          # missing in a, present in b
+    df.loc[30:59, "b"] = np.nan        # and the other way round
+    cps = cb.cutpoints_for_rule(df, [A, B], TARGET, "youden")
+
+    full = cb.full_rule_menu(df, cps, TARGET)
+    assert full["n_used"].nunique() > 1     # the problem being fixed
+
+    shared = cb.shared_cohort(df, cps, TARGET)
+    menu = cb.full_rule_menu(shared, cps, TARGET)
+    assert menu["n_used"].nunique() == 1
+    assert int(menu["n_used"].iloc[0]) == len(shared)
+
+
+def test_shared_cohort_drops_a_missing_outcome():
+    df = tiny_frame()
+    df.loc[0, TARGET] = pd.NA
+    cps = [cb.CutPoint(A, 5.0), cb.CutPoint(B, 5.0)]
+    assert 0 not in cb.shared_cohort(df, cps, TARGET).index
+
+
+def test_shared_cohort_does_not_move_the_cutpoints():
+    """Only the patient set changes — otherwise the comparison is not like-for-like."""
+    df = two_signal_frame(n=300, seed=13).copy()
+    df.loc[:19, "a"] = np.nan
+    cps = cb.cutpoints_for_rule(df, [A, B], TARGET, "youden")
+    shared = cb.shared_cohort(df, cps, TARGET)
+    menu = cb.full_rule_menu(shared, cps, TARGET)
+    for cp in cps:
+        assert any(f"{cp.cutoff:.3g}" in label for label in menu["rule_label"])
+
+
 def test_kinds_restricts_the_menu_the_winner_is_chosen_from():
     df = two_signal_frame()
     cps = cb.cutpoints_for_rule(df, [A, B, C], TARGET, "youden")

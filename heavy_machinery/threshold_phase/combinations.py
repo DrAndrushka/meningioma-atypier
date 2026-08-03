@@ -118,6 +118,34 @@ def cutpoints_from_literature(
     return out
 
 
+def shared_cohort(
+    df: pd.DataFrame,
+    cutpoints: Sequence[CutPoint],
+    target: str,
+) -> pd.DataFrame:
+    """Only the patients who have **every** cut-point's measurement and the outcome.
+
+    Each rule scored on its own complete cases has its own denominator: an OR
+    of two flags needs one of them, an AND needs both, a single needs one. On
+    this cohort that is n = 318 for one rule, 329 for another and 309 for a
+    third — and a Youden J compared across non-identical patient sets is not a
+    comparison at all. Half the apparent difference between two rules can be
+    the difference between the two groups of patients they were scored on.
+
+    Restricting to the shared set costs patients and buys the only thing that
+    makes a head-to-head defensible: one denominator. Run both, report both,
+    and say which is primary — that is what :mod:`threshold_report` does.
+
+    The cut-points themselves are **not** re-derived here. They were frozen in
+    the single-metric section and only the patient set changes, so any
+    difference between the two runs is the denominator and nothing else.
+    """
+    keep = df[target].astype("boolean").notna()
+    for col in {cp.col for cp in cutpoints}:
+        keep &= pd.to_numeric(df[col], errors="coerce").notna()
+    return df.loc[keep.fillna(False)].copy()
+
+
 # --------------------------------------------------------------------------
 # Flags and their combinations
 # --------------------------------------------------------------------------

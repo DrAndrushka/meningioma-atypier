@@ -144,6 +144,24 @@ def _write_artifacts(root, *, tables=None, figures=True, manifest=True, models=F
             {"Metric": "ADC", "Evidence": "moderate", "Criteria met": "4 of 5",
              "What limits it": "MICE reproducibility"},
         ]),
+        "30_shared_combination_menu.csv": pd.DataFrame([
+            {"rule_label": "ADC ≤ 0.72", "kind": "single", "n_used": 304,
+             "youden_J": 0.24},
+        ]),
+        "31_shared_combination_reading_view.csv": pd.DataFrame([
+            {"Rule": "ADC ≤ 0.72", "Type": "single", "n": 304, "J": 0.24},
+        ]),
+        "32_shared_combination_verdict.csv": pd.DataFrame([{
+            "cohort": "shared denominator (all four measured)", "n_used": 304,
+            "best_single_rule": "Edema volume ≥ 4.76", "best_single_J": 0.258,
+            "best_single_J_corrected": 0.212,
+            "best_single_selection_optimism": 0.046, "best_single_stability": 0.32,
+            "best_rule": "ADC ≤ 0.72 OR Volume ≥ 15.1", "best_rule_J": 0.323,
+            "best_rule_J_corrected": 0.281, "selection_optimism": 0.042,
+            "winner_stability": 0.396, "gain_apparent": 0.065,
+            "gain_vs_best_single": 0.069, "continuous_AUC_corrected": 0.69,
+            "continuous_J_equivalent": 0.383, "n_used_continuous": 304,
+        }]),
     }
     for name, frame in (tables if tables is not None else defaults).items():
         frame.to_csv(thresholds / "tables" / name, index=False)
@@ -422,6 +440,38 @@ def test_falls_back_to_the_bare_test_when_grades_are_missing(tmp_path):
     html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
     assert "graded evidence table was not found" in html
     assert "measurements with a true turning point" in html
+
+
+# --------------------------------------------------------------------------
+# One denominator
+# --------------------------------------------------------------------------
+def test_shared_denominator_is_the_primary_comparison(cfg):
+    html = tr.build_report(cfg)
+    assert "Every rule below is scored on the same patients" in html
+    assert "Edema volume ≥ 4.76" in html          # the shared-cohort winner
+    assert "Secondary: all available data" in html
+
+
+def test_every_section_quotes_the_same_denominator(cfg):
+    """Sections 5, 7 and 9 must not disagree about which cohort they mean."""
+    data = tr.load_report_data(cfg)
+    verdict = tr.primary_verdict(data)
+    assert int(verdict["n_used"].iloc[0]) == 304
+    assert verdict["best_single_rule"].iloc[0] == "Edema volume ≥ 4.76"
+
+
+def test_falls_back_to_all_available_data_when_shared_is_missing(tmp_path):
+    root = _write_artifacts(tmp_path)
+    (root / "thresholds" / "tables" / "32_shared_combination_verdict.csv").unlink()
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "shared-denominator comparison was not found" in html
+    assert "Volume ≥ 15.1" in html                # the all-available-data winner
+
+
+def test_all_available_data_verdict_reports_n_as_varying(tmp_path):
+    root = _write_artifacts(tmp_path)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "varies" in html
 
 
 def test_defence_section_cites_live_numbers(cfg):

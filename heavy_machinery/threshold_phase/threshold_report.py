@@ -90,12 +90,16 @@ TABLE_FILES = {
     "evidence_criteria": "27_evidence_criteria.csv",
     "evidence": "28_threshold_evidence.csv",
     "evidence_reading": "29_threshold_evidence_reading_view.csv",
+    "shared_menu": "30_shared_combination_menu.csv",
+    "shared_reading": "31_shared_combination_reading_view.csv",
+    "shared_verdict": "32_shared_combination_verdict.csv",
 }
 
 FIGURE_FILES = {
     "risk_panel": "05_risk_curves_panel.svg",
     "combined_roc": "10_combined_roc.svg",
     "combination_space": "14_combination_space.svg",
+    "shared_combination_space": "33_shared_combination_space.svg",
     "count_score": "16_count_score.svg",
     "stability": "20_stability_youden.svg",
     "knee_stability": "22_knee_stability.svg",
@@ -610,7 +614,7 @@ def _threshold_card(v: Verdicts) -> tuple[str, str, str]:
 
 def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
                   facts: CohortFacts) -> str:
-    verdict = data.table("combination_verdict")
+    verdict = primary_verdict(data)
     v = facts.verdicts
 
     cards = [
@@ -1177,9 +1181,102 @@ read what any choice costs.</p>
 # ---------------------------------------------------------------------------
 # 5 — combinations
 # ---------------------------------------------------------------------------
+def primary_verdict(data: ThresholdReportData) -> pd.DataFrame:
+    """The combination verdict every section quotes: shared denominator if present.
+
+    One accessor so section 5, section 7 and section 9 cannot end up quoting
+    different denominators for the same claim.
+    """
+    shared = data.table("shared_verdict")
+    return shared if not shared.empty else data.table("combination_verdict")
+
+
+def _verdict_rows(verdict: pd.DataFrame) -> pd.DataFrame:
+    """The three-way comparison in one table, both J columns corrected alike."""
+    if verdict.empty:
+        return pd.DataFrame()
+    if "n_used" not in verdict.columns:
+        # The all-available-data run has no single n — that is its whole problem.
+        verdict = verdict.assign(n_used=np.nan)
+    return pd.DataFrame([
+        {"Compared": "Best single criterion",
+         "Which": str(_first(verdict, "best_single_rule", "")),
+         "n": _int(_first(verdict, "n_used"), "varies"),
+         "J as measured": _num(_first(verdict, "best_single_J")),
+         "J after correction": _num(_first(verdict, "best_single_J_corrected"), 3)},
+        {"Compared": "Best combined rule",
+         "Which": str(_first(verdict, "best_rule", "")),
+         "n": _int(_first(verdict, "n_used"), "varies"),
+         "J as measured": _num(_first(verdict, "best_rule_J")),
+         "J after correction": _num(_first(verdict, "best_rule_J_corrected"), 3)},
+        {"Compared": "All four, uncut",
+         "Which": "Logistic model on the raw numbers",
+         "n": _int(_first(verdict, "n_used_continuous")),
+         "J as measured": "—",
+         "J after correction": (f"{_num(_first(verdict, 'continuous_J_equivalent'))} "
+                                f"(AUC {_num(_first(verdict, 'continuous_AUC_corrected'))})")},
+    ])
+
+
+def _denominator_note(data: ThresholdReportData, shared: bool, shared_n: str,
+                      facts: CohortFacts) -> str:
+    """Why the head-to-head runs on one patient set, with the numbers that force it."""
+    if not shared:
+        return warning_box(
+            "The shared-denominator comparison was not found. Every rule below is scored "
+            "on its own complete cases, so the denominators differ between rows and the "
+            "Youden values are not directly comparable. Re-run the thresholder notebook "
+            "(section 6) to produce <code>32_shared_combination_verdict.csv</code>.")
+
+    spread = ""
+    menu = data.table("combination_menu")
+    if not menu.empty and {"n_used", "rule_label"} <= set(menu.columns):
+        lo = menu.loc[menu["n_used"].idxmin()]
+        hi = menu.loc[menu["n_used"].idxmax()]
+        spread = (f" On this cohort that runs from {_int(lo['n_used'])} patients "
+                  f"({_esc(str(lo['rule_label']))}) to {_int(hi['n_used'])} "
+                  f"({_esc(str(hi['rule_label']))}).")
+
+    return _key(
+        "Every rule below is scored on the same patients.",
+        f"A rule scored on its own complete cases has its own denominator: an OR needs one "
+        f"of its two measurements, an AND needs both, a single needs one.{spread} "
+        f"<b>A Youden J compared across non-identical patient sets is not a comparison</b> "
+        f"— part of any difference between two rows is the difference between the two "
+        f"groups of patients. So the head-to-head runs on the {shared_n} patients who have "
+        f"all four measurements. The cut-points are unchanged; only the patient set is.")
+
+
+def _secondary_denominator_block(data: ThresholdReportData, shared: bool,
+                                 full_verdict: pd.DataFrame,
+                                 full_reading: pd.DataFrame, shared_n: str) -> str:
+    """The all-available-data version, kept but demoted and labelled as such."""
+    if not shared or full_verdict.empty:
+        return ""
+    return details_block(
+        "Secondary: all available data (denominator varies by rule — not comparable "
+        "across rows)",
+        "<p>The same menu with every rule scored on everyone who has its own inputs. "
+        "More patients per row, which is why it is kept: it is the better estimate of "
+        "each rule taken <em>on its own</em>. It is the worse basis for ranking them "
+        f"against each other, which is why the {shared_n}-patient version above is "
+        "primary.</p>"
+        + table_to_html(_verdict_rows(full_verdict))
+        + (table_to_html(full_reading, max_rows=40) if not full_reading.empty else ""))
+
+
 def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
-    verdict = data.table("combination_verdict")
-    reading = data.table("combination_reading")
+    # Primary comparison: every rule on the same patients. The all-available-data
+    # version is kept below it, because comparing a J computed on 318 patients
+    # with one computed on 329 is not a comparison.
+    shared_verdict = data.table("shared_verdict")
+    full_verdict = data.table("combination_verdict")
+    verdict = shared_verdict if not shared_verdict.empty else full_verdict
+    shared = not shared_verdict.empty
+
+    reading = (data.table("shared_reading") if shared
+               else data.table("combination_reading"))
+    full_reading = data.table("combination_reading")
     counts = data.table("count_score")
     missing = data.table("flag_missingness")
 
@@ -1197,20 +1294,8 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
     except (TypeError, ValueError):
         helped = False
 
-    verdict_display = pd.DataFrame()
-    if not verdict.empty:
-        verdict_display = pd.DataFrame([
-            {"Compared": "Best single criterion",
-             "Which": str(_first(verdict, "best_single_rule", "")),
-             "J as measured": _num(_first(verdict, "best_single_J")),
-             "J after correction": _num(single_corr, 3)},
-            {"Compared": "Best combined rule", "Which": str(best_rule),
-             "J as measured": _num(_first(verdict, "best_rule_J")),
-             "J after correction": _num(_first(verdict, "best_rule_J_corrected"), 3)},
-            {"Compared": "All four, uncut", "Which": "Logistic model on the raw numbers",
-             "J as measured": "—",
-             "J after correction": f"{_num(cont_equiv)} (AUC {_num(cont_auc)})"},
-        ])
+    verdict_display = _verdict_rows(verdict)
+    shared_n = _int(_first(verdict, "n_used"))
 
     count_display = pd.DataFrame()
     ladder = ""
@@ -1261,9 +1346,11 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
 <li><b>Count</b> — count how many criteria the tumour meets and use that as a score.</li>
 </ul>
 
+{_denominator_note(data, shared, shared_n, facts)}
+
 <h3>The figure that answers it</h3>
 
-{_figure(data.figures.get("combination_space"),
+{_figure(data.figures.get("shared_combination_space" if shared else "combination_space"),
          "Left: every rule by its sensitivity and specificity; diamonds are single criteria, "
          "dotted diagonals join rules of equal usefulness. Right: rules ranked, with the uncut "
          "model as a dashed line.")}
@@ -1332,8 +1419,11 @@ remember, no arithmetic at the workstation.</p>
       "<em>saying</em> what the measurements imply, which is what a clinician deciding how "
       "worried to be actually needs.")}
 
-{details_block("All rules, ranked",
+{details_block(f"All rules, ranked — one denominator ({shared_n} patients)"
+               if shared else "All rules, ranked",
                table_to_html(reading, max_rows=40) if not reading.empty else "")}
+
+{_secondary_denominator_block(data, shared, full_verdict, full_reading, shared_n)}
 """
 
 
@@ -1454,7 +1544,7 @@ a filled-in dataset nothing is missing, so every patient gets a count.</p>
 # 7 — trade-offs
 # ---------------------------------------------------------------------------
 def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
-    verdict = data.table("combination_verdict")
+    verdict = primary_verdict(data)
     models = data.model_aucs
 
     cont_auc = _first(verdict, "continuous_AUC_corrected")
@@ -1615,7 +1705,7 @@ this table.</p>
 # 9 — ESNR defence
 # ---------------------------------------------------------------------------
 def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
-    verdict = data.table("combination_verdict")
+    verdict = primary_verdict(data)
     models = data.model_aucs
     thresholds = data.table("thresholds")
 
@@ -1727,7 +1817,8 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
             f"{_pct(_first(verdict, 'winner_stability'))} of resampled cohorts, so the "
             f"ranking itself is largely noise. The uncut four-measurement model beats every "
             f"cut rule regardless.",
-            f"Section 5 verdict table: corrected J "
+            f"Section 5 verdict table, all rules on the same "
+            f"{_int(_first(verdict, 'n_used'), 'available')} patients: corrected J "
             f"{_num(_first(verdict, 'best_rule_J_corrected'), 3)} combined vs "
             f"{_num(_first(verdict, 'best_single_J_corrected'), 3)} single; uncut "
             f"J-equivalent {_num(_first(verdict, 'continuous_J_equivalent'))}."),
@@ -1757,7 +1848,7 @@ line under every answer points at where in this document it lives.</p>
 # 10 — reference
 # ---------------------------------------------------------------------------
 def render_reference(data: ThresholdReportData, facts: CohortFacts) -> str:
-    verdict = data.table("combination_verdict")
+    verdict = primary_verdict(data)
     risk = data.table("risk_curves")
     thresholds = data.table("thresholds")
 
