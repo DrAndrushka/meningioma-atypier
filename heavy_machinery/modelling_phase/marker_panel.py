@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+import combinations as cb
 import plot_style as ps
 from diagnostic_accuracy import binary_diagnostic_metrics
 from thresholds import format_pct_ci
@@ -251,3 +252,78 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
         "A ratio of 1 says nothing; grey intervals cross it",
     )
     return fig
+
+
+def usable_markers(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+) -> tuple[list[BinaryMarker], list[dict]]:
+    """Markers that vary. A column that is always the same answers nothing.
+
+    An all-absent sign has no true positives and an undefined likelihood ratio;
+    an always-present one has no true negatives. Both would enter the rule
+    search and produce cells of zeros, so they are dropped here with the reason
+    recorded rather than silently.
+    """
+    kept: list[BinaryMarker] = []
+    dropped: list[dict] = []
+    y = df[target].astype("boolean")
+    for marker in markers:
+        flags = marker.flag(df)[y.notna()]
+        n_true = int((flags == True).sum())   # noqa: E712 - nullable boolean
+        n_false = int((flags == False).sum())  # noqa: E712
+        if n_true == 0:
+            dropped.append({"marker": marker.col,
+                            "reason": "never present in this cohort"})
+        elif n_false == 0:
+            dropped.append({"marker": marker.col,
+                            "reason": "always present in this cohort"})
+        else:
+            kept.append(marker)
+    return kept, dropped
+
+
+def shared_cohort_frame(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+) -> pd.DataFrame:
+    """The patients every rule is scored on — threshold-phase logic, reused."""
+    if not markers:
+        return df.iloc[0:0].copy()
+    return cb.shared_cohort(df, markers, target)
+
+
+def shared_cohort_audit(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+    dropped: Sequence[dict] = (),
+) -> pd.DataFrame:
+    """What the shared set cost, per marker, so the denominator is auditable.
+
+    A restriction to complete cases is defensible; a restriction nobody can
+    check is not. This is the table that lets a reader see the loss is one or
+    two measurements rather than the marker panel as a whole.
+    """
+    shared = shared_cohort_frame(df, markers, target)
+    y = df[target].astype("boolean")
+    rows: list[dict] = [
+        {"item": "Patients in the cohort", "value": int(len(df)), "note": ""},
+        {"item": "Patients in the shared set", "value": int(len(shared)),
+         "note": "every marker observed and the outcome known"},
+        {"item": "High grade in the shared set",
+         "value": int(shared[target].astype("boolean").sum()) if len(shared) else 0,
+         "note": ""},
+        {"item": "Markers required", "value": int(len(markers)),
+         "note": ", ".join(m.col for m in markers)},
+    ]
+    for marker in markers:
+        missing = int((marker.flag(df).isna() & y.notna()).sum())
+        rows.append({"item": marker.col, "value": missing,
+                     "note": "patients this marker alone was missing for"})
+    for entry in dropped:
+        rows.append({"item": entry["marker"], "value": 0,
+                     "note": f"excluded — {entry['reason']}"})
+    return pd.DataFrame(rows)

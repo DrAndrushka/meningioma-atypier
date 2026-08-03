@@ -252,3 +252,54 @@ def test_lr_forest_returns_a_figure_even_with_nothing_to_plot():
     fig = mp.lr_forest_figure(pd.DataFrame(columns=["label", "lr_pos"]))
     assert fig is not None
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Aim 2 — one denominator
+# --------------------------------------------------------------------------
+def sparse_frame() -> pd.DataFrame:
+    """Six patients; ``sign_b`` is missing for two of them."""
+    return pd.DataFrame({
+        "sign_a": pd.array([True, False, True, False, True, False], dtype="boolean"),
+        "sign_b": pd.array([True, False, None, None, True, True], dtype="boolean"),
+        "always_off": pd.array([False] * 6, dtype="boolean"),
+        TARGET: pd.array([True, False, True, False, True, False], dtype="boolean"),
+    })
+
+
+def test_shared_cohort_keeps_only_patients_with_every_marker_observed():
+    df = sparse_frame()
+    markers = [mp.BinaryMarker("sign_a", "A"), mp.BinaryMarker("sign_b", "B")]
+    shared = mp.shared_cohort_frame(df, markers, TARGET)
+    assert len(shared) == 4
+    assert shared["sign_b"].notna().all()
+
+
+def test_a_marker_that_never_fires_is_dropped_with_a_reason():
+    """An all-false column has an undefined likelihood ratio and no rule value."""
+    df = sparse_frame()
+    markers = [mp.BinaryMarker("sign_a", "A"), mp.BinaryMarker("always_off", "Off")]
+    kept, dropped = mp.usable_markers(df, markers, TARGET)
+    assert [m.col for m in kept] == ["sign_a"]
+    assert dropped[0]["marker"] == "always_off"
+    assert "never" in dropped[0]["reason"].lower()
+
+
+def test_shared_cohort_audit_records_what_each_marker_cost():
+    df = sparse_frame()
+    markers = [mp.BinaryMarker("sign_a", "A"), mp.BinaryMarker("sign_b", "B")]
+    audit = mp.shared_cohort_audit(df, markers, TARGET, dropped=[])
+    assert set(audit.columns) == {"item", "value", "note"}
+    rows = dict(zip(audit["item"], audit["value"]))
+    assert rows["Patients in the shared set"] == 4
+    assert rows["sign_b"] == 2  # patients this marker cost
+
+
+def test_shared_cohort_is_empty_not_broken_when_no_patient_has_everything():
+    df = pd.DataFrame({
+        "a": pd.array([True, None], dtype="boolean"),
+        "b": pd.array([None, True], dtype="boolean"),
+        TARGET: pd.array([True, False], dtype="boolean"),
+    })
+    markers = [mp.BinaryMarker("a", "A"), mp.BinaryMarker("b", "B")]
+    assert mp.shared_cohort_frame(df, markers, TARGET).empty
