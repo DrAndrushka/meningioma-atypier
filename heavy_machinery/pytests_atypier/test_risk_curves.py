@@ -412,3 +412,79 @@ def test_panel_survives_a_blank_curve():
     _, curves = rc.risk_curve_summary(small, [VOL], TARGET, n_boot=5)
     fig = rc.risk_curve_panel(small, [VOL], TARGET, curves)
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Zero inflation
+# --------------------------------------------------------------------------
+def zero_inflated_frame(n: int = 400, seed: int = 21) -> pd.DataFrame:
+    """40% exactly zero at low risk; among the rest, risk is FLAT in volume.
+
+    The whole-cohort spline should find a bend anyway — the bend is the step
+    between absent and present — and the non-zero refit should find nothing.
+    That is the failure mode the three-way split exists to expose.
+    """
+    rng = np.random.default_rng(seed)
+    zero = rng.random(n) < 0.40
+    x = np.where(zero, 0.0, rng.uniform(0.5, 60.0, n))
+    y = rng.binomial(1, np.where(zero, 0.10, 0.45))
+    return pd.DataFrame({"vol": x, TARGET: pd.array(y.astype(bool), dtype="boolean")})
+
+
+def test_zero_share_counts_exact_zeros_and_both_risks():
+    df = zero_inflated_frame()
+    row = rc.zero_share(df, [VOL], TARGET).iloc[0]
+    assert row["n_zero"] == int((df["vol"] == 0).sum())
+    assert row["pct_zero"] == pytest.approx(100 * row["n_zero"] / row["n_analysed"])
+    assert row["zero_inflated"]
+    assert row["risk_positive"] > row["risk_zero"]
+    assert row["risk_ratio"] == pytest.approx(row["risk_positive"] / row["risk_zero"])
+
+
+def test_zero_share_reports_percent_not_a_fraction():
+    """The shared CSV formatter rounds pct_* on a 0-100 scale."""
+    df = zero_inflated_frame()
+    assert rc.zero_share(df, [VOL], TARGET).iloc[0]["pct_zero"] > 1.0
+
+
+def test_a_metric_with_no_zeros_is_not_flagged():
+    df = linear_risk_frame()
+    df["vol"] = df["vol"] + 1.0
+    assert not rc.zero_share(df, [VOL], TARGET).iloc[0]["zero_inflated"]
+
+
+def test_presence_rule_skips_a_metric_nobody_has_a_zero_of():
+    """An all-positive flag has an empty 2x2 column and no valid chi-square."""
+    df = linear_risk_frame()
+    df["vol"] = df["vol"] + 1.0
+    assert rc.presence_rules(df, [VOL], TARGET).empty
+
+
+def test_presence_rule_scores_present_versus_absent():
+    df = zero_inflated_frame()
+    row = rc.presence_rules(df, [VOL], TARGET).iloc[0]
+    assert row["TP"] + row["FN"] == int(df[TARGET].astype("boolean").sum())
+    assert row["youden_J"] == pytest.approx(row["sensitivity"] + row["specificity"] - 1)
+
+
+def test_curvature_from_the_zeros_alone_does_not_survive_the_refit():
+    """The point of P1.3, as a regression test on synthetic data."""
+    df = zero_inflated_frame()
+    whole, _ = rc.risk_curve_summary(df, [VOL], TARGET, n_boot=60, seed=3)
+    subset = rc.positive_only(df, VOL)
+    nonzero, _ = rc.risk_curve_summary(subset, [VOL], TARGET, n_boot=60, seed=3)
+
+    assert whole.iloc[0]["nonlinearity_p"] < 0.05      # the whole-cohort "threshold"
+    assert nonzero.iloc[0]["nonlinearity_p"] > 0.05    # nothing left once zeros go
+    assert len(subset) == int((df["vol"] > 0).sum())
+
+
+def test_zero_inflation_comparison_has_one_row_per_fit():
+    df = zero_inflated_frame()
+    whole, _ = rc.risk_curve_summary(df, [VOL], TARGET, n_boot=20, seed=1)
+    nonzero, _ = rc.risk_curve_summary(rc.positive_only(df, VOL), [VOL], TARGET,
+                                       n_boot=20, seed=1)
+    table = rc.zero_inflation_comparison(
+        whole, rc.presence_rules(df, [VOL], TARGET), nonzero, VOL)
+    assert len(table) == 3
+    assert list(table["Fitted on"])[1].startswith("Present vs absent")

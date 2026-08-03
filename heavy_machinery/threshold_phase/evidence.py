@@ -300,6 +300,8 @@ def threshold_evidence(
     risk_table: pd.DataFrame,
     risk_stability: pd.DataFrame | None = None,
     *,
+    positive_risk_table: pd.DataFrame | None = None,
+    zero_share_table: pd.DataFrame | None = None,
     alpha: float = ALPHA,
     mice_cut: float = MICE_REPRODUCIBLE_CUT,
     interiority_floor: float = BOUNDARY_PERCENTILE,
@@ -310,9 +312,32 @@ def threshold_evidence(
     Every input column already exists in ``03_risk_curves.csv`` and
     ``21_risk_curve_stability.csv``; nothing is refitted here, so the grade
     and the tables can never disagree.
+
+    ``positive_risk_table`` and ``zero_share_table`` add **non-scoring**
+    context for zero-inflated metrics: the share of exact zeros, and the
+    non-linearity p when the curve is refitted on patients with a non-zero
+    value. They do not move the grade — they were not among the five
+    pre-specified criteria, and promoting them after seeing them is the
+    after-the-fact rule-making this hierarchy exists to prevent. They are
+    reported because a curvature that survives the whole cohort and vanishes
+    on the non-zero subset was substantially detecting present-versus-absent,
+    which changes what the threshold can be said to mean.
     """
     if risk_table.empty:
         return pd.DataFrame()
+
+    nonzero_p: dict[str, float] = {}
+    nonzero_knee: dict[str, bool] = {}
+    if positive_risk_table is not None and not positive_risk_table.empty:
+        for _, r in positive_risk_table.iterrows():
+            nonzero_p[str(r.get("column"))] = _f(r.get("nonlinearity_p"))
+            nonzero_knee[str(r.get("column"))] = _truthy(r.get("knee_found"))
+
+    zero_pct: dict[str, float] = {}
+    if zero_share_table is not None and not zero_share_table.empty:
+        for _, r in zero_share_table.iterrows():
+            if _truthy(r.get("zero_inflated")):
+                zero_pct[str(r.get("column"))] = _f(r.get("pct_zero"))
 
     knee_rates: dict[str, float] = {}
     if risk_stability is not None and not risk_stability.empty:
@@ -350,14 +375,47 @@ def threshold_evidence(
             "failed_criteria": "; ".join(failed),
             "knee_ci_ratio": ci_ratio,
             "AUC": _f(row.get("AUC")),
+            "pct_zero": zero_pct.get(col, np.nan),
+            "nonlinearity_p_nonzero_only": nonzero_p.get(col, np.nan),
+            "knee_found_nonzero_only": nonzero_knee.get(col, pd.NA),
         }
         for key, (ok, detail) in scored.items():
             entry[f"pass_{key}"] = bool(ok)
             entry[f"detail_{key}"] = detail
         entry["verdict_note"] = _verdict_note(verdict, failed, scored)
+        entry["context_note"] = _context_note(entry)
         rows.append(entry)
 
     return pd.DataFrame(rows)
+
+
+def _context_note(entry: dict) -> str:
+    """The reported-but-not-scoring qualifiers, in one sentence each.
+
+    The one that matters most on this cohort: a curvature that holds on the
+    whole cohort and vanishes once the exact zeros are removed was largely
+    detecting present-versus-absent, not a value above which risk turns.
+    """
+    bits: list[str] = []
+    pct = entry.get("pct_zero", np.nan)
+    p_nz = entry.get("nonlinearity_p_nonzero_only", np.nan)
+    if np.isfinite(pct):
+        bits.append(f"{pct:.1f}% of measured patients are exactly zero")
+    if np.isfinite(p_nz):
+        gone = p_nz >= ALPHA
+        bits.append(
+            f"refitted on non-zero values only, non-linearity {ps.format_p(p_nz)}"
+            + (" — the curvature does not survive, so the whole-cohort knee is "
+               "substantially present-versus-absent" if gone
+               else " — the curvature survives on measured values alone"))
+
+    ratio = entry.get("knee_ci_ratio", np.nan)
+    if np.isfinite(ratio) and ratio >= 3.0:
+        bits.append(f"knee interval spans {ratio:.1f}× from end to end")
+    auc = entry.get("AUC", np.nan)
+    if np.isfinite(auc) and auc < 0.60:
+        bits.append(f"AUC {auc:.2f} — little discrimination to locate a knee in")
+    return "; ".join(bits)
 
 
 def _verdict_note(verdict: str, failed: list[str], scored: dict) -> str:
@@ -383,4 +441,6 @@ def evidence_reading_view(table: pd.DataFrame) -> pd.DataFrame:
     out["Criteria met"] = (table["n_criteria_passed"].astype(str)
                            + " of " + table["n_criteria"].astype(str))
     out["What limits it"] = table["limiting_criterion"].replace("", "—")
+    if "context_note" in table.columns:
+        out["Read alongside (does not score)"] = table["context_note"].replace("", "—")
     return pd.DataFrame(out)

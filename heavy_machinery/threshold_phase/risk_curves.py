@@ -606,6 +606,160 @@ def risk_curve_reading_view(table: pd.DataFrame) -> pd.DataFrame:
 
 
 # --------------------------------------------------------------------------
+# Zero inflation — "no edema at all" is a category, not a small number
+# --------------------------------------------------------------------------
+# A metric with at least this share of exact zeros is treated as zero-inflated
+# and gets the three-way analysis below rather than one whole-cohort spline.
+ZERO_INFLATION_FLOOR = 0.10
+
+
+def zero_share(
+    df: pd.DataFrame,
+    metrics: Sequence[Metric],
+    target: str,
+    *,
+    floor: float = ZERO_INFLATION_FLOOR,
+) -> pd.DataFrame:
+    """How many patients sit at exactly zero, and how their risk differs.
+
+    A spline fitted across a zero-inflated metric puts its 10th-percentile knot
+    *at* zero and then reports the resulting bend as a threshold. On this
+    cohort a third of patients have no peritumoral edema at all, so a "threshold
+    at 3.5 cc" is substantially detecting edema present versus absent — a
+    binary distinction a radiologist makes by looking, not by measuring.
+
+    Reported before the curve so the reader can see which claim is which.
+    """
+    rows: list[dict] = []
+    y_all = df[target].astype("boolean")
+    for metric in metrics:
+        x = pd.to_numeric(df[metric.col], errors="coerce")
+        keep = x.notna() & y_all.notna()
+        x, y = x[keep], y_all[keep].astype(bool)
+        n = int(len(x))
+        if n == 0:
+            continue
+        at_zero = x == 0
+        n_zero = int(at_zero.sum())
+
+        def _risk(mask: pd.Series) -> tuple[float, float, float, int, int]:
+            k, m = int(y[mask].sum()), int(mask.sum())
+            if m == 0:
+                return np.nan, np.nan, np.nan, 0, 0
+            lo, hi = ps.wilson_ci(k, m)
+            return k / m, float(lo), float(hi), k, m
+
+        r0, lo0, hi0, k0, m0 = _risk(at_zero)
+        r1, lo1, hi1, k1, m1 = _risk(~at_zero)
+        rows.append({
+            "metric": metric.label,
+            "column": metric.col,
+            "n_analysed": n,
+            "n_zero": n_zero,
+            # Percent, not a fraction: the shared CSV formatter rounds a column
+            # named pct_* on a 0–100 scale, and 36.6% would export as "0.4".
+            "pct_zero": (100.0 * n_zero / n) if n else np.nan,
+            "n_positive": m1,
+            "smallest_positive": float(x[x > 0].min()) if (x > 0).any() else np.nan,
+            "events_zero": k0, "risk_zero": r0,
+            "risk_zero_lo": lo0, "risk_zero_hi": hi0,
+            "events_positive": k1, "risk_positive": r1,
+            "risk_positive_lo": lo1, "risk_positive_hi": hi1,
+            "risk_ratio": (r1 / r0) if (np.isfinite(r0) and r0 > 0) else np.nan,
+            "zero_inflated": bool(n_zero / n >= floor) if n else False,
+            "zero_inflation_floor_pct": 100.0 * floor,
+        })
+    return pd.DataFrame(rows)
+
+
+def presence_rules(
+    df: pd.DataFrame,
+    metrics: Sequence[Metric],
+    target: str,
+) -> pd.DataFrame:
+    """"Is there any at all?" scored as a yes/no test, with the full 2×2.
+
+    The comparator the 3.5 cc cut-point has to beat. If a rule that needs no
+    measurement at all performs as well, the measured cut-point is not what is
+    doing the work.
+    """
+    from diagnostic_accuracy import binary_diagnostic_metrics
+
+    rows: list[dict] = []
+    for metric in metrics:
+        x = pd.to_numeric(df[metric.col], errors="coerce")
+        present = pd.Series(pd.NA, index=df.index, dtype="boolean")
+        present[x.notna()] = (x[x.notna()] > 0)
+        # A metric nobody has a zero of flags everyone, which is not a test:
+        # the 2x2 has an empty column and the chi-square is undefined.
+        if present.dropna().nunique() < 2:
+            continue
+        label = f"{metric.label} present (> 0)"
+        row = binary_diagnostic_metrics(df, target, label, predictor_series=present)
+        row.update({
+            "metric": metric.label,
+            "column": metric.col,
+            "rule": "presence",
+            "rule_label": label,
+            "youden_J": row["sensitivity"] + row["specificity"] - 1.0,
+        })
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def positive_only(df: pd.DataFrame, metric: Metric) -> pd.DataFrame:
+    """The patients with a non-zero value — where the metric is a measurement."""
+    x = pd.to_numeric(df[metric.col], errors="coerce")
+    return df.loc[x.notna() & (x > 0)].copy()
+
+
+def zero_inflation_comparison(
+    whole: pd.DataFrame,
+    presence: pd.DataFrame,
+    positive: pd.DataFrame,
+    metric: Metric,
+) -> pd.DataFrame:
+    """The three fits side by side, so the reader can pick the defensible claim.
+
+    ``whole`` and ``positive`` are ``risk_curve_summary`` tables; ``presence``
+    is a :func:`presence_rules` table. One row each, same columns, so the
+    report can print them as one block.
+    """
+    def _curve_row(table: pd.DataFrame, what: str) -> dict:
+        sub = table[table["column"] == metric.col]
+        if sub.empty:
+            return {"Fitted on": what, "n": "—", "Non-linearity p": "—",
+                    "Steepest rise": "—", "95% CI": "—"}
+        r = sub.iloc[0]
+        knee = bool(r.get("knee_found"))
+        return {
+            "Fitted on": what,
+            "n": f"{int(r['n'])} ({int(r['events'])} high grade)",
+            "Non-linearity p": ps.format_p(r["nonlinearity_p"]),
+            "Steepest rise": f"{r['steepest_x']:.3g}" if knee else "no interior threshold",
+            "95% CI": (f"{r['steepest_lo']:.3g}–{r['steepest_hi']:.3g}"
+                       if knee and pd.notna(r.get("steepest_lo")) else "—"),
+        }
+
+    rows = [_curve_row(whole, "Whole cohort (zeros included)")]
+
+    pres = presence[presence["column"] == metric.col]
+    if not pres.empty:
+        p = pres.iloc[0]
+        rows.append({
+            "Fitted on": "Present vs absent (no measurement needed)",
+            "n": f"{int(p['n_used'])} ({int(p['TP'] + p['FN'])} high grade)",
+            "Non-linearity p": "n/a — binary",
+            "Steepest rise": (f"sens {p['sensitivity'] * 100:.0f}% / "
+                              f"spec {p['specificity'] * 100:.0f}%, J {p['youden_J']:.2f}"),
+            "95% CI": "—",
+        })
+
+    rows.append(_curve_row(positive, "Only patients with a non-zero value"))
+    return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------
 # Figures
 # --------------------------------------------------------------------------
 def _style_metric_axis(ax: plt.Axes, metric: Metric, values: np.ndarray) -> None:

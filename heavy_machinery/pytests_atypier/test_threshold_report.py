@@ -144,6 +144,34 @@ def _write_artifacts(root, *, tables=None, figures=True, manifest=True, models=F
             {"Metric": "ADC", "Evidence": "moderate", "Criteria met": "4 of 5",
              "What limits it": "MICE reproducibility"},
         ]),
+        "34_zero_inflation.csv": pd.DataFrame([
+            {"metric": "ADC", "column": "adc", "n_analysed": 309, "n_zero": 0,
+             "pct_zero": 0.0, "n_positive": 309, "risk_zero": np.nan,
+             "risk_zero_lo": np.nan, "risk_zero_hi": np.nan, "risk_positive": 0.31,
+             "risk_positive_lo": 0.26, "risk_positive_hi": 0.36,
+             "risk_ratio": np.nan, "zero_inflated": False},
+            {"metric": "Volume", "column": "vol", "n_analysed": 333, "n_zero": 122,
+             "pct_zero": 36.6, "n_positive": 211, "risk_zero": 0.189,
+             "risk_zero_lo": 0.129, "risk_zero_hi": 0.267, "risk_positive": 0.36,
+             "risk_positive_lo": 0.298, "risk_positive_hi": 0.427,
+             "risk_ratio": 1.911, "zero_inflated": True},
+        ]),
+        "35_presence_rules.csv": pd.DataFrame([
+            {"metric": "Volume", "column": "vol", "rule": "presence",
+             "rule_label": "Volume present (> 0)", "n_used": 333,
+             "TP": 76, "FP": 135, "FN": 23, "TN": 99,
+             "sensitivity": 0.768, "specificity": 0.423, "youden_J": 0.191},
+        ]),
+        "36_risk_curves_nonzero_only.csv": pd.DataFrame([
+            {"metric": "Volume", "column": "vol", "n": 211, "events": 76,
+             "nonlinearity_p": 0.180, "knee_found": False, "steepest_x": 6.0,
+             "steepest_lo": np.nan, "steepest_hi": np.nan},
+        ]),
+        "37_zero_inflation_comparison.csv": pd.DataFrame([
+            {"Metric": "Volume", "Fitted on": "Whole cohort (zeros included)",
+             "n": "333 (99 high grade)", "Non-linearity p": "= 0.007",
+             "Steepest rise": "3.51", "95% CI": "1.7–8"},
+        ]),
         "30_shared_combination_menu.csv": pd.DataFrame([
             {"rule_label": "ADC ≤ 0.72", "kind": "single", "n_used": 304,
              "youden_J": 0.24},
@@ -472,6 +500,27 @@ def test_all_available_data_verdict_reports_n_as_varying(tmp_path):
     root = _write_artifacts(tmp_path)
     html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
     assert "varies" in html
+
+
+# --------------------------------------------------------------------------
+# Zero inflation
+# --------------------------------------------------------------------------
+def test_zero_inflation_is_a_section_3_method_note(cfg):
+    html = tr.build_report(cfg)
+    assert "none at all" in html
+    assert "36.6%" in html          # the real share, not "a quarter"
+    assert "a quarter of this cohort" not in html
+    assert "Which of the three is the defensible claim" in html
+
+
+def test_caveat_names_the_zero_inflated_metrics_from_the_table(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "34_zero_inflation.csv"
+    flat = pd.read_csv(path)
+    flat["zero_inflated"] = False
+    flat.to_csv(path, index=False)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "No measurement in this run was zero-inflated" in html
 
 
 def test_defence_section_cites_live_numbers(cfg):

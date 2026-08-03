@@ -93,6 +93,10 @@ TABLE_FILES = {
     "shared_menu": "30_shared_combination_menu.csv",
     "shared_reading": "31_shared_combination_reading_view.csv",
     "shared_verdict": "32_shared_combination_verdict.csv",
+    "zero_share": "34_zero_inflation.csv",
+    "presence_rules": "35_presence_rules.csv",
+    "nonzero_curves": "36_risk_curves_nonzero_only.csv",
+    "zero_comparison": "37_zero_inflation_comparison.csv",
 }
 
 FIGURE_FILES = {
@@ -811,6 +815,89 @@ whether a rule can work is not whether the groups differ — it is how far they 
 # ---------------------------------------------------------------------------
 # 3 — risk curves
 # ---------------------------------------------------------------------------
+def render_zero_inflation(data: ThresholdReportData) -> str:
+    """Section 3's method note on zero-inflated metrics, and the three-way fit.
+
+    Promoted here from the caveats list, because it is not a caveat: for a
+    metric where a third of the cohort sits at exactly zero, the whole-cohort
+    spline is answering a different question from the one the threshold claims
+    to answer, and the reader has to know that before reading the knee.
+    """
+    zero = data.table("zero_share")
+    if zero.empty or "zero_inflated" not in zero.columns:
+        return ""
+    hits = zero[zero["zero_inflated"].map(_truthy)]
+    if hits.empty:
+        return ""
+
+    lines = []
+    for _, r in hits.iterrows():
+        lines.append(
+            f"<li><b>{_esc(r['metric'])}</b> — {_int(r['n_zero'])} of "
+            f"{_int(r['n_analysed'])} measured patients ({_num(r['pct_zero'], 1)}%) are "
+            f"exactly zero. Risk {_pct(r['risk_zero'])} "
+            f"({_pct(r['risk_zero_lo'])}–{_pct(r['risk_zero_hi'])}) with none against "
+            f"{_pct(r['risk_positive'])} ({_pct(r['risk_positive_lo'])}–"
+            f"{_pct(r['risk_positive_hi'])}) with any — a "
+            f"{_num(r['risk_ratio'], 1)}-fold difference before a single cut-point is "
+            f"drawn.</li>")
+
+    comparison = data.table("zero_comparison")
+    comparison_html = ""
+    if not comparison.empty:
+        cols = [c for c in comparison.columns if c != "Metric"]
+        comparison_html = table_to_html(comparison[["Metric"] + cols])
+
+    # The one sentence that decides what the knee can be called.
+    nonzero = data.table("nonzero_curves")
+    survives = []
+    if not nonzero.empty and "nonlinearity_p" in nonzero.columns:
+        for _, r in nonzero.iterrows():
+            survives.append((str(r["metric"]),
+                             float(r["nonlinearity_p"]),
+                             _truthy(r.get("knee_found"))))
+    verdict_html = ""
+    if survives:
+        lost = [m for m, p, _ in survives if not (p < evidence.ALPHA)]
+        kept = [m for m, p, _ in survives if p < evidence.ALPHA]
+        parts = []
+        if lost:
+            parts.append(
+                f"<b>{_esc(_join_names(lost))}</b> "
+                f"{'loses' if len(lost) == 1 else 'lose'} the curvature entirely once "
+                f"the zeros are removed (" +
+                "; ".join(f"{_esc(m)} p {_num(p, 3)}" for m, p, _ in survives
+                          if m in lost) + "). On those measurements the whole-cohort "
+                "knee is substantially detecting <em>edema present versus absent</em>, "
+                "not a volume above which risk turns.")
+        if kept:
+            parts.append(f"<b>{_esc(_join_names(kept))}</b> "
+                         f"{'keeps' if len(kept) == 1 else 'keep'} the curvature among "
+                         f"measured values alone, so the knee is a genuine claim about "
+                         f"magnitude.")
+        verdict_html = _answer("Which of the three is the defensible claim",
+                               "<p>" + " ".join(parts) + "</p>",
+                               positive=bool(kept))
+
+    return f"""
+<h3>Zero inflation — "none at all" is a category, not a small number</h3>
+
+<p>The spline's knots go at the 10th, 50th and 90th percentile of the observed values. When
+a large share of the cohort sits at <em>exactly</em> zero, the lowest knot lands on zero and
+the bend the model then finds is substantially the difference between <b>present</b> and
+<b>absent</b> — a distinction a radiologist makes by looking, not by measuring.</p>
+
+<ul>{"".join(lines)}</ul>
+
+<p>So the claim is split into three and reported side by side: the whole-cohort fit, the
+presence/absence rule on its own, and the curve refitted on patients with a non-zero value.</p>
+
+{comparison_html}
+
+{verdict_html}
+"""
+
+
 def _grade_pill(grade: str) -> str:
     colour = GRADE_COLOUR.get(grade, "var(--muted)")
     return f'<span class="grade" style="background:{colour}">{_esc(grade)}</span>'
@@ -835,28 +922,42 @@ def render_evidence(data: ThresholdReportData, facts: CohortFacts) -> str:
     reading = data.table("evidence_reading")
     ev_table = data.table("evidence")
 
+    context_notes = {}
+    if not ev_table.empty and "context_note" in ev_table.columns:
+        context_notes = {r["column"]: ("" if pd.isna(r["context_note"])
+                                       else str(r["context_note"]))
+                         for _, r in ev_table.iterrows()}
+
     items = []
     for x in sorted(v.items,
                     key=lambda i: GRADE_ORDER.index(i.grade)
                     if i.grade in GRADE_ORDER else len(GRADE_ORDER)):
         limit = (f'<span class="limit">Held back by: {_esc(x.limiting)}</span>'
                  if x.limiting else
-                 '<span class="limit">All five criteria met.</span>')
+                 f'<span class="limit">All {len(evidence.CRITERIA)} criteria met.</span>')
+        note = context_notes.get(x.column, "")
+        extra = (f'<span class="limit">Read alongside: {_esc(note)}.</span>'
+                 if note else "")
         items.append(f'<li>{_grade_pill(x.grade)} '
-                     f'<span class="metric-name">{_esc(x.metric)}</span>{limit}</li>')
+                     f'<span class="metric-name">{_esc(x.metric)}</span>{limit}{extra}</li>')
     grade_list = f'<ul class="grade-list">{"".join(items)}</ul>'
 
-    # The two columns that are reported but do not score — see evidence.py.
+    # The columns that are reported but do not score — see evidence.py.
     context_table = ""
     if not ev_table.empty and {"knee_ci_ratio", "AUC"} <= set(ev_table.columns):
-        context_table = table_to_html(pd.DataFrame({
+        context = pd.DataFrame({
             "Measurement": ev_table["metric"],
             "Evidence": ev_table["verdict"],
             "Knee interval width": [
                 "—" if pd.isna(r) else f"{_num(r, 1)}× (hi ÷ lo)"
                 for r in ev_table["knee_ci_ratio"]],
             "AUC": [_num(a) for a in ev_table["AUC"]],
-        }))
+        })
+        if "nonlinearity_p_nonzero_only" in ev_table.columns:
+            context["Non-linearity p, non-zero values only"] = [
+                "n/a — no zero inflation" if pd.isna(p) else _num(p, 3)
+                for p in ev_table["nonlinearity_p_nonzero_only"]]
+        context_table = table_to_html(context)
 
     return f"""
 <h3>How strong is each of those claims?</h3>
@@ -1041,6 +1142,8 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
 {table_to_html(reading) if not reading.empty else ""}
 
 {crossing_note}
+
+{render_zero_inflation(data)}
 
 {render_evidence(data, facts)}
 
@@ -1999,6 +2102,25 @@ def render_caveats(data: ThresholdReportData, facts: CohortFacts) -> str:
             (f"On this run that is {_esc(_join_names([x.metric for x in reproduced]))}."
              if reproduced else "On this run no measurement cleared both."))
 
+    # The old text said "a quarter of this cohort" from an earlier run. Read it.
+    zero = data.table("zero_share")
+    zero_caveat = ("<b>Check zero inflation before quoting any threshold.</b> No "
+                   "zero-inflation table was found for this run.")
+    if not zero.empty and "zero_inflated" in zero.columns:
+        hits = zero[zero["zero_inflated"].map(_truthy)]
+        if not hits.empty:
+            share = "; ".join(
+                f"{_esc(r['metric'])} {_num(r['pct_zero'], 1)}%" for _, r in hits.iterrows())
+            zero_caveat = (
+                f"{_esc(_join_names(list(hits['metric'])))} "
+                f"{'is' if len(hits) == 1 else 'are'} zero-inflated ({share} of measured "
+                f"patients sit at exactly zero). 'None at all' behaves like a category, not "
+                f"a small number — see the three-way comparison in section 3 before quoting "
+                f"a threshold for {'it' if len(hits) == 1 else 'either'}.")
+        else:
+            zero_caveat = ("No measurement in this run was zero-inflated, so the "
+                           "whole-cohort splines answer the question they appear to.")
+
     return f"""
 <ul>
 <li><b>Every cut-point derived here is flattering.</b> Each was the best of hundreds of
@@ -2016,8 +2138,7 @@ missing-data uncertainty. Quote the wider.</li>
 <li><b>Many looks at one outcome.</b> Four measurements × five rules × a dozen combinations,
 uncorrected. Treat the p-values as descriptive and lean on the intervals.</li>
 
-<li><b>Edema volume is zero-inflated.</b> A quarter of this cohort has no peritumoral edema at
-all. "No edema" behaves like a category, not a small number.</li>
+<li><b>{zero_caveat}</b></li>
 
 <li><b>Nothing here feeds the model.</b> A cut-point estimated on this cohort has already seen
 the answer, so it is never written back into the cleaned dataset. Published cut-points are the
