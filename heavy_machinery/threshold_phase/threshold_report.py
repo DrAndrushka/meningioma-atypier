@@ -56,6 +56,10 @@ from report import (  # noqa: E402  (needs the sys.path bootstrap above)
 
 DEFAULT_TITLE = "Threshold analysis — high-grade meningioma on pre-operative MRI"
 
+# Pre-specified before the verdicts were read off: a threshold counts as
+# reproducible when it is found again in at least this share of the MICE draws.
+MICE_REPRODUCIBLE_CUT = 0.80
+
 TABLE_FILES = {
     "cohort_summary": "00_cohort_summary.csv",
     "cohort": "01_metric_cohorts.csv",
@@ -350,6 +354,107 @@ def _figure_row(paths: Sequence[Path], note: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
+# The verdict — one source, every sentence templated from it
+# ---------------------------------------------------------------------------
+# Section 3's answer, the header card, the section 9 defence, the reference
+# card and the caveats all used to state the verdict as prose written by hand.
+# When the numbers were refreshed the prose was not, and the document
+# contradicted itself. Everything that says "does this measurement have a
+# threshold" now reads one list built here, from the same CSV the tables use.
+@dataclass(frozen=True)
+class MetricVerdict:
+    """What this run concluded about one measurement's threshold."""
+
+    metric: str
+    column: str
+    has_threshold: bool
+    where: str = ""            # steepest-rise point, formatted, or ""
+    pct_below: float = float("nan")
+    reproduced: float = float("nan")   # MICE knee_rate, 0–1
+
+
+def _join_names(names: Sequence[str], conjunction: str = "and") -> str:
+    """``A``, ``A and B``, ``A, B and C`` — never a stray comma."""
+    items = [str(n) for n in names]
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} {conjunction} {items[-1]}"
+
+
+@dataclass(frozen=True)
+class Verdicts:
+    """The per-measurement verdicts, plus the phrases every section needs.
+
+    Nothing below returns a fixed number or a fixed measurement name, so a
+    rerun that changes the answer changes every sentence with it.
+    """
+
+    items: tuple[MetricVerdict, ...] = ()
+
+    @property
+    def positive(self) -> list[MetricVerdict]:
+        return [v for v in self.items if v.has_threshold]
+
+    @property
+    def negative(self) -> list[MetricVerdict]:
+        return [v for v in self.items if not v.has_threshold]
+
+    @property
+    def n_thresholds(self) -> int:
+        return len(self.positive)
+
+    @property
+    def n_metrics(self) -> int:
+        return len(self.items)
+
+    def count_phrase(self, *, verb: bool = False) -> str:
+        """``3 of 4 measurements``, optionally with an agreeing verb."""
+        noun = "measurement" if self.n_metrics == 1 else "measurements"
+        text = f"{self.n_thresholds} of {self.n_metrics} {noun}"
+        if verb:
+            text += " has" if self.n_thresholds == 1 else " have"
+        return text
+
+    def positive_names(self) -> str:
+        return _join_names([v.metric for v in self.positive])
+
+    def negative_names(self) -> str:
+        return _join_names([v.metric for v in self.negative])
+
+    def turning_phrase(self) -> str:
+        """``ADC (mean) turns near 0.662`` for each measurement that turns."""
+        bits = [f"{v.metric} turns near {v.where}" for v in self.positive if v.where]
+        return _join_names(bits, "and")
+
+
+def metric_verdicts(data: ThresholdReportData) -> Verdicts:
+    """Build the verdict list from the risk-curve table and the MICE stability."""
+    risk = data.table("risk_curves")
+    if risk.empty or "knee_found" not in risk.columns:
+        return Verdicts()
+
+    knee_rate = {}
+    stab = data.table("risk_stability")
+    if not stab.empty and "knee_rate" in stab.columns and "column" in stab.columns:
+        knee_rate = dict(zip(stab["column"], stab["knee_rate"]))
+
+    items = []
+    for _, row in risk.iterrows():
+        found = _truthy(row.get("knee_found"))
+        items.append(MetricVerdict(
+            metric=str(row.get("metric", "")),
+            column=str(row.get("column", "")),
+            has_threshold=found,
+            where=_sig(row.get("steepest_x")) if found else "",
+            pct_below=float(row.get("steepest_pct_of_patients", float("nan"))),
+            reproduced=float(knee_rate.get(row.get("column"), float("nan"))),
+        ))
+    return Verdicts(tuple(items))
+
+
+# ---------------------------------------------------------------------------
 # Cohort facts — every section quotes these rather than recomputing
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
@@ -360,14 +465,19 @@ class CohortFacts:
     prevalence: float = float("nan")
     m_draws: str = "—"
     n_boot: str = "—"
-    n_thresholds: int = 0
-    n_metrics: int = 0
+    verdicts: Verdicts = field(default_factory=Verdicts)
+
+    @property
+    def n_thresholds(self) -> int:
+        return self.verdicts.n_thresholds
+
+    @property
+    def n_metrics(self) -> int:
+        return self.verdicts.n_metrics
 
 
 def cohort_facts(data: ThresholdReportData) -> CohortFacts:
     cohort = data.table("cohort")
-    headline = data.table("headline")
-    risk = data.table("risk_curves")
     context = data.manifest.get("context", {})
 
     n = events = benign = 0
@@ -393,9 +503,7 @@ def cohort_facts(data: ThresholdReportData) -> CohortFacts:
         n=n, events=events, benign=benign, prevalence=prevalence,
         m_draws=str(_int(_first(data.table("stability"), "m_draws"), "—")),
         n_boot=str(context.get("n_bootstrap", "—")),
-        n_thresholds=int(risk["knee_found"].map(_truthy).sum())
-        if "knee_found" in risk.columns else 0,
-        n_metrics=len(headline) if not headline.empty else len(cohort),
+        verdicts=metric_verdicts(data),
     )
 
 
@@ -405,15 +513,7 @@ def cohort_facts(data: ThresholdReportData) -> CohortFacts:
 def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
                   facts: CohortFacts) -> str:
     verdict = data.table("combination_verdict")
-    risk = data.table("risk_curves")
-
-    threshold_metric = ""
-    threshold_where = ""
-    if "knee_found" in risk.columns:
-        hits = risk[risk["knee_found"].map(_truthy)]
-        if not hits.empty:
-            threshold_metric = str(hits.iloc[0]["metric"])
-            threshold_where = _sig(hits.iloc[0]["steepest_x"])
+    v = facts.verdicts
 
     cards = [
         ("Patients", str(facts.n) if facts.n else "—", "operated, with histology"),
@@ -435,12 +535,18 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
 
     author_html = f'<p class="report-authors">{_esc(cfg.author)}</p>' if cfg.author else ""
 
-    headline_answer = ""
-    if threshold_metric:
+    if v.n_metrics == 0:
+        headline_answer = ""
+    elif v.n_thresholds == 0:
         headline_answer = (
-            f"<li><b>Only {threshold_metric} has a genuine threshold</b> — "
-            f"risk turns sharply near {threshold_where}. The volumes rise smoothly: they "
-            f"have cut-points, but no threshold.</li>")
+            f"<li><b>No measurement has a genuine threshold.</b> All {v.n_metrics} rise "
+            f"smoothly: they have cut-points, but no turning point.</li>")
+    else:
+        rest = (f" {v.negative_names()} rise smoothly: cut-points, but no turning point."
+                if v.negative else "")
+        headline_answer = (
+            f"<li><b>{v.count_phrase(verb=True)} a genuine threshold</b> — "
+            f"{v.turning_phrase()}.{rest}</li>")
     gain = _first(verdict, "gain_vs_best_single")
     combo_answer = (
         f"<li><b>Combining criteria did not help.</b> The best combination gains "
@@ -486,6 +592,22 @@ always identical.</p>
 # 1 — three questions
 # ---------------------------------------------------------------------------
 def render_questions(data: ThresholdReportData, facts: CohortFacts) -> str:
+    v = facts.verdicts
+    # The example of "cut-point without threshold" has to come from this run.
+    # Naming a measurement that did turn, because an earlier run said it did
+    # not, is exactly the contradiction this document had.
+    if v.negative:
+        example = (f"{_esc(v.negative_names())} in this series "
+                   f"{'has' if len(v.negative) == 1 else 'have'} a perfectly reasonable "
+                   f"cut-point and no threshold.")
+    elif v.positive:
+        example = (f"In this series all {v.n_metrics} measurements cleared the curvature "
+                   f"test, so the distinction does not separate them here — but it is what "
+                   f"the test in section 3 is for, and it is the reason a cut-point alone "
+                   f"is never evidence of a threshold.")
+    else:
+        example = ""
+
     table = pd.DataFrame([
         {"Question": "Where does risk climb fastest?",
          "The clinical version": "Above what volume, or below what ADC, does this tumour "
@@ -512,8 +634,7 @@ it as the first.</p>
 {_key("The difference that matters:",
       "a cut-point exists for any measurement that separates the groups at all — you can always "
       "draw a line. A <b>threshold</b> requires the risk itself to change behaviour at that "
-      "point. Tumour volume in this series has a perfectly reasonable cut-point and no "
-      "threshold whatsoever.")}
+      "point. " + example)}
 
 {_key("Two words used throughout:",
       f"<b>sensitivity</b> — of the {facts.events} high-grade tumours, the share the rule "
@@ -581,6 +702,39 @@ whether a rule can work is not whether the groups differ — it is how far they 
 # ---------------------------------------------------------------------------
 # 3 — risk curves
 # ---------------------------------------------------------------------------
+def _risk_curve_answer(facts: CohortFacts) -> str:
+    """Section 3's answer paragraph, entirely from :class:`Verdicts`.
+
+    Three shapes, because the honest sentence is different in each: none
+    passed, some passed, all passed. The old text asserted the middle shape
+    whatever the numbers said.
+    """
+    v = facts.verdicts
+    if v.n_metrics == 0:
+        return "<p>No risk-curve table was available for this run.</p>"
+
+    head = f"<p><b>{v.count_phrase(verb=True)} a genuine threshold.</b> "
+    if v.n_thresholds == 0:
+        return (head + "Risk rises steadily throughout, so the reportable numbers are the "
+                "risk crossings above — <em>&quot;risk reaches 30% at …&quot;</em> — not a "
+                "threshold. <b>A negative here is a finding.</b> It says the routine "
+                "practice of quoting a cut-point as though it were a threshold does not "
+                "hold on this cohort.</p>")
+
+    body = f"{v.turning_phrase()}. "
+    if v.negative:
+        body += (f"For {v.negative_names()} risk rises steadily, and the reportable numbers "
+                 f"are the risk crossings above — <em>&quot;risk reaches 30% at …&quot;</em> "
+                 f"— not a threshold. ")
+    else:
+        body += ("Every measurement cleared the curvature test, so on this cohort the "
+                 "answer is positive across the board — which raises the opposite "
+                 "question, how <em>strong</em> each of those thresholds is. ")
+    body += ("<b>The strength of the claim differs sharply between them</b>, and the "
+             "evidence table above is what separates them.")
+    return head + body + "</p>"
+
+
 def render_risk_curves(data: ThresholdReportData, facts: CohortFacts) -> str:
     reading = data.table("risk_reading")
     raw = data.table("risk_curves")
@@ -687,12 +841,7 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
       "answer moved across. Expect them wide — a steepest point is the peak of the slope of a "
       "fitted curve, and publishing that width is what makes the number defensible.")}
 
-{_answer("Answer — Balodis's first question",
-         f"<p>{facts.n_thresholds} of {facts.n_metrics} measurements has a genuine threshold. "
-         f"For the rest, risk rises steadily and the reportable numbers are the risk crossings "
-         f"above — <em>&quot;risk reaches 30% at …&quot;</em> — not a threshold. "
-         f"<b>A negative here is a finding.</b> It says the routine practice of quoting a "
-         f"cut-point as though it were a threshold does not hold on this cohort.</p>",
+{_answer("Answer — Balodis's first question", _risk_curve_answer(facts),
          positive=facts.n_thresholds > 0)}
 """
 
@@ -1244,17 +1393,10 @@ this table.</p>
 # ---------------------------------------------------------------------------
 def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
     verdict = data.table("combination_verdict")
-    risk = data.table("risk_curves")
     models = data.model_aucs
     thresholds = data.table("thresholds")
 
-    threshold_name = threshold_at = "—"
-    if "knee_found" in risk.columns:
-        hits = risk[risk["knee_found"].map(_truthy)]
-        if not hits.empty:
-            threshold_name = str(hits.iloc[0]["metric"])
-            threshold_at = _sig(hits.iloc[0]["steepest_x"])
-
+    v = facts.verdicts
     widest = ""
     if "cutoff_boot_lo" in thresholds.columns:
         y = thresholds[thresholds["rule"] == "youden"].dropna(subset=["cutoff_boot_lo"])
@@ -1268,14 +1410,17 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
     best_model_auc = _first(models, "AUC_corrected")
     cont_auc = _first(verdict, "combination_verdict") or _first(verdict, "continuous_AUC_corrected")
 
+    turn_ev = f"{v.turning_phrase()}." if v.positive else ""
+    if v.negative:
+        turn_ev += f" {v.negative_names()} did not turn."
+
     qas = [
         _qa("Why not just report the optimal ADC cut-off, like every other paper?",
             "We do report it — but we also tested whether it is a <em>threshold</em>, and that "
-            "test is what most papers skip. Of four measurements, only one passed. Reporting a "
-            "cut-point as though it marked a jump in risk, when the risk is a straight line, "
-            "is the specific error we set out to avoid.",
-            f"Section 3: {facts.n_thresholds} of {facts.n_metrics} measurements passed. "
-            f"{threshold_name} turns near {threshold_at}; the volumes do not turn at all."),
+            "test is what most papers skip. Reporting a cut-point as though it marked a jump "
+            "in risk, when the risk is a straight line, is the specific error we set out to "
+            "avoid.",
+            f"Section 3: {v.count_phrase()} passed the curvature test. {turn_ev}"),
 
         _qa("Your AUCs are only 0.6–0.7. Is that worth publishing?",
             "Those are single imaging measurements used alone, and that is the honest ceiling "
@@ -1416,9 +1561,9 @@ def render_reference(data: ThresholdReportData, facts: CohortFacts) -> str:
         _ref("Cut-point vs threshold",
              "<b>Cut-point</b>: a line you draw to get yes/no. <b>Threshold</b>: a place where "
              "the risk itself changes behaviour.",
-             "Deliberately not synonyms in this study. A measurement can have the first without "
-             "the second — that is section 3's whole result.",
-             f"{facts.n_thresholds} of {facts.n_metrics} measurements had a real threshold."),
+             "Deliberately not synonyms in this study. A measurement can have the first "
+             "without the second, which is why section 3 tests for the second separately.",
+             f"{facts.verdicts.count_phrase()} passed the curvature test."),
         _ref("Restricted cubic spline",
              "A flexible curve made of cubic pieces joined at a few points, held straight beyond "
              "the outer ones.",
@@ -1482,6 +1627,23 @@ what it was on this cohort. Written to be re-read the morning of a presentation.
 # 11 — caveats
 # ---------------------------------------------------------------------------
 def render_caveats(data: ThresholdReportData, facts: CohortFacts) -> str:
+    v = facts.verdicts
+    # Named from this run's numbers, not from a remembered earlier answer.
+    reproduced = [x for x in v.positive
+                  if np.isfinite(x.reproduced) and x.reproduced >= MICE_REPRODUCIBLE_CUT]
+    if reproduced:
+        threshold_rule = (
+            f"On this run that is {_esc(_join_names([x.metric for x in reproduced]))} "
+            f"(" + "; ".join(f"{_esc(x.metric)} {_pct(x.reproduced)} of draws"
+                             for x in reproduced) + ").")
+    elif v.positive:
+        threshold_rule = (
+            f"On this run no measurement cleared both: {_esc(v.positive_names())} passed "
+            f"section 3 but none reproduced in at least "
+            f"{_pct(MICE_REPRODUCIBLE_CUT)} of the imputed datasets.")
+    else:
+        threshold_rule = "On this run no measurement passed section 3 at all."
+
     return f"""
 <ul>
 <li><b>Every cut-point derived here is flattering.</b> Each was the best of hundreds of
@@ -1489,7 +1651,7 @@ candidates on the same patients it is scored on. Quote the corrected column, or 
 someone else's cut-point instead.</li>
 
 <li><b>A threshold and a cut-point are different claims.</b> Only call something a threshold
-where section 3 said yes <em>and</em> section 6 said it reproduced.</li>
+where section 3 said yes <em>and</em> section 6 said it reproduced. {threshold_rule}</li>
 
 <li><b>PPV and NPV do not transfer.</b> This is a surgical series at {_pct(facts.prevalence)}
 high grade. Sensitivity and specificity carry to other settings; predictive values do not.</li>
