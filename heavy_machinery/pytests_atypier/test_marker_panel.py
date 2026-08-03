@@ -515,3 +515,56 @@ def test_imputation_stability_reports_reproduction_rates():
 def test_imputation_stability_says_so_when_there_are_no_draws():
     out = mp.imputation_stability([], COUNT_MARKERS, TARGET)
     assert dict(zip(out["item"], out["value"]))["Draws"] == 0
+
+
+# --------------------------------------------------------------------------
+# The orchestrator
+# --------------------------------------------------------------------------
+def panel_accuracy_table() -> pd.DataFrame:
+    return pd.DataFrame([
+        {"target": TARGET, "predictor": f"sign_{i}", "kind": "binary"}
+        for i in range(3)
+    ])
+
+
+def test_run_marker_panel_writes_every_table_and_figure(tmp_output):
+    tables = mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40,
+    )
+    written = sorted(p.name for p in (tmp_output / "panel" / "tables").glob("*.csv"))
+    assert written == [
+        "01_marker_panel.csv",
+        "02_marker_panel_reading_view.csv",
+        "03_shared_cohort.csv",
+        "05_rule_menu.csv",
+        "06_rule_reading_view.csv",
+        "07_count_score.csv",
+        "08_count_thresholds.csv",
+        "09_selection_correction.csv",
+        "10_model_vs_single.csv",
+        "11_imputation_stability.csv",
+    ]
+    figures = sorted(p.name for p in (tmp_output / "panel" / "figures").glob("*.svg"))
+    assert figures == ["count_score.svg", "lr_forest.svg", "rule_space.svg"]
+    assert set(tables) >= {"01_marker_panel", "09_selection_correction"}
+
+
+def test_run_marker_panel_excludes_what_it_is_told_to(tmp_output):
+    mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, exclude={"sign_2"}, n_boot=40,
+    )
+    panel = pd.read_csv(tmp_output / "panel" / "tables" / "01_marker_panel.csv")
+    assert "sign_2" not in set(panel["marker"])
+
+
+def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
+    """A combination question needs two markers. One must not crash the run."""
+    df = count_frame()
+    tables = mp.run_marker_panel(
+        df, target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, exclude={"sign_1", "sign_2"}, n_boot=40,
+    )
+    assert not tables["01_marker_panel"].empty
+    assert tables["05_rule_menu"].empty

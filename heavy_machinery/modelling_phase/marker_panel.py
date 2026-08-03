@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Sequence
+from pathlib import Path
 from typing import NamedTuple
 
 import matplotlib.pyplot as plt
@@ -25,6 +26,7 @@ from sklearn.metrics import roc_auc_score
 
 import combinations as cb
 import plot_style as ps
+from cleaning import format_table_for_csv
 from diagnostic_accuracy import binary_diagnostic_metrics
 from model_calculator import predict_from_artifact
 from thresholds import format_pct_ci
@@ -613,3 +615,100 @@ def imputation_stability(
          "value": (combo_wins / scored) if scored else np.nan,
          "note": "share of draws with a positive corrected gain"},
     ])
+
+
+TABLES_DIRNAME = "tables"
+FIGURES_DIRNAME = "figures"
+
+
+def _write_table(tables: dict, root: Path, stem: str, frame: pd.DataFrame) -> None:
+    tables[stem] = frame
+    (root / TABLES_DIRNAME).mkdir(parents=True, exist_ok=True)
+    format_table_for_csv(frame).to_csv(
+        root / TABLES_DIRNAME / f"{stem}.csv", index=False,
+    )
+
+
+def run_marker_panel(
+    df: pd.DataFrame,
+    *,
+    target: str,
+    accuracy_table: pd.DataFrame,
+    output_root: Path | str,
+    exclude: Collection[str] = (),
+    artifacts: dict[str, dict] | None = None,
+    draws: Sequence[pd.DataFrame] = (),
+    n_boot: int = DEFAULT_N_BOOT,
+    seed: int = DEFAULT_SEED,
+    max_size: int = 2,
+) -> dict[str, pd.DataFrame]:
+    """Compute the whole panel and write it to ``output/panel/``.
+
+    Two patient sets on purpose. The aim-1 marker table uses each marker's own
+    complete cases, because it ranks markers and each row stands alone. Every
+    aim-2 comparison uses the shared set, because a Youden J compared across
+    two different groups of patients is not a comparison.
+
+    Nothing here renders. ``report.py`` reads what this writes.
+    """
+    root = Path(output_root) / "panel"
+    tables: dict[str, pd.DataFrame] = {}
+
+    markers = markers_from_diagnostic_accuracy(
+        accuracy_table, target=target, exclude=exclude,
+    )
+    markers = [m for m in markers if m.col in df.columns]
+    kept, dropped = usable_markers(df, markers, target)
+
+    panel = marker_panel_table(df, kept, target)
+    _write_table(tables, root, "01_marker_panel", panel)
+    _write_table(tables, root, "02_marker_panel_reading_view",
+                 marker_panel_reading_view(panel))
+
+    shared = shared_cohort_frame(df, kept, target)
+    _write_table(tables, root, "03_shared_cohort",
+                 shared_cohort_audit(df, kept, target, dropped))
+
+    empty = pd.DataFrame()
+    if len(kept) >= 2 and not shared.empty:
+        menu = rule_menu(shared, kept, target, max_size=max_size)
+        correction = selection_correction(
+            shared, kept, target, n_boot=n_boot, seed=seed, max_size=max_size,
+        )
+        counts = count_score(shared, kept, target)
+        _write_table(tables, root, "05_rule_menu", menu)
+        _write_table(tables, root, "06_rule_reading_view", rule_reading_view(menu))
+        _write_table(tables, root, "07_count_score", counts)
+        _write_table(tables, root, "08_count_thresholds",
+                     count_thresholds(shared, kept, target))
+        _write_table(tables, root, "09_selection_correction", correction)
+        _write_table(tables, root, "10_model_vs_single",
+                     model_vs_single(shared, artifacts or {}, target, correction))
+        _write_table(tables, root, "11_imputation_stability",
+                     imputation_stability(list(draws), kept, target, seed=seed))
+    else:
+        for stem in ("05_rule_menu", "06_rule_reading_view", "07_count_score",
+                     "08_count_thresholds", "09_selection_correction",
+                     "10_model_vs_single", "11_imputation_stability"):
+            _write_table(tables, root, stem, empty)
+        menu, counts = empty, empty
+
+    fig_dir = root / FIGURES_DIRNAME
+    ps.save_figure(lr_forest_figure(panel), fig_dir / "lr_forest.svg")
+    prevalence = (
+        float(shared[target].astype("boolean").mean()) if len(shared) else None
+    )
+    if len(counts):
+        ps.save_figure(count_score_figure(counts, kept, prevalence=prevalence),
+                       fig_dir / "count_score.svg")
+        ps.save_figure(rule_space_figure(menu), fig_dir / "rule_space.svg")
+    else:
+        for name in ("count_score.svg", "rule_space.svg"):
+            fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM,
+                                                          aspect=0.4))
+            ax.set_axis_off()
+            ax.text(0.5, 0.5, "Not enough markers for a combination",
+                    ha="center", va="center", transform=ax.transAxes)
+            ps.save_figure(fig, fig_dir / name)
+
+    return tables
