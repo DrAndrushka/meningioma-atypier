@@ -15,10 +15,17 @@ perfectly specific and perfectly useless.
 from __future__ import annotations
 
 import math
+from collections.abc import Collection, Sequence
+from typing import NamedTuple
 
 import numpy as np
+import pandas as pd
+
+import plot_style as ps
 
 _Z95 = 1.959963984540054
+
+BINARY_KINDS = ("binary", "derived_binary")
 
 
 def likelihood_ratio_positive(tp: int, fp: int, fn: int, tn: int) -> dict:
@@ -59,3 +66,55 @@ def likelihood_ratio_positive(tp: int, fp: int, fn: int, tn: int) -> dict:
         "chance_overlap": bool(lo <= 1.0 <= hi),
         "continuity_corrected": bool(corrected),
     }
+
+
+class BinaryMarker(NamedTuple):
+    """A yes/no MRI sign, shaped like a ``CutPoint`` so ``combinations`` accepts it.
+
+    :mod:`combinations` touches exactly four members of a cut-point — ``col``,
+    ``label``, ``short_label`` and ``flag`` — so supplying those is enough to
+    run its whole rule machinery on markers that were never continuous. This is
+    why ``combinations.py`` needs no change: the threshold phase's estimators
+    and this section's are the same code, and cannot drift apart.
+    """
+
+    col: str
+    label: str
+
+    @property
+    def short_label(self) -> str:
+        """No cut-point to name, so the short form is the label itself."""
+        return self.label
+
+    def flag(self, df: pd.DataFrame) -> pd.Series:
+        return df[self.col].astype("boolean")
+
+
+def markers_from_diagnostic_accuracy(
+    table: pd.DataFrame,
+    *,
+    target: str,
+    exclude: Collection[str] = (),
+) -> list[BinaryMarker]:
+    """The marker panel, read from the EDA table rather than hard-coded.
+
+    Whatever is activated or dropped in the cleaning notebook's ``DERIVATIONS``
+    flows through here without an edit, which is the point: the panel cannot
+    silently fall out of step with the cohort it describes.
+
+    ``exclude`` is the caller's, and belongs in the notebook. The accuracy
+    table carries non-imaging predictors too — ``sex_male`` is
+    ``derived_binary`` and would otherwise walk into a section about MRI signs.
+    """
+    if table is None or table.empty:
+        return []
+    drop = set(exclude) | {target}
+    rows = table[
+        (table["target"].astype(str) == str(target))
+        & (table["kind"].astype(str).isin(BINARY_KINDS))
+        & (~table["predictor"].astype(str).isin(drop))
+    ]
+    return [
+        BinaryMarker(str(r["predictor"]), ps.prettify_label(str(r["predictor"])))
+        for _, r in rows.iterrows()
+    ]
