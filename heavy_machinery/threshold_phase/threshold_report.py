@@ -174,6 +174,11 @@ _EXTRA_CSS = """
 .ref-card dd { margin: 0; }
 .ref-card dd.num { font-variant-numeric: tabular-nums; }
 .tradeoff-table td:first-child { font-weight: 600; white-space: nowrap; }
+/* A "86/127/15/99" cell offers a break opportunity after every slash, so a
+   narrow column wraps it mid-number and it reads as "86/127/1  5/99". Numbers
+   and intervals must never break; the row can be scrolled instead. */
+table.report td { overflow-wrap: normal; word-break: keep-all; hyphens: manual; }
+table.report td.nowrap, table.report td.num { white-space: nowrap; }
 .grade {
     display: inline-block; padding: 1px 8px; border-radius: 999px;
     font-size: 12px; font-weight: 700; text-transform: uppercase;
@@ -281,10 +286,17 @@ def _load_model_aucs(output_root: Path, warnings: list[str]) -> pd.DataFrame:
         auc = metrics.get("AUC", {})
         if not auc:
             continue
+        n_predictors = max(len(payload.get("coefficients", {})) - 1, 0)
+        events = payload.get("events")
         rows.append({
             "model": path.stem.replace("high_grade_", "").replace("_model", ""),
             "n": payload.get("n"),
-            "n_predictors": max(len(payload.get("coefficients", {})) - 1, 0),
+            "events": events,
+            "n_predictors": n_predictors,
+            # Events per variable. Below ~10 a logistic model is fitting noise;
+            # printing it makes the overfitting visible instead of arguable.
+            "EPV": (float(events) / n_predictors
+                    if events and n_predictors else float("nan")),
             "AUC_apparent": auc.get("apparent"),
             "AUC_corrected": auc.get("optimism_corrected"),
         })
@@ -344,6 +356,38 @@ def _truthy(value: Any) -> bool:
         return bool(value) and not pd.isna(value)
     except (TypeError, ValueError):
         return bool(value)
+
+
+# Cells that must never wrap. A "86/127/15/99" or a "1.53–12.2" offers the
+# browser a break opportunity after every slash and dash, so a narrow column
+# splits it mid-number: the published report showed "86/127/1 5/99" for what
+# the CSV correctly holds as 86/127/15/99.
+NOWRAP_COLUMNS = frozenset({
+    "TP/FP/FN/TN", "n", "n / events", "Cut-point", "Cut-point 95% CI",
+    "Sens (95% CI)", "Spec (95% CI)", "PPV (95% CI)", "NPV (95% CI)",
+    "Sens / Spec", "J", "J (corr.)", "J as measured", "J after correction",
+    "Steepest rise", "95% CI", "95% interval", "Patients below it",
+    "Risk", "Risk reaches 30%", "Risk reaches 50%", "Risk 30% at", "Risk 50% at",
+    "Non-linearity p", "Holm-adjusted p", "Bonferroni-adjusted p",
+    "Criteria met", "AUC", "AUC as measured", "AUC corrected", "EPV",
+    "Predictors", "Events", "Patients", "High grade", "Criteria met",
+    "Slope (corrected)", "Intercept (corrected)", "Brier (corrected)",
+    "Best net benefit", "Beats treat-all and treat-none",
+    "…over this share of the range", "Best available strategy over",
+    "Measured in", "Missing", "Median, benign", "Median, high grade",
+    "Knee interval width", "Patients (avg)", "Threshold found in", "of datasets",
+    "Typical location", "Range", "Criteria met", "Lowest of the datasets",
+    "Highest of the datasets", "Youden cut-point", "MICE cut-point",
+})
+
+
+def _table(df: pd.DataFrame, **kwargs: Any) -> str:
+    """``table_to_html`` with the numeric columns pinned against mid-token wraps."""
+    if df is None or getattr(df, "empty", True):
+        return table_to_html(df, **kwargs)
+    kwargs.setdefault("nowrap_cols",
+                      [c for c in df.columns if str(c) in NOWRAP_COLUMNS])
+    return table_to_html(df, **kwargs)
 
 
 def _key(label: str, text: str) -> str:
@@ -562,7 +606,8 @@ class CohortFacts:
     benign: int = 0
     prevalence: float = float("nan")
     m_draws: str = "—"
-    n_boot: str = "—"
+    n_boot: str = "—"          # cut-point bootstraps
+    n_boot_curve: str = "—"    # risk-curve bootstraps — a smaller, separate budget
     verdicts: Verdicts = field(default_factory=Verdicts)
 
     @property
@@ -601,6 +646,8 @@ def cohort_facts(data: ThresholdReportData) -> CohortFacts:
         n=n, events=events, benign=benign, prevalence=prevalence,
         m_draws=str(_int(_first(data.table("stability"), "m_draws"), "—")),
         n_boot=str(context.get("n_bootstrap", "—")),
+        n_boot_curve=str(context.get("n_bootstrap_curve",
+                                     context.get("n_bootstrap", "—"))),
         verdicts=metric_verdicts(data),
     )
 
@@ -750,7 +797,7 @@ def render_questions(data: ThresholdReportData, facts: CohortFacts) -> str:
 <p>These are three different questions. Most threshold papers answer the second and describe
 it as the first.</p>
 
-{table_to_html(table, safe_html_cols=["The clinical version", "Gives you"])}
+{_table(table, safe_html_cols=["The clinical version", "Gives you"])}
 
 {_key("The difference that matters:",
       "a cut-point exists for any measurement that separates the groups at all — you can always "
@@ -797,7 +844,7 @@ def render_measurements(data: ThresholdReportData, facts: CohortFacts) -> str:
 <em>n</em> differs by row — pooling to the patients who have all four would discard people
 missing something unrelated.</p>
 
-{table_to_html(display) if not display.empty else '<p class="muted"><em>(cohort table unavailable)</em></p>'}
+{_table(display) if not display.empty else '<p class="muted"><em>(cohort table unavailable)</em></p>'}
 
 {gap_note}
 
@@ -877,7 +924,7 @@ actually makes. The cut-point selection rules and the combination menu are delib
 are paid for with optimism correction in sections 4 and 5 instead. Correcting them as
 though they were hypotheses would imply a family that was never posed.</p>
 
-{table_to_html(reading) if not reading.empty else ""}
+{_table(reading) if not reading.empty else ""}
 
 {_concrete(f"{holm_line}; {bonf_line}. Holm controls the same family-wise error rate as "
            f"Bonferroni and is uniformly more powerful, so anything surviving Bonferroni "
@@ -918,7 +965,7 @@ def render_zero_inflation(data: ThresholdReportData) -> str:
     comparison_html = ""
     if not comparison.empty:
         cols = [c for c in comparison.columns if c != "Metric"]
-        comparison_html = table_to_html(comparison[["Metric"] + cols])
+        comparison_html = _table(comparison[["Metric"] + cols])
 
     # The one sentence that decides what the knee can be called.
     nonzero = data.table("nonzero_curves")
@@ -1029,7 +1076,7 @@ def render_evidence(data: ThresholdReportData, facts: CohortFacts) -> str:
             context["Non-linearity p, non-zero values only"] = [
                 "n/a — no zero inflation" if pd.isna(p) else _num(p, 3)
                 for p in ev_table["nonlinearity_p_nonzero_only"]]
-        context_table = table_to_html(context)
+        context_table = _table(context)
 
     return f"""
 <h3>How strong is each of those claims?</h3>
@@ -1045,7 +1092,7 @@ the 50%-risk crossing under a new name.</p>
       "nothing — it just restates them. The rules are printed here next to the results "
       "so a reader can check that the grades follow from them.")}
 
-{table_to_html(criteria, safe_html_cols=["Rule", "Source"]) if not criteria.empty else ""}
+{_table(criteria, safe_html_cols=["Rule", "Source"]) if not criteria.empty else ""}
 
 <p>The first three are <b>necessary</b>: if one fails, the threshold claim as stated is not
 supportable, whatever the others say. The last two are <b>robustness</b> checks — they ask
@@ -1057,7 +1104,7 @@ necessary criteria do → <em>weak</em>.</p>
 
 {grade_list}
 
-{table_to_html(reading) if not reading.empty else ""}
+{_table(reading) if not reading.empty else ""}
 
 {_concrete(f"the graded answer is {_esc(v.grade_phrase())} — "
            f"{v.grade_sentences()}. That is a more defensible headline than "
@@ -1129,7 +1176,7 @@ def render_risk_curves(data: ThresholdReportData, facts: CohortFacts) -> str:
                 f'{_esc(row.get("verdict", ""))}</li>')
         verdicts = f'<ul class="verdict-list">{"".join(items)}</ul>'
 
-    crossing_note = ""
+    crossing_note = base_rate_note = ""
     if not raw.empty and "risk_50_x" in raw.columns:
         bits = []
         for _, r in raw.iterrows():
@@ -1141,9 +1188,20 @@ def render_risk_curves(data: ThresholdReportData, facts: CohortFacts) -> str:
         if bits:
             crossing_note = _concrete("; ".join(bits) + ".")
 
+    # The 30% crossing is nearly the cohort's own high-grade rate, so it marks
+    # where the curve leaves the base rate — not where risk becomes high.
+    if np.isfinite(facts.prevalence) and abs(facts.prevalence - 0.30) < 0.05:
+        base_rate_note = warning_box(
+            f"<b>Read the 30% crossing as the base-rate crossing.</b> This cohort is "
+            f"{_pct(facts.prevalence)} high grade, so “risk reaches 30%” is very nearly "
+            f"“risk reaches the rate you would have assumed without looking at the scan”. "
+            f"It marks where the measurement starts adding information, "
+            f"which is worth knowing — but it is not a level at which anything becomes "
+            f"worrying. The 50% crossings are the informative ones, and the reason two "
+            f"measurements never reach one is itself a finding.")
+
     return f"""
-<p><b>Question:</b> at what value does the probability of high grade start climbing fast?
-This is the <em>"šķēre"</em>.</p>
+<p><b>Question:</b> at what value does the probability of high grade start climbing fast?</p>
 
 {_key("What is done:",
       "instead of splitting patients into two groups, the probability of high grade is modelled "
@@ -1211,9 +1269,11 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
 
 {verdicts}
 
-{table_to_html(reading) if not reading.empty else ""}
+{_table(reading) if not reading.empty else ""}
 
 {crossing_note}
+
+{base_rate_note}
 
 {render_multiplicity(data)}
 
@@ -1222,9 +1282,12 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
 {render_evidence(data, facts)}
 
 {_key("The bracketed numbers are bootstrap intervals.",
-      "The whole curve was refitted on several hundred resampled cohorts; this is the range the "
-      "answer moved across. Expect them wide — a steepest point is the peak of the slope of a "
-      "fitted curve, and publishing that width is what makes the number defensible.")}
+      f"The whole curve was refitted on {facts.n_boot_curve} resampled cohorts; this is the "
+      f"range the answer moved across. Expect them wide — a steepest point is the peak of "
+      f"the slope of a fitted curve, and publishing that width is what makes the number "
+      f"defensible. (The cut-points in section 4 get a larger budget, "
+      f"{facts.n_boot} resamples, because refitting a spline is far more expensive than "
+      f"re-picking a maximum off a ROC table.)")}
 
 {_answer("Answer — Balodis's first question", _risk_curve_answer(facts),
          positive=facts.n_thresholds > 0)}
@@ -1261,13 +1324,16 @@ def render_cutpoints(data: ThresholdReportData, facts: CohortFacts) -> str:
         r = youden.iloc[0]
         tp, fp, fn, tn = (r.get("TP"), r.get("FP"), r.get("FN"), r.get("TN"))
         if all(pd.notna(v) for v in (tp, fp, fn, tn)):
+            # "34 of the 34+62" printed the arithmetic instead of doing it.
+            positives = float(tp) + float(fn)
+            negatives = float(fp) + float(tn)
             concrete = _concrete(
                 f"applying <b>{_esc(r['metric'])} {_esc(r['operator'])}"
                 f"{_num(r['cutoff'], 3)}</b> to every patient flags {_int(tp)} of the "
-                f"{_int(tp)}+{_int(fn)} high-grade tumours and misses {_int(fn)}, while "
-                f"wrongly flagging {_int(fp)} benign ones. That is what "
-                f"{_pct(r['sensitivity'])} sensitivity and {_pct(r['specificity'])} "
-                f"specificity mean in patients.")
+                f"{_int(positives)} high-grade tumours and misses {_int(fn)}, while "
+                f"wrongly flagging {_int(fp)} of the {_int(negatives)} benign ones. That "
+                f"is what {_pct(r['sensitivity'])} sensitivity and "
+                f"{_pct(r['specificity'])} specificity mean in patients.")
 
     lit_rows = full[full["rule"] == "literature"] if "rule" in full.columns else pd.DataFrame()
     lit_html = ""
@@ -1287,7 +1353,7 @@ def render_cutpoints(data: ThresholdReportData, facts: CohortFacts) -> str:
 this section needing <b>no</b> correction — and the reason validating someone else's cut-point
 is a stronger design than deriving your own.</p>
 
-{table_to_html(lit_display)}
+{_table(lit_display)}
 """
 
     return f"""
@@ -1300,7 +1366,7 @@ is a stronger design than deriving your own.</p>
 
 <h3>Five rules, and what each assumes</h3>
 
-{table_to_html(rules, safe_html_cols=["Use when"])}
+{_table(rules, safe_html_cols=["Use when"])}
 
 {_key("The last two rows are the honest ones.",
       "Youden assumes missing a WHO 2–3 meningioma costs exactly what over-calling a benign one "
@@ -1343,7 +1409,7 @@ read what any choice costs.</p>
 
 <h3>The cut-points</h3>
 
-{table_to_html(reading) if not reading.empty else '<p class="muted"><em>(table unavailable)</em></p>'}
+{_table(reading) if not reading.empty else '<p class="muted"><em>(table unavailable)</em></p>'}
 
 {lit_html}
 
@@ -1438,8 +1504,8 @@ def _secondary_denominator_block(data: ThresholdReportData, shared: bool,
         "each rule taken <em>on its own</em>. It is the worse basis for ranking them "
         f"against each other, which is why the {shared_n}-patient version above is "
         "primary.</p>"
-        + table_to_html(_verdict_rows(full_verdict))
-        + (table_to_html(full_reading, max_rows=40) if not full_reading.empty else ""))
+        + _table(_verdict_rows(full_verdict))
+        + (_table(full_reading, max_rows=40) if not full_reading.empty else ""))
 
 
 def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
@@ -1539,7 +1605,7 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
 
 <h3>Did it help?</h3>
 
-{table_to_html(verdict_display) if not verdict_display.empty else ""}
+{_table(verdict_display) if not verdict_display.empty else ""}
 
 {_key("Both rows are corrected the same way, and that matters.",
       f"The best single criterion was also <em>chosen</em> — the best of four — so it "
@@ -1583,7 +1649,7 @@ remember, no arithmetic at the workstation.</p>
          "criteria, with a 95% interval and the raw counts printed above. Dash-dotted line: "
          "the cohort rate.")}
 
-{table_to_html(count_display) if not count_display.empty else ""}
+{_table(count_display) if not count_display.empty else ""}
 
 {ladder}
 
@@ -1598,7 +1664,7 @@ remember, no arithmetic at the workstation.</p>
 
 {details_block(f"All rules, ranked — one denominator ({shared_n} patients)"
                if shared else "All rules, ranked",
-               table_to_html(reading, max_rows=40) if not reading.empty else "")}
+               _table(reading, max_rows=40) if not reading.empty else "")}
 
 {_secondary_denominator_block(data, shared, full_verdict, full_reading, shared_n)}
 """
@@ -1615,7 +1681,7 @@ def render_stability(data: ThresholdReportData, facts: CohortFacts) -> str:
 
     knee_html = knee_note = ""
     if not risk_stability.empty:
-        knee_html = table_to_html(pd.DataFrame({
+        knee_html = _table(pd.DataFrame({
             "Measurement": risk_stability["metric"],
             "Threshold found in": [_pct(v) for v in risk_stability["knee_rate"]],
             "of datasets": [_int(v) for v in risk_stability["m_draws"]],
@@ -1635,7 +1701,7 @@ def render_stability(data: ThresholdReportData, facts: CohortFacts) -> str:
 
     count_html = ""
     if not counts_imputed.empty:
-        count_html = table_to_html(pd.DataFrame({
+        count_html = _table(pd.DataFrame({
             "Criteria met": counts_imputed["n_criteria_met"],
             "Patients (avg)": [_num(v, 0) for v in counts_imputed["n"]],
             "Risk": [_pct(v) for v in counts_imputed["risk"]],
@@ -1659,7 +1725,7 @@ value drawn from what that patient's other measurements imply. The entire analys
 {m} times. Same answer every time → the missing data did not matter. Answer jumps around →
 it did.</p>
 
-{table_to_html(pd.DataFrame([
+{_table(pd.DataFrame([
     {"Uncertainty": "Sampling", "Measured by": "The bootstrap intervals in sections 3–5",
      "Answers": f"Would a different {facts.n} patients have changed the answer?"},
     {"Uncertainty": "Missing data", "Measured by": f"Spread across the {m} filled-in datasets",
@@ -1674,7 +1740,7 @@ it did.</p>
          "otherwise report. Dots tight inside a wide band → sample size is the limitation. "
          "Dots scattered across or beyond it → the complete-case number alone is overconfident.")}
 
-{table_to_html(stability_reading) if not stability_reading.empty else ""}
+{_table(stability_reading) if not stability_reading.empty else ""}
 
 {_key("The trap in this table:",
       "watch for the MICE <b>mean and median disagreeing</b>. That is a flat peak — the "
@@ -1825,7 +1891,7 @@ this report presents its outputs as probabilities throughout.</p>
          "with 95% intervals. The diagonal is perfect calibration; dots below it mean the "
          "model promises more risk than the patients delivered.")}
 
-{table_to_html(display)}
+{_table(display)}
 
 {concrete}
 
@@ -1886,7 +1952,7 @@ high-grade tumour and a false alarm, and net benefit follows from it:</p>
          "all: treat everyone, and treat no one. A curve below both of them over the range "
          "you care about is a strategy that would do harm.")}
 
-{table_to_html(display)}
+{_table(display)}
 
 {_concrete(f"across threshold probabilities from {_pct(nb.lo)} to {_pct(nb.hi)}, "
            f"<b>{_esc(nb.winner)}</b> is the best available strategy over "
@@ -1912,10 +1978,15 @@ def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
     best_single_j = _first(verdict, "best_single_J")
     best_rule_j = _first(verdict, "best_rule_J_corrected")
 
-    def _j_to_auc(j: Any) -> str:
-        """A yes/no rule's J maps to J/2 + 0.5 — the AUC of a two-outcome test.
+    def _balanced_accuracy(j: Any) -> str:
+        """``J/2 + 0.5`` — which is ``(sensitivity + specificity) / 2``.
 
-        The only way to put a cut-point and a continuous model on one axis.
+        Deliberately **not** called an AUC. It is the area under the two-segment
+        ROC of a rule that has already been dichotomised, so it sits on the same
+        0.5–1.0 axis as a real AUC and is not the same quantity: a genuine AUC
+        integrates over every cut-point, this one is fixed at the one chosen.
+        Printing it in a column headed "AUC" next to 0.69 and 0.73 invited a
+        comparison that flatters the cut-point.
         """
         try:
             f = float(j)
@@ -1934,12 +2005,12 @@ def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
          "What you get": "Yes/no from a single measurement",
          "What it costs": "A tumour just under the line and one far under it become identical",
          "At the workstation": "Nothing — one number, one comparison",
-         "Here": f"AUC ≈ {_j_to_auc(best_single_j)}"},
+         "Here": f"Balanced accuracy {_balanced_accuracy(best_single_j)}*"},
         {"Approach": "Two cut-points (AND/OR)",
          "What you get": "A slightly different balance of the same trade-off",
          "What it costs": "The same information loss twice, plus a rule to remember",
          "At the workstation": "Two numbers and a logic gate",
-         "Here": f"AUC ≈ {_j_to_auc(best_rule_j)} — no real gain"},
+         "Here": f"Balanced accuracy {_balanced_accuracy(best_rule_j)}* — no real gain"},
         {"Approach": "Count score (0–4)",
          "What you get": "A five-level risk ladder, easy to apply and explain",
          "What it costs": "Still loses within-category detail; needs all four measured",
@@ -1970,9 +2041,10 @@ def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
     if best_model_auc is not None and cont_auc is not None:
         ladder = _answer(
             "The trade-off in one paragraph",
-            f"<p>Performance climbs as you stop simplifying: one cut-point reaches about "
-            f"{_j_to_auc(best_single_j)}, two cut-points add essentially nothing "
-            f"({_j_to_auc(best_rule_j)}), the same four measurements uncut reach "
+            f"<p>Performance climbs as you stop simplifying: one cut-point reaches a "
+            f"balanced accuracy of {_balanced_accuracy(best_single_j)}, two cut-points add "
+            f"essentially nothing ({_balanced_accuracy(best_rule_j)}), the same four "
+            f"measurements uncut reach an AUC of "
             f"{_num(cont_auc)}, and the full model reaches {_num(best_model_auc)}. "
             f"<b>Every step is paid for in applicability.</b> The cut-point works in your head "
             f"in front of the scanner; the model needs a calculator and every predictor "
@@ -1985,16 +2057,35 @@ def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
         "Multivariable model artifacts not found, so the comparison stops at the "
         "four-measurement model. Run meningioma-modelling.ipynb and regenerate to include them.")
     if not models.empty:
+        worst = models.sort_values("EPV").iloc[0] if "EPV" in models.columns else None
+        epv_note = ""
+        if worst is not None and np.isfinite(float(worst.get("EPV", np.nan))):
+            shrink = float(worst["AUC_apparent"]) - float(worst["AUC_corrected"])
+            epv_note = _concrete(
+                f"<b>{_esc(str(worst['model']).replace('_', ' '))}</b> spends "
+                f"{_int(worst['n_predictors'])} predictors on {_int(worst['events'])} "
+                f"events — <b>EPV {_num(worst['EPV'], 1)}</b>, the lowest here — and loses "
+                f"{_num(shrink, 3)} of AUC to optimism correction "
+                f"({_num(worst['AUC_apparent'])} → {_num(worst['AUC_corrected'])}), the "
+                f"largest drop of any model in the table. That is what a thin EPV costs, "
+                f"shown rather than argued.")
         model_table = f"""
 <h3>The multivariable models, for reference</h3>
-{table_to_html(pd.DataFrame({
+{_table(pd.DataFrame({
     "Model": [str(m).replace("_", " ") for m in models["model"]],
     "Predictors": models["n_predictors"],
+    "Events": [_int(v) for v in models.get("events", pd.Series(dtype=float))],
+    "EPV": [_num(v, 1) for v in models.get("EPV", pd.Series(dtype=float))],
     "AUC as measured": [_num(v) for v in models["AUC_apparent"]],
     "AUC corrected": [_num(v) for v in models["AUC_corrected"]],
 }))}
 <p class="muted">Read the corrected column. These come from the modelling notebook, so the
-comparison above is not against a number you have to take on trust.</p>
+comparison above is not against a number you have to take on trust. <b>EPV</b> is events per
+variable — how many high-grade tumours the model has to spend on each predictor. Below about
+10 a logistic model starts fitting noise, and the gap between the two AUC columns is where
+that shows up.</p>
+
+{epv_note}
 """
 
     return f"""
@@ -2002,7 +2093,14 @@ comparison above is not against a number you have to take on trust.</p>
 model. They are not competitors — they answer to different constraints, and this section is
 about which constraint you are under.</p>
 
-{table_to_html(comparison, safe_html_cols=["What you get", "What it costs"])}
+{_table(comparison, safe_html_cols=["What you get", "What it costs"])}
+
+<p class="figure-note">* <b>Balanced accuracy (dichotomised)</b> is (sensitivity +
+specificity) / 2, equivalently J/2 + 0.5. It is <em>not</em> an AUC: a real AUC integrates
+over every possible cut-point, this one is fixed at the cut-point already chosen. The two
+numbers live on the same 0.5–1.0 scale, which is why they are shown together — and why the
+label matters. Comparing a dichotomised rule's 0.64 with a model's 0.69 as though both were
+AUCs understates how much the cut-point actually costs.</p>
 
 {_key("Why cutting a measurement up always loses something:",
       "turning ADC into &quot;below 0.72 / above 0.72&quot; asserts that 0.71 and 0.40 are the same "
@@ -2052,7 +2150,7 @@ def render_bottom_line(data: ThresholdReportData, facts: CohortFacts) -> str:
 <p>One row per measurement, pulling every section together. Write the results paragraph from
 this table.</p>
 
-{table_to_html(headline) if not headline.empty else '<p class="muted"><em>(headline table unavailable)</em></p>'}
+{_table(headline) if not headline.empty else '<p class="muted"><em>(headline table unavailable)</em></p>'}
 
 {_key("The columns, in order:",
       "<b>Threshold evidence</b> is section 3's graded verdict — strong, moderate, fragile "
@@ -2163,6 +2261,10 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
     v = facts.verdicts
     mult = multiplicity_facts(data)
     nb = net_benefit_facts(data)
+    # Balanced accuracy, not an AUC — see render_tradeoffs' footnote.
+    _single_j = _first(verdict, "best_single_J")
+    single_balanced = (_num(float(_single_j) / 2.0 + 0.5)
+                       if pd.notna(_single_j) else "—")
     widest = ""
     if "cutoff_boot_lo" in thresholds.columns:
         y = thresholds[thresholds["rule"] == "youden"].dropna(subset=["cutoff_boot_lo"])
@@ -2210,8 +2312,9 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
             "for them. We say so, and we show the multivariable model reaching higher. The "
             "contribution is not a strong single predictor — it is showing which of these four "
             "widely quoted measurements actually carries a threshold and which do not.",
-            f"Section 7: single cut-point AUC ≈ 0.64, four measurements uncut "
-            f"{_num(cont_auc)}, full model {_num(best_model_auc)}."),
+            f"Section 7: single cut-point balanced accuracy {single_balanced}, four "
+            f"measurements uncut AUC {_num(cont_auc)}, full model "
+            f"{_num(best_model_auc)}."),
 
         _qa("How do we know your cut-points are not overfitted?",
             "We measured exactly that. Every cut-point was re-derived on hundreds of resampled "
@@ -2548,7 +2651,7 @@ def build_report(cfg: ThresholdReportConfig, data: ThresholdReportData | None = 
                       render_questions(data, facts), open=True),
         section_block("2 · What we measured, and how much it overlaps",
                       render_measurements(data, facts), open=True),
-        section_block("3 · Where does risk climb fastest? (the \"šķēre\")",
+        section_block("3 · Where does risk climb fastest?",
                       render_risk_curves(data, facts), open=True),
         section_block("4 · Where should the line be drawn?",
                       render_cutpoints(data, facts), open=True),

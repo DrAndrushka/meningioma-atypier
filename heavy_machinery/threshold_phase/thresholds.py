@@ -212,6 +212,13 @@ RULES: dict[str, tuple[Callable[[pd.DataFrame], int | None], str]] = {
 
 LITERATURE_RULE = "literature"
 
+# What a constrained rule was asked for, in words, so the "it could not be done"
+# message can name the constraint instead of leaving a blank cell.
+RULE_CONSTRAINTS: dict[str, str] = {
+    "spec_ge_90": "≥ 90% specificity with above-chance sensitivity",
+    "sens_ge_90": "≥ 90% sensitivity with above-chance specificity",
+}
+
 
 def select_cutoff(tab: pd.DataFrame, rule: str) -> int | None:
     """Row index of the cut-point ``rule`` picks, or None if it cannot be met."""
@@ -444,29 +451,74 @@ def format_pct_ci(row: pd.Series | dict, stem: str) -> str:
     return f"{v * 100:.0f}% ({lo * 100:.0f}–{hi * 100:.0f})"
 
 
+def rule_reading(row: pd.Series | dict) -> str:
+    """Why this row is not a usable rule, or "" when it is one.
+
+    Two failures used to reach the page as blank cells or as a negative J
+    printed like any other number:
+
+    * the constraint could not be met at **any** cut-point — an empty row that
+      reads as a missing value rather than as the finding it is;
+    * the constraint was met, but only by a cut-point performing **worse than
+      chance** (J ≤ 0). Printing "≥3.89, J −0.03" in a table of rules invites
+      someone to use it.
+    """
+    get = row.get
+    rule = str(get("rule", ""))
+    constraint = RULE_CONSTRAINTS.get(rule)
+    if pd.isna(get("cutoff")):
+        if constraint:
+            return f"not attainable — no cut-point on this cohort reaches {constraint}"
+        return "not attainable on this cohort"
+
+    j = get("youden_J")
+    if j is not None and not pd.isna(j) and float(j) <= 0.0:
+        if constraint:
+            return f"no cut-point attains {constraint}"
+        return "worse than chance — not a usable rule"
+    return ""
+
+
 def reading_view(table: pd.DataFrame) -> pd.DataFrame:
-    """The columns a clinician actually reads, with CIs folded into the estimate."""
+    """The columns a clinician actually reads, with CIs folded into the estimate.
+
+    A row that is not a usable rule prints the reason instead of the numbers:
+    a blank cell and a negative J both read as data when they are findings.
+    """
     boot_lo = table.get("cutoff_boot_lo", pd.Series(np.nan, index=table.index))
     boot_hi = table.get("cutoff_boot_hi", pd.Series(np.nan, index=table.index))
     corrected = table.get("youden_J_corrected", pd.Series(np.nan, index=table.index))
+    readings = [rule_reading(r) for _, r in table.iterrows()]
+    usable = [not bool(r) for r in readings]
+
+    def _blank_unusable(values: Sequence) -> list:
+        return [v if ok else "" for v, ok in zip(values, usable)]
+
     return pd.DataFrame({
         "Metric": table["metric"],
         "Rule": table["rule"],
-        "Cut-point": [
+        # Blanked on an unusable row too: a worse-than-chance rule still has a
+        # cut-point, and printing it invites someone to use it.
+        "Cut-point": _blank_unusable([
             "" if pd.isna(c) else f"{op}{c:.3g}"
             for op, c in zip(table["operator"], table["cutoff"])
-        ],
-        "Cut-point 95% CI": [
+        ]),
+        "Cut-point 95% CI": _blank_unusable([
             "" if pd.isna(lo) or pd.isna(hi) else f"{lo:.3g}–{hi:.3g}"
             for lo, hi in zip(boot_lo, boot_hi)
-        ],
+        ]),
         "n": table["n_used"],
-        "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in table.iterrows()],
-        "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in table.iterrows()],
-        "PPV (95% CI)": [format_pct_ci(r, "PPV") for _, r in table.iterrows()],
-        "NPV (95% CI)": [format_pct_ci(r, "NPV") for _, r in table.iterrows()],
-        "J": table["youden_J"].round(2),
-        "J (corr.)": corrected.round(2),
+        "Sens (95% CI)": _blank_unusable(
+            [format_pct_ci(r, "sensitivity") for _, r in table.iterrows()]),
+        "Spec (95% CI)": _blank_unusable(
+            [format_pct_ci(r, "specificity") for _, r in table.iterrows()]),
+        "PPV (95% CI)": _blank_unusable(
+            [format_pct_ci(r, "PPV") for _, r in table.iterrows()]),
+        "NPV (95% CI)": _blank_unusable(
+            [format_pct_ci(r, "NPV") for _, r in table.iterrows()]),
+        "J": _blank_unusable(table["youden_J"].round(2)),
+        "J (corr.)": _blank_unusable(corrected.round(2)),
+        "Reading": readings,
     })
 
 

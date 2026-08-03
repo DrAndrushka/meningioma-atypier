@@ -405,9 +405,15 @@ def test_report_is_a_self_contained_document(cfg):
     assert "src=\"http" not in html and "src='http" not in html
 
 
+def test_no_latvian_in_the_english_text(cfg):
+    """Kept in the library's own comments, dropped from the document."""
+    assert "šķēre" not in tr.build_report(cfg)
+
+
 def test_report_contains_every_section(cfg):
     html = tr.build_report(cfg)
-    for heading in ("Three questions", "šķēre", "Where should the line be drawn",
+    for heading in ("Three questions", "Where does risk climb fastest",
+                    "Where should the line be drawn",
                     "Do several criteria", "survive the missing data",
                     "Trade-offs", "bottom line", "Defending this at ESNR",
                     "Reference", "What not to claim"):
@@ -644,6 +650,55 @@ def test_report_degrades_without_calibration_or_net_benefit(tmp_path):
     html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
     assert "No calibration table was found" in html
     assert "No decision curve was found" in html
+
+
+# --------------------------------------------------------------------------
+# Presentation correctness (P2)
+# --------------------------------------------------------------------------
+def test_high_grade_denominator_is_added_up_not_printed_as_arithmetic(cfg):
+    html = tr.build_report(cfg)
+    assert "34+62" not in html
+    assert "of the 96 high-grade tumours" in html
+
+
+def test_dichotomised_rules_are_not_labelled_auc(cfg):
+    html = tr.build_report(cfg)
+    assert "AUC ≈" not in html
+    assert "Balanced accuracy" in html
+    assert "Balanced accuracy (dichotomised)</b> is (sensitivity" in html
+
+
+def test_numeric_cells_cannot_wrap_mid_token(cfg):
+    """"86/127/15/99" broke after a slash and read as "86/127/1 5/99"."""
+    html = tr.build_report(cfg)
+    assert 'class="nowrap">≤0.72' in html
+
+
+def test_bootstrap_counts_come_from_the_manifest_not_from_prose(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "manifest.json"
+    payload = json.loads(path.read_text())
+    payload["context"] = {"n_bootstrap": 4000, "n_bootstrap_curve": 250,
+                          "seed": 20260801}
+    path.write_text(json.dumps(payload))
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "several hundred resamples" not in html
+    assert "refitted on 250 resampled cohorts" in html
+    assert "4000 resamples" in html
+
+
+def test_thirty_percent_crossing_is_called_the_base_rate(cfg):
+    html = tr.build_report(cfg)
+    assert "base-rate crossing" in html
+
+
+def test_epv_is_a_column_not_an_argument(tmp_path):
+    root = _write_artifacts(tmp_path, models=True)
+    data = tr.load_report_data(tr.ThresholdReportConfig(output_root=root))
+    row = data.model_aucs.iloc[0]
+    assert row["events"] == 105
+    assert row["EPV"] == pytest.approx(105 / 2)
+    assert ">EPV</th>" in tr.build_report(tr.ThresholdReportConfig(output_root=root))
 
 
 def test_defence_section_cites_live_numbers(cfg):

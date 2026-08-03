@@ -327,3 +327,61 @@ def test_combined_roc_figure_builds():
     fig = th.combined_roc_figure(df, [HIGHER_METRIC, LOWER_METRIC], TARGET)
     assert len(fig.get_axes()) == 1
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Rules that are not rules
+# --------------------------------------------------------------------------
+def test_unattainable_rule_says_so_instead_of_leaving_a_blank():
+    row = {"rule": "sens_ge_90", "cutoff": np.nan, "youden_J": np.nan}
+    reading = th.rule_reading(row)
+    assert reading.startswith("not attainable")
+    assert "≥ 90% sensitivity" in reading
+
+
+def test_worse_than_chance_rule_is_not_printed_as_a_rule():
+    row = {"rule": "spec_ge_90", "cutoff": 3.895, "youden_J": -0.033}
+    assert th.rule_reading(row) == (
+        "no cut-point attains ≥ 90% specificity with above-chance sensitivity")
+
+
+def test_a_usable_rule_gets_no_reading():
+    assert th.rule_reading({"rule": "youden", "cutoff": 0.72, "youden_J": 0.24}) == ""
+
+
+def test_reading_view_blanks_the_numbers_of_an_unusable_row():
+    table = pd.DataFrame([
+        {"metric": "A", "rule": "youden", "operator": "≥", "cutoff": 5.0,
+         "n_used": 100, "sensitivity": 0.7, "specificity": 0.6, "PPV": 0.4,
+         "NPV": 0.8, "youden_J": 0.30, "youden_J_corrected": 0.27,
+         "cutoff_boot_lo": 4.0, "cutoff_boot_hi": 6.0},
+        {"metric": "A", "rule": "spec_ge_90", "operator": "≥", "cutoff": 90.0,
+         "n_used": 100, "sensitivity": 0.05, "specificity": 0.91, "PPV": 0.2,
+         "NPV": 0.7, "youden_J": -0.04, "youden_J_corrected": -0.05,
+         "cutoff_boot_lo": 80.0, "cutoff_boot_hi": 120.0},
+        {"metric": "A", "rule": "sens_ge_90", "operator": "≥", "cutoff": np.nan,
+         "n_used": np.nan, "sensitivity": np.nan, "specificity": np.nan,
+         "PPV": np.nan, "NPV": np.nan, "youden_J": np.nan,
+         "youden_J_corrected": np.nan,
+         "cutoff_boot_lo": np.nan, "cutoff_boot_hi": np.nan},
+    ])
+    view = th.reading_view(table)
+    assert view.loc[0, "Cut-point"] == "≥5" and view.loc[0, "Reading"] == ""
+    # Worse than chance: the numbers go, the explanation stays.
+    for column in ("Cut-point", "Cut-point 95% CI", "J", "Sens (95% CI)"):
+        assert view.loc[1, column] == ""
+    assert "above-chance sensitivity" in view.loc[1, "Reading"]
+    assert view.loc[2, "Reading"].startswith("not attainable")
+
+
+def test_reading_view_keeps_every_usable_row_intact():
+    table = pd.DataFrame([
+        {"metric": "A", "rule": "youden", "operator": "≤", "cutoff": 0.72,
+         "n_used": 309, "sensitivity": 0.354, "sensitivity_lo": 0.27,
+         "sensitivity_hi": 0.45, "specificity": 0.883, "PPV": 0.58, "NPV": 0.75,
+         "youden_J": 0.237, "youden_J_corrected": 0.209,
+         "cutoff_boot_lo": 0.69, "cutoff_boot_hi": 0.85},
+    ])
+    view = th.reading_view(table)
+    assert view.loc[0, "J"] == pytest.approx(0.24)
+    assert view.loc[0, "Sens (95% CI)"] == "35% (27–45)"
