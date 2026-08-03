@@ -21,6 +21,7 @@ _LOG_COLUMNS = [
     "active",
     "source",
     "kind",
+    "rule",
     "rows_nonmissing",
     "rows_missing",
     "schema_action",
@@ -40,7 +41,8 @@ class BinNumeric:
     kind: str = "ordinal"
     active: bool = True
     overwrite: bool = False
-    reason: str = ""
+    rule: str = ""      # how the column is computed (shown in the report)
+    reason: str = ""    # why — citation for literature-derived cutoffs
     right: bool = False
     ordered_levels: list | None = None
 
@@ -55,6 +57,7 @@ class Apply:
     kind: str = "continuous"
     active: bool = True
     overwrite: bool = False
+    rule: str = ""
     reason: str = ""
     ordered_levels: list | None = None
 
@@ -68,6 +71,7 @@ class Compute:
     kind: str = "continuous"
     active: bool = True
     overwrite: bool = False
+    rule: str = ""
     reason: str = ""
     ordered_levels: list | None = None
 
@@ -117,6 +121,7 @@ def _base_log(spec, type_name: str) -> dict:
         "active": spec.active,
         "source": spec.source,
         "kind": spec.kind,
+        "rule": spec.rule,
         "reason": spec.reason,
     }
 
@@ -246,6 +251,7 @@ def _apply_compute(
         "active": spec.active,
         "source": ", ".join(spec.sources),
         "kind": spec.kind,
+        "rule": spec.rule,
         "reason": spec.reason,
     }
 
@@ -413,7 +419,8 @@ def _update_cleaning_summary_derived(
                 continue
             meta[name] = {
                 "source": str(entry.get("source", "") or "").strip(),
-                "reason": str(entry.get("reason", "") or "").strip(),
+                "criterion": (str(entry.get("rule", "") or "").strip()
+                              or str(entry.get("reason", "") or "").strip()),
             }
 
     base_cols = n_columns - len(created_cols)
@@ -432,7 +439,7 @@ def _update_cleaning_summary_derived(
         if "n_columns" in row:
             row["n_columns"] = base_cols + i + 1
         if "criterion" in row:
-            row["criterion"] = info.get("reason", "")
+            row["criterion"] = info.get("criterion", "")
         rows.append(row)
 
     new_df = pd.DataFrame(rows, columns=summary.columns)

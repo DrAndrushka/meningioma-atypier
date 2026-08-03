@@ -1214,78 +1214,143 @@ def _render_cleaning_log_tables(log: pd.DataFrame) -> str:
     return "".join(parts) if parts else table_to_html(log, max_rows=200)
 
 
-def _summary_with_derived_step(
-    summary: pd.DataFrame,
-    derivation_log: pd.DataFrame | None,
-) -> pd.DataFrame:
-    """Insert one ``derived`` row per new column into the cleaning summary.
+def _cleaning_provenance(art: Artifacts) -> str:
+    """Provenance strip: dataset shape at each hand-off point."""
+    summary = art.cleaning_summary
+    if summary is None or summary.empty or "step" not in summary.columns:
+        return ""
 
-    Uses derivation ``reason`` as ``criterion`` so each column's rule is visible.
-    """
-    if (derivation_log is None or derivation_log.empty
-            or "derivation" not in derivation_log.columns):
-        return summary
-    # Source pipeline may already bake in the 'derived' rows — don't duplicate.
-    if "step" in summary.columns and (summary["step"] == "derived").any():
-        return summary
+    def _step(name: str):
+        hit = summary[summary["step"] == name]
+        return hit.iloc[0] if not hit.empty else None
 
-    created = derivation_log
-    if "schema_action" in created.columns:
-        mask = created["schema_action"].astype(str).str.startswith("added ColSpec")
-        created = created[mask]
-    if created.empty:
-        return summary
+    def _shape(row) -> str:
+        if row is None:
+            return "—"
+        n_rows, n_cols = _fmt_count(row.get("n_rows")), _fmt_count(row.get("n_columns"))
+        if n_rows == "" and n_cols == "":
+            return "—"
+        return f"{n_rows} rows × {n_cols} columns"
 
-    n_rows_val = ""
-    base_cols: int | None = None
-    if "step" in summary.columns:
-        fin = summary[summary["step"] == "final"]
-        if not fin.empty:
-            if "n_rows" in summary.columns:
-                n_rows_val = fin.iloc[0]["n_rows"]
-            if "n_columns" in summary.columns and pd.notna(fin.iloc[0].get("n_columns")):
-                try:
-                    base_cols = int(fin.iloc[0]["n_columns"])
-                except (TypeError, ValueError):
-                    base_cols = None
+    schema_row = _step("apply_schema")
+    items = [
+        ("Raw export", _shape(_step("raw_data"))),
+        ("After schema", _shape(schema_row)),
+        ("Analysed cohort", _shape(_step("final"))),
+        ("Report generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
+    ]
+    detail = "" if schema_row is None else str(schema_row.get("detail", "") or "").strip()
+    if detail:
+        items.insert(2, ("Schema step", detail))
+    return table_to_html(pd.DataFrame(items, columns=["Item", "Value"]))
+
+
+_COHORT_COLUMNS = ["#", "Criterion", "Rule", "n before", "n excluded", "n remaining"]
+
+
+def _cohort_flow_table(art: Artifacts) -> str:
+    """Inclusion/exclusion criteria in applied order, led by the duplicate audit."""
+    summary = art.cleaning_summary
+    has_summary = summary is not None and "step" in summary.columns
+
+    def _step(name: str):
+        if not has_summary:
+            return None
+        hit = summary[summary["step"] == name]
+        return hit.iloc[0] if not hit.empty else None
 
     rows: list[dict] = []
-    for i, (_, entry) in enumerate(created.iterrows()):
-        col = str(entry.get("derivation", "")).strip()
-        if not col:
-            continue
-        source = str(entry.get("source", "") or "").strip()
-        reason = str(entry.get("reason", "") or "").strip()
-        new_row = {c: "" for c in summary.columns}
-        if "step" in new_row:
-            new_row["step"] = "derived"
-        if "detail" in new_row:
-            new_row["detail"] = (
-                f"added {col} ← {source}" if source else f"added {col}"
-            )
-        if "n_rows" in new_row:
-            new_row["n_rows"] = n_rows_val
-        if "n_columns" in new_row and base_cols is not None:
-            new_row["n_columns"] = base_cols + i + 1
-        if "criterion" in new_row:
-            new_row["criterion"] = reason
-        rows.append(new_row)
+    dup = _step("duplicate_audit")
+    if dup is not None:
+        n = _fmt_count(dup.get("n_rows"))
+        rows.append({
+            "#": "—", "Criterion": "Duplicate ID audit",
+            "Rule": str(dup.get("detail", "") or ""),
+            "n before": n, "n excluded": 0, "n remaining": n,
+        })
+
+    # n_before/n_dropped are only kept in the cleaning log — the summary carries
+    # n_remaining alone — so read the log first and fall back when it is absent.
+    drops: list[dict] = []
+    log = art.cleaning_log
+    if log is not None and "step" in log.columns:
+        drops = [
+            {"name": r.get("reason"), "rule": r.get("criterion"),
+             "before": r.get("n_before"), "excluded": r.get("n_dropped"),
+             "remaining": r.get("n_remaining")}
+            for _, r in log[log["step"] == "drop_rows"].iterrows()
+        ]
+    if not drops and has_summary:
+        drops = [
+            {"name": r.get("detail"), "rule": r.get("criterion"),
+             "before": None, "excluded": None, "remaining": r.get("n_rows")}
+            for _, r in summary[summary["step"] == "drop_rows"].iterrows()
+        ]
+
+    for i, d in enumerate(drops, start=1):
+        rows.append({
+            "#": i,
+            "Criterion": str(d["name"] or ""),
+            "Rule": str(d["rule"] or ""),
+            "n before": _fmt_count(d["before"]),
+            "n excluded": _fmt_count(d["excluded"]),
+            "n remaining": _fmt_count(d["remaining"]),
+        })
 
     if not rows:
-        return summary
+        return ""
 
-    new_df = pd.DataFrame(rows, columns=summary.columns)
-    # Place derived rows just before the 'final' row when present.
-    if "step" in summary.columns and (summary["step"] == "final").any():
-        pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
-        if "n_columns" in summary.columns and base_cols is not None:
-            summary = summary.copy()
-            summary.loc[summary["step"] == "final", "n_columns"] = (
-                base_cols + len(rows)
-            )
-        return pd.concat(
-            [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
-    return pd.concat([summary, new_df], ignore_index=True)
+    raw, final = _step("raw_data"), _step("final")
+    n_raw, n_final = _to_int_or_none(
+        None if raw is None else raw.get("n_rows")), _to_int_or_none(
+        None if final is None else final.get("n_rows"))
+    if n_raw is not None and n_final is not None:
+        rows.append({
+            "#": "", "Criterion": "Analysed cohort", "Rule": "",
+            "n before": n_raw, "n excluded": n_raw - n_final, "n remaining": n_final,
+        })
+    return table_to_html(pd.DataFrame(rows, columns=_COHORT_COLUMNS))
+
+
+# (log column, report heading) for the derived / recoded variable tables.
+_DERIVED_COLUMNS = [
+    ("derivation", "New column"), ("source", "Derived from"), ("rule", "Rule"),
+    ("kind", "Kind"), ("rows_missing", "n missing"), ("reason", "Source"),
+]
+_RECODED_COLUMNS = [
+    ("derivation", "Column"), ("rule", "Rule"), ("kind", "Kind"),
+    ("rows_nonmissing", "n non-missing"), ("rows_missing", "n missing"),
+]
+
+
+def _derived_tables(log: pd.DataFrame | None) -> str:
+    """New columns (``added ColSpec``), then in-place recodes (``updated ColSpec``)."""
+    if log is None or log.empty or "derivation" not in log.columns:
+        return ""
+    action = log.get("schema_action", pd.Series("", index=log.index)).astype(str)
+
+    def _project(sub: pd.DataFrame, spec: list[tuple[str, str]]) -> pd.DataFrame:
+        pairs = [(c, label) for c, label in spec if c in sub.columns]
+        out = sub[[c for c, _ in pairs]].copy()
+        out.columns = [label for _, label in pairs]
+        return _format_count_cols(out, ["n missing", "n non-missing"])
+
+    parts: list[str] = []
+    added = log[action.str.startswith("added ColSpec")]
+    if not added.empty:
+        parts.append("<h3>Derived variables</h3>")
+        parts.append("<p class='muted'>Columns computed from the cleaned cohort. "
+                     "<em>Rule</em> is the definition; <em>Source</em> cites the "
+                     "study a cutoff was taken from.</p>")
+        parts.append(table_to_html(_project(added, _DERIVED_COLUMNS), max_rows=200))
+
+    updated = log[action.str.startswith("updated ColSpec")]
+    if not updated.empty:
+        parts.append("<h3>Recoded variables</h3>")
+        parts.append("<p class='muted'>Existing columns rewritten in place "
+                     "(e.g. structural zeros); no new column is created.</p>")
+        parts.append(table_to_html(_project(updated, _RECODED_COLUMNS), max_rows=200))
+    return "".join(parts)
 
 
 def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1304,14 +1369,19 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
             "performed, but no cleaning audit table was exported."))
         return section_block("🧹 Cleaning story", "".join(body))
 
-    if art.cleaning_summary is not None and not art.cleaning_summary.empty:
-        body.append("<h3>Summary</h3>")
-        summary = _summary_with_derived_step(
-            art.cleaning_summary, art.derivation_log)
-        wanted = ["step", "detail", "n_rows", "n_columns", "criterion"]
-        summary = summary[[c for c in wanted if c in summary.columns]]
-        summary = _format_count_cols(summary, ["n_rows", "n_columns"])
-        body.append(table_to_html(summary))
+    provenance = _cleaning_provenance(art)
+    if provenance:
+        body.append("<h3>Provenance</h3>")
+        body.append(provenance)
+
+    cohort = _cohort_flow_table(art)
+    if cohort:
+        body.append("<h3>Inclusion / exclusion criteria</h3>")
+        body.append("<p class='muted'>Criteria applied in the order shown; each "
+                    "exclusion count is conditional on the criteria above it.</p>")
+        body.append(cohort)
+
+    body.append(_derived_tables(art.derivation_log))
 
     if has_coercion:
         coer = collapse_coercion_audit_rows(art.schema_coercion.copy())
@@ -1347,9 +1417,10 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
         log_html = (_render_cleaning_log_tables(art.cleaning_log) if has_log else "")
         if has_deriv:
             log_html += (
-                "<h4>Derived variables</h4>"
-                "<p>New columns computed from existing ones "
-                "(binning, custom transforms).</p>"
+                "<h4>Derivation log (raw)</h4>"
+                "<p>Every declared derivation, including entries that were "
+                "skipped as inactive or because their source was missing — "
+                "those do not appear in the tables above.</p>"
                 + table_to_html(art.derivation_log, max_rows=200)
             )
         body.append(details_block("📜 Full cleaning log", log_html))
@@ -2172,10 +2243,15 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             )
         sub["p"] = sub["p"].apply(human_p)
         sub["p_fdr"] = sub["p_fdr"].apply(human_p)
-        target_body.append(table_to_html(
-            sub[display_cols], row_class_fn=_row_class,
-            # 'strength' is a pre-built <span> badge — don't HTML-escape it.
-            safe_html_cols=("strength",),
+        # The full ranked screen is long — keep it folded so the summary,
+        # diagnostic accuracy and interpretation stay visible on open.
+        target_body.append(details_block(
+            f"🧬 The Full Sweep — every predictor, ranked ({len(sub)})",
+            table_to_html(
+                sub[display_cols], row_class_fn=_row_class,
+                # 'strength' is a pre-built <span> badge — don't HTML-escape it.
+                safe_html_cols=("strength",),
+            ),
         ))
         target_body.append(_render_diagnostic_accuracy(target, art, cfg))
         target_body.append(_render_eda_interpretation(target, interp_df, cfg))

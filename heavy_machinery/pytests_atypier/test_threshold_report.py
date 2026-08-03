@@ -116,9 +116,33 @@ def _write_artifacts(root, *, tables=None, figures=True, manifest=True, models=F
             {"rule_label": "≥ 2 of 4 criteria", "sensitivity": 0.80, "specificity": 0.52},
         ]),
         "26_headline_findings.csv": pd.DataFrame([
-            {"Metric": "ADC", "Threshold effect?": "yes", "Non-linearity p": "= 0.009"},
-            {"Metric": "Volume", "Threshold effect?": "no — risk is linear",
-             "Non-linearity p": "= 0.974"},
+            {"Metric": "ADC", "Threshold evidence": "moderate",
+             "What limits it": "MICE reproducibility", "Non-linearity p": "= 0.009"},
+            {"Metric": "Volume", "Threshold evidence": "weak",
+             "What limits it": "Non-linearity", "Non-linearity p": "= 0.974"},
+        ]),
+        "27_evidence_criteria.csv": pd.DataFrame([
+            {"Criterion": "Non-linearity", "Family": "necessary",
+             "Source": "LRT (section 3)", "Rule": "p &lt; 0.05"},
+        ]),
+        "28_threshold_evidence.csv": pd.DataFrame([
+            {"metric": "ADC", "column": "adc", "verdict": "moderate",
+             "n_criteria_passed": 4, "n_criteria": 5,
+             "limiting_criterion": "MICE reproducibility",
+             "failed_criteria": "MICE reproducibility",
+             "knee_ci_ratio": 1.11, "AUC": 0.63,
+             "verdict_note": "moderate — MICE reproducibility fails"},
+            # Empty limiting_criterion round-trips as NaN — the cell that once
+            # printed "limited by nan" on the front page.
+            {"metric": "Volume", "column": "vol", "verdict": "weak",
+             "n_criteria_passed": 1, "n_criteria": 5,
+             "limiting_criterion": "", "failed_criteria": "Non-linearity",
+             "knee_ci_ratio": np.nan, "AUC": 0.68,
+             "verdict_note": "weak — Non-linearity fails"},
+        ]),
+        "29_threshold_evidence_reading_view.csv": pd.DataFrame([
+            {"Metric": "ADC", "Evidence": "moderate", "Criteria met": "4 of 5",
+             "What limits it": "MICE reproducibility"},
         ]),
     }
     for name, frame in (tables if tables is not None else defaults).items():
@@ -335,6 +359,69 @@ def test_literature_cutpoints_get_their_own_block(cfg):
     html = tr.build_report(cfg)
     assert "Published cut-points, scored on our patients" in html
     assert "Shin et al." in html
+
+
+# --------------------------------------------------------------------------
+# The verdict, which must never be a literal
+# --------------------------------------------------------------------------
+def test_no_verdict_sentence_is_hard_coded(cfg):
+    """The exact prose that once contradicted the tables it sat next to."""
+    html = tr.build_report(cfg)
+    for stale in ("Only ADC", "only one passed", "the volumes do not turn",
+                  "no threshold whatsoever", "Threshold effect?"):
+        assert stale not in html, f"hard-coded verdict text survived: {stale!r}"
+
+
+def test_verdict_follows_the_artifacts_not_the_prose(tmp_path):
+    """Flip every grade in the CSV and the document must flip with it."""
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "28_threshold_evidence.csv"
+    flipped = pd.read_csv(path)
+    flipped["verdict"] = ["weak", "strong"]
+    flipped["limiting_criterion"] = ["Non-linearity", ""]
+    flipped.to_csv(path, index=False)
+
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "1 strong" in html and "1 weak" in html
+    assert "Volume <b>strong</b>" in html
+    assert "ADC <b>weak</b>" in html
+
+
+def test_count_phrase_agrees_in_number():
+    """The verb follows the count of thresholds, which is the sentence's subject.
+
+    "4 of 4 measurements has" was the published bug; "1 of 2 measurements has"
+    is correct English and must survive.
+    """
+    yes, no = tr.MetricVerdict("ADC", "adc", True), tr.MetricVerdict("Vol", "vol", False)
+    assert tr.Verdicts(()).count_phrase(verb=True) == "0 of 0 measurements have"
+    assert tr.Verdicts((yes,)).count_phrase(verb=True) == "1 of 1 measurement has"
+    assert tr.Verdicts((yes, no)).count_phrase(verb=True) == "1 of 2 measurements has"
+    assert tr.Verdicts((yes, yes)).count_phrase(verb=True) == "2 of 2 measurements have"
+    assert tr.Verdicts((no, no)).count_phrase(verb=True) == "0 of 2 measurements have"
+
+
+def test_blank_limiting_criterion_never_prints_nan(tmp_path):
+    root = _write_artifacts(tmp_path)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "limited by nan" not in html
+    assert "all criteria met" in html
+
+
+def test_grade_tally_orders_best_supported_first():
+    items = tuple(tr.MetricVerdict(g, g, True, grade=g)
+                  for g in ("weak", "strong", "moderate"))
+    assert [g for g, _ in tr.Verdicts(items).grade_tally()] == [
+        "strong", "moderate", "weak"]
+    assert tr.Verdicts(items).strongest()[0].grade == "strong"
+
+
+def test_falls_back_to_the_bare_test_when_grades_are_missing(tmp_path):
+    root = _write_artifacts(tmp_path)
+    (root / "thresholds" / "tables" / "28_threshold_evidence.csv").unlink()
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "graded evidence table was not found" in html
+    assert "measurements with a true turning point" in html
 
 
 def test_defence_section_cites_live_numbers(cfg):

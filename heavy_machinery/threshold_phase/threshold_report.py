@@ -41,6 +41,7 @@ for _phase in ("cleaning_phase", "modelling_phase", "threshold_phase"):
 # Shared with the main pipeline report so both documents look identical and the
 # stylesheet has one home. The underscore names are private to `report`, not to
 # the codebase.
+import evidence  # noqa: E402  (needs the sys.path bootstrap above)
 from report import (  # noqa: E402  (needs the sys.path bootstrap above)
     _CSS,  # noqa: F401  (imported for side-effect parity / future use)
     _esc,
@@ -58,7 +59,15 @@ DEFAULT_TITLE = "Threshold analysis — high-grade meningioma on pre-operative M
 
 # Pre-specified before the verdicts were read off: a threshold counts as
 # reproducible when it is found again in at least this share of the MICE draws.
-MICE_REPRODUCIBLE_CUT = 0.80
+MICE_REPRODUCIBLE_CUT = evidence.MICE_REPRODUCIBLE_CUT
+# Best-supported first — every ordering and tally in the document uses this.
+GRADE_ORDER = list(evidence.GRADES)
+GRADE_COLOUR = {
+    evidence.GRADE_STRONG: "var(--green)",
+    evidence.GRADE_MODERATE: "var(--yellow)",
+    evidence.GRADE_FRAGILE: "var(--accent)",
+    evidence.GRADE_WEAK: "var(--red)",
+}
 
 TABLE_FILES = {
     "cohort_summary": "00_cohort_summary.csv",
@@ -78,6 +87,9 @@ TABLE_FILES = {
     "count_score_imputed": "23_count_score_imputed.csv",
     "count_rules_imputed": "25_count_rules_imputed.csv",
     "headline": "26_headline_findings.csv",
+    "evidence_criteria": "27_evidence_criteria.csv",
+    "evidence": "28_threshold_evidence.csv",
+    "evidence_reading": "29_threshold_evidence_reading_view.csv",
 }
 
 FIGURE_FILES = {
@@ -146,6 +158,19 @@ _EXTRA_CSS = """
 .ref-card dd { margin: 0; }
 .ref-card dd.num { font-variant-numeric: tabular-nums; }
 .tradeoff-table td:first-child { font-weight: 600; white-space: nowrap; }
+.grade {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .04em; color: #fff;
+}
+.grade-list { list-style: none; padding: 0; margin: 12px 0; }
+.grade-list li {
+    padding: 9px 13px; margin: 7px 0; border-radius: 6px;
+    background: var(--card); border-left: 4px solid var(--border);
+}
+.grade-list .metric-name { font-weight: 600; }
+.grade-list .limit { color: var(--muted); font-size: 13.5px; display: block;
+                     margin-top: 2px; }
 """
 
 
@@ -371,6 +396,9 @@ class MetricVerdict:
     where: str = ""            # steepest-rise point, formatted, or ""
     pct_below: float = float("nan")
     reproduced: float = float("nan")   # MICE knee_rate, 0–1
+    grade: str = ""            # strong / moderate / fragile / weak (section 3)
+    limiting: str = ""         # the criterion that holds the grade down
+    grade_note: str = ""       # grade with its binding criterion spelled out
 
 
 def _join_names(names: Sequence[str], conjunction: str = "and") -> str:
@@ -428,9 +456,45 @@ class Verdicts:
         bits = [f"{v.metric} turns near {v.where}" for v in self.positive if v.where]
         return _join_names(bits, "and")
 
+    # ---- the graded verdict (section 3's evidence hierarchy) -------------
+    @property
+    def graded(self) -> bool:
+        return any(v.grade for v in self.items)
+
+    def by_grade(self, grade: str) -> list[MetricVerdict]:
+        return [v for v in self.items if v.grade == grade]
+
+    def grade_tally(self) -> list[tuple[str, int]]:
+        """``[("strong", 1), ("moderate", 2), …]`` — only grades that occur."""
+        return [(g, len(self.by_grade(g))) for g in GRADE_ORDER if self.by_grade(g)]
+
+    def grade_phrase(self) -> str:
+        """``1 strong, 2 moderate and 1 fragile`` — the headline in one clause."""
+        return _join_names([f"{n} {g}" for g, n in self.grade_tally()])
+
+    def strongest(self) -> list[MetricVerdict]:
+        """The measurements carrying the best-supported claim in this run."""
+        for g in GRADE_ORDER:
+            hits = self.by_grade(g)
+            if hits:
+                return hits
+        return []
+
+    def grade_sentences(self) -> str:
+        """One clause per measurement: name, grade, and what limits it."""
+        bits = []
+        for v in sorted(self.items, key=lambda x: GRADE_ORDER.index(x.grade)
+                        if x.grade in GRADE_ORDER else len(GRADE_ORDER)):
+            if not v.grade:
+                continue
+            limit = (f" (limited by {v.limiting.lower()})" if v.limiting
+                     else " (all criteria met)")
+            bits.append(f"{_esc(v.metric)} <b>{_esc(v.grade)}</b>{limit}")
+        return _join_names(bits)
+
 
 def metric_verdicts(data: ThresholdReportData) -> Verdicts:
-    """Build the verdict list from the risk-curve table and the MICE stability."""
+    """Build the verdict list from the risk-curve table, MICE stability and grades."""
     risk = data.table("risk_curves")
     if risk.empty or "knee_found" not in risk.columns:
         return Verdicts()
@@ -440,9 +504,24 @@ def metric_verdicts(data: ThresholdReportData) -> Verdicts:
     if not stab.empty and "knee_rate" in stab.columns and "column" in stab.columns:
         knee_rate = dict(zip(stab["column"], stab["knee_rate"]))
 
+    grades: dict[Any, dict[str, str]] = {}
+    ev_table = data.table("evidence")
+    if not ev_table.empty and "column" in ev_table.columns:
+        # An empty cell round-trips through CSV as NaN, and str(nan) is "nan" —
+        # which is how "limited by nan" reaches a poster.
+        def _cell(value: Any) -> str:
+            return "" if value is None or pd.isna(value) else str(value)
+
+        grades = {row["column"]: {
+            "grade": _cell(row.get("verdict")),
+            "limiting": _cell(row.get("limiting_criterion")),
+            "note": _cell(row.get("verdict_note")),
+        } for _, row in ev_table.iterrows()}
+
     items = []
     for _, row in risk.iterrows():
         found = _truthy(row.get("knee_found"))
+        g = grades.get(row.get("column"), {})
         items.append(MetricVerdict(
             metric=str(row.get("metric", "")),
             column=str(row.get("column", "")),
@@ -450,6 +529,9 @@ def metric_verdicts(data: ThresholdReportData) -> Verdicts:
             where=_sig(row.get("steepest_x")) if found else "",
             pct_below=float(row.get("steepest_pct_of_patients", float("nan"))),
             reproduced=float(knee_rate.get(row.get("column"), float("nan"))),
+            grade=g.get("grade", ""),
+            limiting=g.get("limiting", ""),
+            grade_note=g.get("note", ""),
         ))
     return Verdicts(tuple(items))
 
@@ -510,6 +592,22 @@ def cohort_facts(data: ThresholdReportData) -> CohortFacts:
 # ---------------------------------------------------------------------------
 # Header
 # ---------------------------------------------------------------------------
+def _threshold_card(v: Verdicts) -> tuple[str, str, str]:
+    """The stat card for the headline finding.
+
+    Deliberately not "4 of 4". A count of measurements that cleared one
+    p-value is the claim reviewers attack first; the best-supported grade and
+    the spread of grades is both a weaker-sounding and a stronger claim.
+    """
+    if not v.graded:
+        return ("Real thresholds", f"{v.n_thresholds} of {v.n_metrics}",
+                "measurements with a true turning point")
+    best = v.strongest()
+    grade = best[0].grade if best else "—"
+    return ("Threshold evidence", f"{len(best)} {grade}",
+            v.grade_phrase() + f", of {v.n_metrics}")
+
+
 def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
                   facts: CohortFacts) -> str:
     verdict = data.table("combination_verdict")
@@ -518,8 +616,7 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
     cards = [
         ("Patients", str(facts.n) if facts.n else "—", "operated, with histology"),
         ("High grade", _pct(facts.prevalence), f"{facts.events} of {facts.n} are WHO 2–3"),
-        ("Real thresholds", f"{facts.n_thresholds} of {facts.n_metrics}",
-         "measurements with a true turning point"),
+        _threshold_card(v),
         ("Best cut-point", _num(_first(verdict, "best_single_J")),
          "Youden J, single criterion"),
         ("Best model", _num(_first(data.model_aucs, "AUC_corrected")),
@@ -537,6 +634,13 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
 
     if v.n_metrics == 0:
         headline_answer = ""
+    elif v.graded:
+        # Graded, because "4 of 4 passed" is the claim a commission attacks
+        # first — and it is not what the evidence actually supports.
+        headline_answer = (
+            f"<li><b>The threshold claims are not equally supported: "
+            f"{_esc(v.grade_phrase())}.</b> {v.grade_sentences()}. Section 3 scores each "
+            f"on five criteria fixed before the verdicts were read off.</li>")
     elif v.n_thresholds == 0:
         headline_answer = (
             f"<li><b>No measurement has a genuine threshold.</b> All {v.n_metrics} rise "
@@ -702,6 +806,103 @@ whether a rule can work is not whether the groups differ — it is how far they 
 # ---------------------------------------------------------------------------
 # 3 — risk curves
 # ---------------------------------------------------------------------------
+def _grade_pill(grade: str) -> str:
+    colour = GRADE_COLOUR.get(grade, "var(--muted)")
+    return f'<span class="grade" style="background:{colour}">{_esc(grade)}</span>'
+
+
+def render_evidence(data: ThresholdReportData, facts: CohortFacts) -> str:
+    """Section 3's graded verdict: the hierarchy, the scoring, what limits each.
+
+    The methods paragraph is not decoration. A hierarchy invented after the
+    numbers were seen is worth nothing; stating that it was fixed first, and
+    printing the rules next to the results, is the whole reason a graded
+    verdict is more defensible than a bare p-value gate.
+    """
+    v = facts.verdicts
+    if not v.graded:
+        return info_box(
+            "The graded evidence table was not found. Re-run the thresholder "
+            "notebook (section 8) to produce <code>28_threshold_evidence.csv</code>; "
+            "until then this section reports the bare non-linearity test only.")
+
+    criteria = data.table("evidence_criteria")
+    reading = data.table("evidence_reading")
+    ev_table = data.table("evidence")
+
+    items = []
+    for x in sorted(v.items,
+                    key=lambda i: GRADE_ORDER.index(i.grade)
+                    if i.grade in GRADE_ORDER else len(GRADE_ORDER)):
+        limit = (f'<span class="limit">Held back by: {_esc(x.limiting)}</span>'
+                 if x.limiting else
+                 '<span class="limit">All five criteria met.</span>')
+        items.append(f'<li>{_grade_pill(x.grade)} '
+                     f'<span class="metric-name">{_esc(x.metric)}</span>{limit}</li>')
+    grade_list = f'<ul class="grade-list">{"".join(items)}</ul>'
+
+    # The two columns that are reported but do not score — see evidence.py.
+    context_table = ""
+    if not ev_table.empty and {"knee_ci_ratio", "AUC"} <= set(ev_table.columns):
+        context_table = table_to_html(pd.DataFrame({
+            "Measurement": ev_table["metric"],
+            "Evidence": ev_table["verdict"],
+            "Knee interval width": [
+                "—" if pd.isna(r) else f"{_num(r, 1)}× (hi ÷ lo)"
+                for r in ev_table["knee_ci_ratio"]],
+            "AUC": [_num(a) for a in ev_table["AUC"]],
+        }))
+
+    return f"""
+<h3>How strong is each of those claims?</h3>
+
+<p>A bare <em>yes</em> is a weaker result than a graded one, and an easier one to attack.
+It rests on a single p-value clearing 0.05 and says nothing about whether the knee sits
+where the patients are, whether it survives a change of fitting scale, or whether it is
+the 50%-risk crossing under a new name.</p>
+
+{_key("Pre-specified, and that is the point:",
+      "these five criteria and the four grades they map onto were fixed <b>before any "
+      "verdict was read off</b>. A hierarchy invented after seeing the numbers grades "
+      "nothing — it just restates them. The rules are printed here next to the results "
+      "so a reader can check that the grades follow from them.")}
+
+{table_to_html(criteria, safe_html_cols=["Rule", "Source"]) if not criteria.empty else ""}
+
+<p>The first three are <b>necessary</b>: if one fails, the threshold claim as stated is not
+supportable, whatever the others say. The last two are <b>robustness</b> checks — they ask
+whether the claim survives a choice we were not forced into. All five pass →
+<em>strong</em>. All three necessary pass and one robustness check →
+<em>moderate</em>. One necessary criterion (other than curvature) fails, or neither
+robustness check passes → <em>fragile</em>. The curvature test itself fails, or two
+necessary criteria do → <em>weak</em>.</p>
+
+{grade_list}
+
+{table_to_html(reading) if not reading.empty else ""}
+
+{_concrete(f"the graded answer is {_esc(v.grade_phrase())} — "
+           f"{v.grade_sentences()}. That is a more defensible headline than "
+           f"&quot;{v.count_phrase(verb=True)} a threshold&quot;, and it is the "
+           f"sentence to present.")}
+
+<h3>Two numbers that sit next to the grade and do not score it</h3>
+
+<p>The five criteria are pass/fail, so they cannot see how <em>precisely</em> a knee is
+located or whether the measurement carries any signal at all. Both are reported here and
+both should be read before quoting a grade.</p>
+
+{context_table}
+
+{warning_box(
+    "A wide knee interval or a low AUC does not lower the grade, because neither was "
+    "among the pre-specified criteria — changing that now would be exactly the "
+    "after-the-fact rule-making the hierarchy exists to prevent. Read them as context. "
+    "If they are to gate the verdict, they have to be specified before the next run, "
+    "not after this one.")}
+"""
+
+
 def _risk_curve_answer(facts: CohortFacts) -> str:
     """Section 3's answer paragraph, entirely from :class:`Verdicts`.
 
@@ -835,6 +1036,8 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
 {table_to_html(reading) if not reading.empty else ""}
 
 {crossing_note}
+
+{render_evidence(data, facts)}
 
 {_key("The bracketed numbers are bootstrap intervals.",
       "The whole curve was refitted on several hundred resampled cohorts; this is the range the "
@@ -1378,7 +1581,8 @@ this table.</p>
 {table_to_html(headline) if not headline.empty else '<p class="muted"><em>(headline table unavailable)</em></p>'}
 
 {_key("The columns, in order:",
-      "<b>Threshold effect?</b> is section 3 — a real turning point or not. "
+      "<b>Threshold evidence</b> is section 3's graded verdict — strong, moderate, fragile "
+      "or weak — and <b>What limits it</b> names the criterion holding it back. "
       "<b>Reproducible</b> is section 6 — did it survive the missing data. "
       "<b>Risk 30% / 50% at</b> are what you quote where there is no threshold. "
       "<b>Youden cut-point</b> and its interval are section 4. <b>Cut-point stable?</b> flags "
@@ -1414,13 +1618,30 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
     if v.negative:
         turn_ev += f" {v.negative_names()} did not turn."
 
+    if v.graded:
+        first_answer = (
+            "We do report it — but we also tested whether it is a <em>threshold</em>, and "
+            "that test is what most papers skip. We go further: rather than a single "
+            f"p&nbsp;&lt;&nbsp;0.05 gate, each measurement is scored against "
+            f"<b>{len(evidence.CRITERIA)} criteria fixed before any verdict was read "
+            f"off</b> — curvature, whether the knee sits among the patients, whether it is "
+            f"merely the 50%-risk crossing renamed, whether it survives a change of "
+            f"fitting scale, and whether it reproduces across the imputed datasets. The "
+            f"claims grade out as {_esc(v.grade_phrase())}, not as a uniform yes.")
+        first_evidence = (
+            f"Section 3, evidence hierarchy: {v.grade_sentences()}. "
+            f"Underlying curvature test: {v.count_phrase()} passed. {turn_ev}")
+    else:
+        first_answer = (
+            "We do report it — but we also tested whether it is a <em>threshold</em>, and "
+            "that test is what most papers skip. Reporting a cut-point as though it marked "
+            "a jump in risk, when the risk is a straight line, is the specific error we set "
+            "out to avoid.")
+        first_evidence = f"Section 3: {v.count_phrase()} passed the curvature test. {turn_ev}"
+
     qas = [
         _qa("Why not just report the optimal ADC cut-off, like every other paper?",
-            "We do report it — but we also tested whether it is a <em>threshold</em>, and that "
-            "test is what most papers skip. Reporting a cut-point as though it marked a jump "
-            "in risk, when the risk is a straight line, is the specific error we set out to "
-            "avoid.",
-            f"Section 3: {v.count_phrase()} passed the curvature test. {turn_ev}"),
+            first_answer, first_evidence),
 
         _qa("Your AUCs are only 0.6–0.7. Is that worth publishing?",
             "Those are single imaging measurements used alone, and that is the honest ceiling "
@@ -1563,7 +1784,16 @@ def render_reference(data: ThresholdReportData, facts: CohortFacts) -> str:
              "the risk itself changes behaviour.",
              "Deliberately not synonyms in this study. A measurement can have the first "
              "without the second, which is why section 3 tests for the second separately.",
-             f"{facts.verdicts.count_phrase()} passed the curvature test."),
+             (f"{facts.verdicts.grade_phrase()} on section 3's evidence hierarchy"
+              if facts.verdicts.graded
+              else f"{facts.verdicts.count_phrase()} passed the curvature test.")),
+        _ref("Evidence hierarchy",
+             f"{len(evidence.CRITERIA)} criteria — curvature, knee interiority, knee ≠ the "
+             f"50%-risk point, scale robustness, MICE reproducibility — fixed before any "
+             f"verdict was read off, mapping onto four grades.",
+             "Replaces the single p &lt; 0.05 gate. Quote the grade, not the p-value, and "
+             "name the criterion that limited it.",
+             (facts.verdicts.grade_phrase() if facts.verdicts.graded else "—")),
         _ref("Restricted cubic spline",
              "A flexible curve made of cubic pieces joined at a few points, held straight beyond "
              "the outer ones.",
@@ -1628,21 +1858,31 @@ what it was on this cohort. Written to be re-read the morning of a presentation.
 # ---------------------------------------------------------------------------
 def render_caveats(data: ThresholdReportData, facts: CohortFacts) -> str:
     v = facts.verdicts
-    # Named from this run's numbers, not from a remembered earlier answer.
-    reproduced = [x for x in v.positive
-                  if np.isfinite(x.reproduced) and x.reproduced >= MICE_REPRODUCIBLE_CUT]
-    if reproduced:
-        threshold_rule = (
-            f"On this run that is {_esc(_join_names([x.metric for x in reproduced]))} "
-            f"(" + "; ".join(f"{_esc(x.metric)} {_pct(x.reproduced)} of draws"
-                             for x in reproduced) + ").")
-    elif v.positive:
-        threshold_rule = (
-            f"On this run no measurement cleared both: {_esc(v.positive_names())} passed "
-            f"section 3 but none reproduced in at least "
-            f"{_pct(MICE_REPRODUCIBLE_CUT)} of the imputed datasets.")
+    # Named from this run's grades, not from a remembered earlier answer.
+    if v.graded:
+        quotable = [x for x in v.items
+                    if x.grade in (evidence.GRADE_STRONG, evidence.GRADE_MODERATE)]
+        held_back = [x for x in v.items if x not in quotable]
+        rule_head = ("Quote a threshold only where section 3's evidence hierarchy graded it "
+                     "<b>strong</b> or <b>moderate</b>. ")
+        if quotable:
+            rule_head += f"On this run that is {_esc(_join_names([x.metric for x in quotable]))}."
+        else:
+            rule_head += "On this run no measurement reached either grade."
+        if held_back:
+            rule_head += (" Describe " +
+                          _esc(_join_names([f"{x.metric} ({x.grade})" for x in held_back])) +
+                          " as exploratory, and say what limited " +
+                          ("it" if len(held_back) == 1 else "each") + ".")
+        threshold_rule = rule_head
     else:
-        threshold_rule = "On this run no measurement passed section 3 at all."
+        reproduced = [x for x in v.positive
+                      if np.isfinite(x.reproduced) and x.reproduced >= MICE_REPRODUCIBLE_CUT]
+        threshold_rule = (
+            "Only call something a threshold where section 3 said yes <em>and</em> section 6 "
+            "said it reproduced. " +
+            (f"On this run that is {_esc(_join_names([x.metric for x in reproduced]))}."
+             if reproduced else "On this run no measurement cleared both."))
 
     return f"""
 <ul>
@@ -1650,8 +1890,7 @@ def render_caveats(data: ThresholdReportData, facts: CohortFacts) -> str:
 candidates on the same patients it is scored on. Quote the corrected column, or validate
 someone else's cut-point instead.</li>
 
-<li><b>A threshold and a cut-point are different claims.</b> Only call something a threshold
-where section 3 said yes <em>and</em> section 6 said it reproduced. {threshold_rule}</li>
+<li><b>A threshold and a cut-point are different claims.</b> {threshold_rule}</li>
 
 <li><b>PPV and NPV do not transfer.</b> This is a surgical series at {_pct(facts.prevalence)}
 high grade. Sensitivity and specificity carry to other settings; predictive values do not.</li>

@@ -189,35 +189,82 @@ def test_render_cleaning(report_cfg, report_art):
     assert "<section" in render_cleaning(report_cfg, report_art)
 
 
-def test_summary_with_derived_step_one_row_per_column():
-    summary = pd.DataFrame([
-        {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 2, "criterion": ""},
-        {"step": "final", "detail": "done", "n_rows": 10, "n_columns": 2, "criterion": ""},
+def test_cohort_flow_table_uses_log_counts_and_shows_zero_duplicates():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 2, "criterion": ""},
+            {"step": "duplicate_audit",
+             "detail": "no duplicates found",
+             "n_rows": 10, "n_columns": 2, "criterion": ""},
+            {"step": "drop_rows", "detail": "grade exists", "n_rows": 9,
+             "n_columns": 2, "criterion": "WHO grade recorded"},
+            {"step": "final", "detail": "done", "n_rows": 9, "n_columns": 2, "criterion": ""},
+        ]),
+        cleaning_log=pd.DataFrame([
+            {"step": "drop_rows", "reason": "grade exists", "criterion": "WHO grade recorded",
+             "n_before": 10.0, "n_dropped": 1.0, "n_remaining": 9.0},
+        ]),
+    )
+    html = rp._cohort_flow_table(art)
+    # Duplicate audit leads the table even with nothing found.
+    assert "Duplicate ID audit" in html
+    assert "no duplicates found" in html
+    # n_before/n_dropped come from the log, as ints not floats.
+    assert "<td>10</td>" in html and "<td>1</td>" in html
+    assert "10.0" not in html
+    assert "WHO grade recorded" in html
+    assert "Analysed cohort" in html
+
+
+def test_cohort_flow_table_falls_back_to_summary_without_log():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "drop_rows", "detail": "grade exists", "n_rows": 9,
+             "n_columns": 2, "criterion": "WHO grade recorded"},
+        ]),
+    )
+    html = rp._cohort_flow_table(art)
+    assert "grade exists" in html and "WHO grade recorded" in html
+
+
+def test_derived_tables_split_added_from_recoded():
+    log = pd.DataFrame([
+        {"derivation": "high_grade", "source": "who_grade", "kind": "binary",
+         "rule": "who_grade in {2, 3}", "rows_nonmissing": 9, "rows_missing": 0,
+         "schema_action": "added ColSpec (binary) for high_grade", "reason": "WHO 2021."},
+        {"derivation": "edema_volume_cm3", "source": "perifocal_edema", "kind": "continuous",
+         "rule": "set to 0 where edema absent", "rows_nonmissing": 8, "rows_missing": 1,
+         "schema_action": "updated ColSpec (continuous) for edema_volume_cm3",
+         "reason": "Structural zero."},
+        {"derivation": "skipped_one", "source": "nope", "kind": "binary", "rule": "",
+         "rows_nonmissing": "", "rows_missing": "",
+         "schema_action": "skipped (inactive)", "reason": ""},
     ])
-    derivation_log = pd.DataFrame([
-        {
-            "derivation": "high_grade",
-            "source": "who_grade",
-            "reason": "WHO grade 2/3 = high-grade.",
-            "schema_action": "added ColSpec (binary) for high_grade",
-        },
-        {
-            "derivation": "age_bins_10",
-            "source": "age",
-            "reason": "Age groups (10-year bins).",
-            "schema_action": "added ColSpec (ordinal) for age_bins_10",
-        },
-    ])
-    out = rp._summary_with_derived_step(summary, derivation_log)
-    derived = out[out["step"] == "derived"]
-    assert len(derived) == 2
-    assert derived.iloc[0]["detail"] == "added high_grade ← who_grade"
-    assert derived.iloc[0]["criterion"] == "WHO grade 2/3 = high-grade."
-    assert derived.iloc[0]["n_columns"] == 3
-    assert derived.iloc[1]["detail"] == "added age_bins_10 ← age"
-    assert derived.iloc[1]["criterion"] == "Age groups (10-year bins)."
-    assert derived.iloc[1]["n_columns"] == 4
-    assert out.loc[out["step"] == "final", "n_columns"].iloc[0] == 4
+    html = rp._derived_tables(log)
+    assert "Derived variables" in html and "Recoded variables" in html
+    assert "who_grade in {2, 3}" in html
+    assert "set to 0 where edema absent" in html
+    # Skipped derivations belong to the raw log only, not these tables.
+    assert "skipped_one" not in html
+
+
+def test_cleaning_provenance_reports_each_shape():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 5, "criterion": ""},
+            {"step": "apply_schema", "detail": "coerced dtypes", "n_rows": 10,
+             "n_columns": 4, "criterion": ""},
+            {"step": "final", "detail": "done", "n_rows": 9, "n_columns": 6, "criterion": ""},
+        ]),
+    )
+    html = rp._cleaning_provenance(art)
+    assert "10 rows × 5 columns" in html
+    assert "10 rows × 4 columns" in html
+    assert "9 rows × 6 columns" in html
+    assert "coerced dtypes" in html
 
 
 def test_render_cleaning_coercion_audit(report_cfg, report_art):

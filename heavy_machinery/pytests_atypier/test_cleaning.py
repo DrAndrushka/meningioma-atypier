@@ -305,6 +305,26 @@ def test_build_cleaning_summary(tiny_schema):
     assert "n_dropped" not in tbl.columns
 
 
+@pytest.mark.parametrize("dupes, expected", [
+    (None, "no duplicates found"),
+    (pd.DataFrame({"id": [1, 1]}), "2 row(s) in duplicate ID groups (flagged, not removed)"),
+])
+def test_build_cleaning_summary_duplicate_row_always_present(tiny_schema, dupes, expected):
+    tbl = cl._build_cleaning_summary(
+        n_rows_raw=10,
+        n_rows_after_schema=10,
+        n_rows_final=10,
+        n_columns_raw=5,
+        n_columns_after_schema=4,
+        schema=tiny_schema,
+        drop_log=None,
+        dupes=dupes,
+    )
+    dup_row = tbl.loc[tbl["step"] == "duplicate_audit"]
+    assert len(dup_row) == 1
+    assert dup_row.iloc[0]["detail"] == expected
+
+
 def test_build_cleaning_log():
     log = cl._build_cleaning_log(
         schema_log=[{"step": "apply_schema", "column": "age", "action": "coerce", "kind": "continuous"}],
