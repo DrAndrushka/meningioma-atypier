@@ -370,6 +370,7 @@ def bootstrap_best_rule(
     n_boot: int = 500,
     seed: int = 20260801,
     max_size: int = 2,
+    kinds: Sequence[str] | None = None,
 ) -> dict:
     """How much of the winning rule's advantage is having been picked here?
 
@@ -378,13 +379,30 @@ def bootstrap_best_rule(
     scored on the original cohort. The average gap is the optimism of the
     selection itself — the part of the winner's performance that will not
     survive being applied to new patients.
+
+    ``kinds`` restricts the menu the winner is chosen from, and it is what
+    makes the head-to-head comparison fair. ``kinds=("single",)`` measures the
+    optimism of picking the best of the four single criteria, which is exactly
+    the same kind of selection the combined rule is corrected for. Comparing a
+    corrected combination against an *uncorrected* single flatters the
+    combination by the whole of the single's own selection optimism.
+
+    Note this is a different correction from the per-metric one in
+    :mod:`thresholds`: that one pays for choosing a cut-point on a fixed
+    metric, this one pays for choosing which metric (or rule) to report.
     """
     rng = np.random.default_rng(seed)
     n = len(df)
     gaps: list[float] = []
     winners: list[str] = []
 
-    apparent = full_rule_menu(df, cutpoints, target, max_size=max_size)
+    def _menu(frame: pd.DataFrame) -> pd.DataFrame:
+        table = full_rule_menu(frame, cutpoints, target, max_size=max_size)
+        if kinds is not None and not table.empty:
+            table = table[table["kind"].isin(list(kinds))]
+        return table
+
+    apparent = _menu(df)
     if apparent.empty or apparent[criterion].isna().all():
         return {"optimism": np.nan, "n_bootstrap": 0,
                 "best_rule": "", "J_apparent": np.nan, "J_corrected": np.nan,
@@ -399,7 +417,7 @@ def bootstrap_best_rule(
         boot = df.iloc[take].reset_index(drop=True)
         if boot[target].astype("boolean").sum() < 5:
             continue
-        menu_b = full_rule_menu(boot, cutpoints, target, max_size=max_size)
+        menu_b = _menu(boot)
         if menu_b.empty or menu_b[criterion].isna().all():
             continue
         i_b = menu_b[criterion].idxmax()

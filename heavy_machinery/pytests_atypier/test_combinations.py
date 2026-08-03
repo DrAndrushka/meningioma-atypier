@@ -232,6 +232,41 @@ def test_best_rule_optimism_is_positive_on_noise():
     assert 0.0 <= out["winner_stability"] <= 1.0
 
 
+def test_kinds_restricts_the_menu_the_winner_is_chosen_from():
+    df = two_signal_frame()
+    cps = cb.cutpoints_for_rule(df, [A, B, C], TARGET, "youden")
+    singles = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=30, seed=4,
+                                     kinds=("single",))
+    everything = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=30, seed=4)
+
+    labels = set(cb.single_rule_table(df, cps, TARGET)["rule_label"])
+    assert singles["best_rule"] in labels
+    # The unrestricted menu contains the singles, so it can never do worse.
+    assert everything["J_apparent"] >= singles["J_apparent"]
+
+
+def test_restricted_selection_still_carries_its_own_optimism():
+    """The point of P1.1: 'best of four singles' is a selection too."""
+    rng = np.random.default_rng(11)
+    n = 300
+    df = pd.DataFrame({
+        "a": rng.normal(size=n), "b": rng.normal(size=n), "c": rng.normal(size=n),
+        TARGET: pd.array(rng.binomial(1, 0.3, n).astype(bool), dtype="boolean"),
+    })
+    cps = cb.cutpoints_for_rule(df, [A, B, C], TARGET, "youden")
+    out = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=40, seed=3, kinds=("single",))
+    assert out["optimism"] > 0
+    assert out["J_corrected"] < out["J_apparent"]
+
+
+def test_unknown_kind_degrades_rather_than_raising():
+    df = two_signal_frame()
+    cps = cb.cutpoints_for_rule(df, [A, B], TARGET, "youden")
+    out = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=5, seed=1, kinds=("nope",))
+    assert out["best_rule"] == ""
+    assert np.isnan(out["optimism"])
+
+
 def test_best_rule_is_reproducible():
     df = two_signal_frame()
     cps = cb.cutpoints_for_rule(df, [A, B], TARGET, "youden")

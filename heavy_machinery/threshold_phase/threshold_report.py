@@ -653,9 +653,10 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
             f"{v.turning_phrase()}.{rest}</li>")
     gain = _first(verdict, "gain_vs_best_single")
     combo_answer = (
-        f"<li><b>Combining criteria did not help.</b> The best combination gains "
-        f"J {_num(gain, 3)} over one criterion after correction, and wins in only "
-        f"{_pct(_first(verdict, 'winner_stability'))} of resampled cohorts.</li>")
+        f"<li><b>Combining criteria did not usefully help.</b> The best combination gains "
+        f"J {_num(gain, 3)} over the best single criterion with both corrected the same "
+        f"way, but wins in only {_pct(_first(verdict, 'winner_stability'))} of resampled "
+        f"cohorts — so which combination is best is mostly noise.</li>")
 
     warn = ""
     if data.warnings:
@@ -1184,7 +1185,10 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
 
     best_rule = _first(verdict, "best_rule", "")
     gain = _first(verdict, "gain_vs_best_single")
+    gain_apparent = _first(verdict, "gain_apparent")
     stability = _first(verdict, "winner_stability")
+    single_corr = _first(verdict, "best_single_J_corrected")
+    single_stability = _first(verdict, "best_single_stability")
     cont_auc = _first(verdict, "continuous_AUC_corrected")
     cont_equiv = _first(verdict, "continuous_J_equivalent")
 
@@ -1199,10 +1203,10 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
             {"Compared": "Best single criterion",
              "Which": str(_first(verdict, "best_single_rule", "")),
              "J as measured": _num(_first(verdict, "best_single_J")),
-             "J after correction": "—"},
+             "J after correction": _num(single_corr, 3)},
             {"Compared": "Best combined rule", "Which": str(best_rule),
              "J as measured": _num(_first(verdict, "best_rule_J")),
-             "J after correction": _num(_first(verdict, "best_rule_J_corrected"))},
+             "J after correction": _num(_first(verdict, "best_rule_J_corrected"), 3)},
             {"Compared": "All four, uncut", "Which": "Logistic model on the raw numbers",
              "J as measured": "—",
              "J after correction": f"{_num(cont_equiv)} (AUC {_num(cont_auc)})"},
@@ -1273,21 +1277,36 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
 
 {table_to_html(verdict_display) if not verdict_display.empty else ""}
 
+{_key("Both rows are corrected the same way, and that matters.",
+      f"The best single criterion was also <em>chosen</em> — the best of four — so it "
+      f"carries its own selection optimism "
+      f"(<b>{_num(_first(verdict, 'best_single_selection_optimism'), 3)}</b>), almost "
+      f"exactly the same size as the combined rule's "
+      f"(<b>{_num(_first(verdict, 'selection_optimism'), 3)}</b>). Scoring a corrected "
+      f"combination against an <em>uncorrected</em> single would credit the combination "
+      f"with the single's own winner's curse and make the gain look far smaller than it "
+      f"is. Both rows here are best-of-menu, both corrected by the same bootstrap.")}
+
 {_key("Check three things, in order:",
-      f"<b>(1)</b> the raw gain. <b>(2)</b> the gain after the winner's curse — which bites "
-      f"twice here, because we also picked the best <em>rule</em> off a menu: "
-      f"<b>{_num(gain, 3)}</b>. <b>(3)</b> how often that same rule wins when the cohort is "
-      f"resampled: <b>{_pct(stability)}</b>. Below about half, the 'best combination' is a coin "
-      f"toss between near-identical rules.")}
+      f"<b>(1)</b> the raw gain: <b>{_num(gain_apparent, 3)}</b>. <b>(2)</b> the gain once "
+      f"both sides are corrected for having been selected: <b>{_num(gain, 3)}</b>. "
+      f"<b>(3)</b> how often that same rule wins when the cohort is resampled: "
+      f"<b>{_pct(stability)}</b>, against <b>{_pct(single_stability)}</b> for the winning "
+      f"single. Below about half, the 'best combination' is a coin toss between "
+      f"near-identical rules — and <b>that, not the size of the gain, is what sinks it "
+      f"here</b>.")}
 
 {_answer("Answer — Balodis's second question",
-         f"<p>The best combination ({_esc(str(best_rule))}) improves on the best single "
-         f"criterion by <b>{_num(gain, 3)}</b> after correction, and wins in only "
-         f"<b>{_pct(stability)}</b> of resampled cohorts. Meanwhile the model using all four "
-         f"measurements <em>without</em> cutting them scores a J-equivalent of "
-         f"<b>{_num(cont_equiv)}</b> — better than any cut rule here. Combining cut-points "
-         f"bought nothing meaningful, and chopping the measurements up cost more than "
-         f"combining them gained.</p>",
+         f"<p>The best combination ({_esc(str(best_rule))}) reaches a corrected J of "
+         f"<b>{_num(_first(verdict, 'best_rule_J_corrected'), 3)}</b> against "
+         f"<b>{_num(single_corr, 3)}</b> for the best single criterion corrected the same "
+         f"way — a gain of <b>{_num(gain, 3)}</b>. But it wins in only "
+         f"<b>{_pct(stability)}</b> of resampled cohorts, so which combination is 'best' is "
+         f"largely noise. Meanwhile the model using all four measurements <em>without</em> "
+         f"cutting them scores a J-equivalent of <b>{_num(cont_equiv)}</b> — better than "
+         f"any cut rule here. The honest reading: combining cut-points buys a small, "
+         f"unstable improvement, and chopping the measurements up costs more than combining "
+         f"them gains.</p>",
          positive=helped)}
 
 <h3>The one combination worth presenting</h3>
@@ -1701,12 +1720,17 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
             "Section 5 count-score figure; section 6 for its stability."),
 
         _qa("Did combining thresholds improve accuracy? That was one of our questions.",
-            f"No, and we can show why rather than just asserting it. The best combination "
-            f"gained J {_num(_first(verdict, 'gain_vs_best_single'), 3)} after correcting for "
-            f"having been selected, and the same rule won in only "
-            f"{_pct(_first(verdict, 'winner_stability'))} of resampled cohorts — the ranking is "
-            f"largely noise.",
-            "Section 5 verdict table and the sensitivity–specificity figure."),
+            f"Not usefully, and we can show why rather than just asserting it. The best "
+            f"combination gained J {_num(_first(verdict, 'gain_vs_best_single'), 3)} over the "
+            f"best single criterion once <em>both</em> were corrected for having been "
+            f"selected off a menu — and the same combination won in only "
+            f"{_pct(_first(verdict, 'winner_stability'))} of resampled cohorts, so the "
+            f"ranking itself is largely noise. The uncut four-measurement model beats every "
+            f"cut rule regardless.",
+            f"Section 5 verdict table: corrected J "
+            f"{_num(_first(verdict, 'best_rule_J_corrected'), 3)} combined vs "
+            f"{_num(_first(verdict, 'best_single_J_corrected'), 3)} single; uncut "
+            f"J-equivalent {_num(_first(verdict, 'continuous_J_equivalent'))}."),
     ]
 
     return f"""
