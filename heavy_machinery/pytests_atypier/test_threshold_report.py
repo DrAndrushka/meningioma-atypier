@@ -144,6 +144,19 @@ def _write_artifacts(root, *, tables=None, figures=True, manifest=True, models=F
             {"Metric": "ADC", "Evidence": "moderate", "Criteria met": "4 of 5",
              "What limits it": "MICE reproducibility"},
         ]),
+        "38_nonlinearity_multiplicity.csv": pd.DataFrame([
+            {"metric": "ADC", "column": "adc", "family": "non-linearity LRT (primary)",
+             "n_tests": 2, "p_raw": 0.009, "p_holm": 0.018, "p_bonferroni": 0.018,
+             "survives_raw": True, "survives_holm": True, "survives_bonferroni": True},
+            {"metric": "Volume", "column": "vol", "family": "non-linearity LRT (primary)",
+             "n_tests": 2, "p_raw": 0.047, "p_holm": 0.047, "p_bonferroni": 0.094,
+             "survives_raw": True, "survives_holm": True, "survives_bonferroni": False},
+        ]),
+        "39_nonlinearity_multiplicity_reading_view.csv": pd.DataFrame([
+            {"Metric": "ADC", "Non-linearity p": "= 0.009", "Holm-adjusted p": "= 0.018",
+             "Holm": "survives", "Bonferroni-adjusted p": "= 0.018",
+             "Bonferroni": "survives"},
+        ]),
         "34_zero_inflation.csv": pd.DataFrame([
             {"metric": "ADC", "column": "adc", "n_analysed": 309, "n_zero": 0,
              "pct_zero": 0.0, "n_positive": 309, "risk_zero": np.nan,
@@ -521,6 +534,33 @@ def test_caveat_names_the_zero_inflated_metrics_from_the_table(tmp_path):
     flat.to_csv(path, index=False)
     html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
     assert "No measurement in this run was zero-inflated" in html
+
+
+# --------------------------------------------------------------------------
+# Multiple testing
+# --------------------------------------------------------------------------
+def test_multiplicity_prints_both_corrections(cfg):
+    html = tr.build_report(cfg)
+    assert "Multiple testing, stated before it is asked about" in html
+    assert "2 of 2</b> survive Holm" in html
+    assert "Bonferroni" in html
+    # The old text conceded the point outright.
+    assert "No, deliberately, and we state it" not in html
+
+
+def test_multiplicity_answer_names_what_bonferroni_drops(cfg):
+    data = tr.load_report_data(cfg)
+    m = tr.multiplicity_facts(data)
+    assert m.n_tests == 2 and m.n_holm == 2 and m.n_bonferroni == 1
+    assert m.dropped_by_bonferroni == ("Volume",)
+    assert "Volume" in tr._multiplicity_answer(m)
+
+
+def test_multiplicity_degrades_when_the_table_is_missing(tmp_path):
+    root = _write_artifacts(tmp_path)
+    (root / "thresholds" / "tables" / "38_nonlinearity_multiplicity.csv").unlink()
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "adjusted table was not found" in html
 
 
 def test_defence_section_cites_live_numbers(cfg):

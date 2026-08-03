@@ -97,6 +97,8 @@ TABLE_FILES = {
     "presence_rules": "35_presence_rules.csv",
     "nonzero_curves": "36_risk_curves_nonzero_only.csv",
     "zero_comparison": "37_zero_inflation_comparison.csv",
+    "multiplicity": "38_nonlinearity_multiplicity.csv",
+    "multiplicity_reading": "39_nonlinearity_multiplicity_reading_view.csv",
 }
 
 FIGURE_FILES = {
@@ -815,6 +817,70 @@ whether a rule can work is not whether the groups differ — it is how far they 
 # ---------------------------------------------------------------------------
 # 3 — risk curves
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class MultiplicityFacts:
+    """The pre-specified family and what survives each correction."""
+
+    n_tests: int = 0
+    n_holm: int = 0
+    n_bonferroni: int = 0
+    dropped_by_bonferroni: tuple[str, ...] = ()
+    dropped_by_holm: tuple[str, ...] = ()
+
+    @property
+    def available(self) -> bool:
+        return self.n_tests > 0
+
+
+def multiplicity_facts(data: ThresholdReportData) -> MultiplicityFacts:
+    table = data.table("multiplicity")
+    if table.empty or "survives_holm" not in table.columns:
+        return MultiplicityFacts()
+    holm = table["survives_holm"].map(_truthy)
+    bonf = table["survives_bonferroni"].map(_truthy)
+    raw = table["survives_raw"].map(_truthy)
+    return MultiplicityFacts(
+        n_tests=len(table),
+        n_holm=int(holm.sum()),
+        n_bonferroni=int(bonf.sum()),
+        dropped_by_bonferroni=tuple(table.loc[holm & ~bonf, "metric"].astype(str)),
+        dropped_by_holm=tuple(table.loc[raw & ~holm, "metric"].astype(str)),
+    )
+
+
+def render_multiplicity(data: ThresholdReportData) -> str:
+    """Section 3's multiple-testing block — the family, then both corrections."""
+    facts = multiplicity_facts(data)
+    if not facts.available:
+        return ""
+    reading = data.table("multiplicity_reading")
+
+    holm_line = (f"<b>{facts.n_holm} of {facts.n_tests}</b> survive Holm adjustment")
+    bonf_line = f"<b>{facts.n_bonferroni} of {facts.n_tests}</b> survive Bonferroni"
+    if facts.dropped_by_bonferroni:
+        bonf_line += (f" — it additionally drops "
+                      f"{_esc(_join_names(list(facts.dropped_by_bonferroni)))}")
+
+    return f"""
+<h3>Multiple testing, stated before it is asked about</h3>
+
+<p>Four measurements, four non-linearity tests, one outcome. That family is
+<b>pre-specified as the primary one</b>: it is the set of hypothesis tests this analysis
+actually makes. The cut-point selection rules and the combination menu are deliberately
+<em>not</em> in it — those are selections, not tests, no p-value is read off them, and they
+are paid for with optimism correction in sections 4 and 5 instead. Correcting them as
+though they were hypotheses would imply a family that was never posed.</p>
+
+{table_to_html(reading) if not reading.empty else ""}
+
+{_concrete(f"{holm_line}; {bonf_line}. Holm controls the same family-wise error rate as "
+           f"Bonferroni and is uniformly more powerful, so anything surviving Bonferroni "
+           f"survives Holm. Both are printed because Bonferroni is the correction a "
+           f"reviewer has in mind, and stating the pair pre-empts the question instead of "
+           f"conceding it.")}
+"""
+
+
 def render_zero_inflation(data: ThresholdReportData) -> str:
     """Section 3's method note on zero-inflated metrics, and the three-way fit.
 
@@ -1142,6 +1208,8 @@ flat, or highest at an edge, is the finding that there is no such point.</p>
 {table_to_html(reading) if not reading.empty else ""}
 
 {crossing_note}
+
+{render_multiplicity(data)}
 
 {render_zero_inflation(data)}
 
@@ -1807,12 +1875,48 @@ this table.</p>
 # ---------------------------------------------------------------------------
 # 9 — ESNR defence
 # ---------------------------------------------------------------------------
+def _multiplicity_answer(m: MultiplicityFacts) -> str:
+    """Both corrections in one answer, so neither has to be conceded."""
+    if not m.available:
+        return ("Yes for the primary family, but the adjusted table was not found in this "
+                "run. Re-run the thresholder notebook (section 3) to regenerate it.")
+    all_survive = m.n_holm == m.n_tests
+    head = (f"Yes, for the family that matters. We pre-specified the {m.n_tests} "
+            f"non-linearity likelihood-ratio tests — one per measurement, one outcome — as "
+            f"the primary family and report Holm-adjusted p-values alongside the raw ones. ")
+    if all_survive:
+        head += f"<b>All {m.n_tests} survive Holm.</b> "
+    else:
+        head += (f"{m.n_holm} of {m.n_tests} survive Holm"
+                 + (f"; Holm drops {_esc(_join_names(list(m.dropped_by_holm)))}. "
+                    if m.dropped_by_holm else ". "))
+    if m.dropped_by_bonferroni:
+        head += (f"Under the stricter Bonferroni correction "
+                 f"{_esc(_join_names(list(m.dropped_by_bonferroni)))} would fall below "
+                 f"significance, and we say so rather than leaving it to be found. ")
+    else:
+        head += (f"All {m.n_bonferroni} also survive the stricter Bonferroni correction. ")
+    head += ("The selection rules and the combination menu are deliberately outside the "
+             "family: no p-value is read off them, so they are paid for with optimism "
+             "correction, not with an alpha adjustment.")
+    return head
+
+
+def _multiplicity_evidence(m: MultiplicityFacts) -> str:
+    if not m.available:
+        return "Section 3, multiple-testing block."
+    return (f"Section 3, multiple-testing block: {m.n_holm}/{m.n_tests} survive Holm, "
+            f"{m.n_bonferroni}/{m.n_tests} survive Bonferroni. Sections 4–5 carry optimism "
+            f"correction instead.")
+
+
 def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
     verdict = primary_verdict(data)
     models = data.model_aucs
     thresholds = data.table("thresholds")
 
     v = facts.verdicts
+    mult = multiplicity_facts(data)
     widest = ""
     if "cutoff_boot_lo" in thresholds.columns:
         y = thresholds[thresholds["rule"] == "youden"].dropna(subset=["cutoff_boot_lo"])
@@ -1877,12 +1981,8 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
             "Section 4, 'Published cut-points, scored on our patients'."),
 
         _qa("Did you correct for multiple testing?",
-            "No, deliberately, and we state it. Four measurements × five selection rules × a "
-            "dozen combination rules is far too many looks for a p-value to mean much. Instead "
-            "of a correction that would imply we had pre-specified hypotheses, we report "
-            "confidence intervals and optimism-corrected statistics and describe the analysis "
-            "as exploratory.",
-            "Section 11 caveats; every table carries intervals rather than bare p-values."),
+            _multiplicity_answer(mult),
+            _multiplicity_evidence(mult)),
 
         _qa("Is 352 patients enough for threshold analysis?",
             f"For a model, yes — {facts.events} events supports the multivariable work. For a "
@@ -2102,6 +2202,23 @@ def render_caveats(data: ThresholdReportData, facts: CohortFacts) -> str:
             (f"On this run that is {_esc(_join_names([x.metric for x in reproduced]))}."
              if reproduced else "On this run no measurement cleared both."))
 
+    m = multiplicity_facts(data)
+    if m.available:
+        multiplicity_caveat = (
+            f"Many looks at one outcome, but only one pre-specified family. "
+            f"The {m.n_tests} non-linearity tests are Holm-adjusted "
+            f"({m.n_holm} of {m.n_tests} survive"
+            + (f"; Bonferroni would drop "
+               f"{_esc(_join_names(list(m.dropped_by_bonferroni)))}"
+               if m.dropped_by_bonferroni else "") +
+            "). The selection rules and the combination menu are not tests and carry no "
+            "adjusted p-values — read their intervals and their optimism correction "
+            "instead.")
+    else:
+        multiplicity_caveat = (
+            "Many looks at one outcome. The adjusted table is missing from this run, so "
+            "treat the p-values as descriptive and lean on the intervals.")
+
     # The old text said "a quarter of this cohort" from an earlier run. Read it.
     zero = data.table("zero_share")
     zero_caveat = ("<b>Check zero inflation before quoting any threshold.</b> No "
@@ -2135,8 +2252,7 @@ high grade. Sensitivity and specificity carry to other settings; predictive valu
 <li><b>Two spreads, not one.</b> Sections 3–5 measure sampling uncertainty only. Section 6 adds
 missing-data uncertainty. Quote the wider.</li>
 
-<li><b>Many looks at one outcome.</b> Four measurements × five rules × a dozen combinations,
-uncorrected. Treat the p-values as descriptive and lean on the intervals.</li>
+<li><b>{multiplicity_caveat}</b></li>
 
 <li><b>{zero_caveat}</b></li>
 
