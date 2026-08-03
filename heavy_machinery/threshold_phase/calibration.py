@@ -329,8 +329,10 @@ def multivariable_calibration(models: Sequence[Mapping]) -> pd.DataFrame:
     alone would produce an apparent number dressed as a validated one. What the
     modelling phase itself validated is what gets quoted.
 
-    ⚠️ Those artifacts carry a bootstrap-corrected *slope* but only an apparent
-    *intercept*; the gap is reported as such rather than filled in.
+    Artifacts written before 2026-08-03 carry a bootstrap-corrected *slope* but
+    only an apparent *intercept*. Those still load, and the missing cell is
+    reported as missing rather than filled in; re-running the modelling
+    notebook fills it.
     """
     rows: list[dict] = []
     for payload in models:
@@ -338,6 +340,7 @@ def multivariable_calibration(models: Sequence[Mapping]) -> pd.DataFrame:
         cal = validation.get("calibration", {}) or {}
         metrics = {m.get("metric"): m for m in validation.get("metrics", [])}
         slope = metrics.get("Calibration slope", {})
+        intercept = metrics.get("Calibration intercept", {})
         brier = metrics.get("Brier score", {})
         coefficients = payload.get("coefficients", {}) or {}
         rows.append({
@@ -349,8 +352,10 @@ def multivariable_calibration(models: Sequence[Mapping]) -> pd.DataFrame:
             "slope_apparent": cal.get("slope_apparent", slope.get("apparent")),
             "slope_corrected": cal.get("slope_corrected",
                                        slope.get("optimism_corrected")),
-            "intercept_apparent": cal.get("intercept_apparent"),
-            "intercept_corrected": cal.get("intercept_corrected", np.nan),
+            "intercept_apparent": cal.get("intercept_apparent",
+                                          intercept.get("apparent")),
+            "intercept_corrected": cal.get("intercept_corrected",
+                                           intercept.get("optimism_corrected", np.nan)),
             "brier_apparent": brier.get("apparent"),
             "brier_corrected": brier.get("optimism_corrected"),
             "n_bootstrap": validation.get("successful_bootstraps",

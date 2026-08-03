@@ -219,12 +219,16 @@ def bootstrap_internal_validation(
     auc_app = roc_auc_score(y_arr, y_pred_apparent)
     brier_app = brier_score_loss(y_arr, y_pred_apparent)
     baseline_brier = brier_score_loss(y_arr, np.repeat(y_arr.mean(), len(y_arr)))
-    # Development-sample logistic has apparent calibration slope ≈ 1 by construction.
+    # Development-sample logistic has apparent calibration slope ≈ 1 and apparent
+    # calibration-in-the-large ≈ 0 by construction. Both are measured rather than
+    # asserted for the intercept, because a near-separable fit can drift off zero.
     slope_app = 1.0
+    intercept_app = _calibration_intercept(y_arr, y_pred_apparent)
 
     auc_optimisms: list[float] = []
     brier_optimisms: list[float] = []
     slope_optimisms: list[float] = []
+    intercept_optimisms: list[float] = []
 
     for i in range(n_bootstrap):
         boot_df = model_df.sample(n=len(model_df), replace=True, random_state=i).reset_index(drop=True)
@@ -246,6 +250,14 @@ def bootstrap_internal_validation(
                 _calibration_slope(y_boot.values, pred_boot.values)
                 - _calibration_slope(y_orig.values, pred_orig.values)
             )
+            # Calibration-in-the-large drifts under resampling for the same
+            # reason the slope does, and a model can be well-calibrated in
+            # slope while systematically over- or under-predicting. Correcting
+            # only the slope reports half the calibration.
+            intercept_optimisms.append(
+                _calibration_intercept(y_boot.values, pred_boot.values)
+                - _calibration_intercept(y_orig.values, pred_orig.values)
+            )
         except Exception:
             continue
 
@@ -255,6 +267,8 @@ def bootstrap_internal_validation(
     auc_corr = auc_app - float(np.mean(auc_optimisms))
     brier_corr = brier_app + float(np.mean(brier_optimisms))
     slope_corr = slope_app - float(np.mean(slope_optimisms))
+    intercept_corr = (intercept_app - float(np.mean(intercept_optimisms))
+                      if intercept_optimisms else float("nan"))
 
     fpr, tpr, _ = roc_curve(y_arr, y_pred_apparent)
 
@@ -273,6 +287,11 @@ def bootstrap_internal_validation(
             "metric": "Calibration slope",
             "apparent": _round_metric(slope_app),
             "optimism_corrected": _round_metric(slope_corr),
+        },
+        {
+            "metric": "Calibration intercept",
+            "apparent": _round_metric(intercept_app),
+            "optimism_corrected": _round_metric(intercept_corr),
         },
     ]
 
@@ -317,9 +336,8 @@ def bootstrap_internal_validation(
             **_calibration_data(y_arr, y_pred_apparent),
             "slope_apparent": _round_metric(slope_app),
             "slope_corrected": _round_metric(slope_corr),
-            "intercept_apparent": _round_metric(
-                _calibration_intercept(y_arr, y_pred_apparent)
-            ),
+            "intercept_apparent": _round_metric(intercept_app),
+            "intercept_corrected": _round_metric(intercept_corr),
         },
         "decision_curve": _net_benefit_data(y_arr, y_pred_apparent),
         "corrected_calibration_slope": slope_corr,

@@ -358,6 +358,25 @@ def _sig(value: Any, digits: int = 3, default: str = "—") -> str:
     return default if not np.isfinite(f) else f"{f:.{digits}g}"
 
 
+def _signed(value: Any, digits: int = 3, default: str = "—") -> str:
+    """Signed, and never ``-0.00``.
+
+    Calibration intercepts here land within a few thousandths of zero, so a
+    two-decimal signed format prints a column of "-0.00" — which reads as a
+    formatting bug rather than as "essentially zero".
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(f):
+        return default
+    rounded = round(f, digits)
+    if rounded == 0:
+        return f"{0.0:.{digits}f}"
+    return f"{rounded:+.{digits}f}"
+
+
 def _int(value: Any, default: str = "—") -> str:
     try:
         f = float(value)
@@ -2052,7 +2071,7 @@ def render_calibration(data: ThresholdReportData) -> str:
         "Predictors": [_int(v) for v in table["n_predictors"]],
         "Slope (corrected)": [_num(v) for v in table["slope_corrected"]],
         "Intercept (corrected)": [
-            _num(v) if pd.notna(v) else f"— (apparent {_num(a)})"
+            _signed(v) if pd.notna(v) else f"— (apparent {_signed(a)})"
             for v, a in zip(table.get("intercept_corrected", pd.Series(dtype=float)),
                             table.get("intercept_apparent", pd.Series(dtype=float)))],
         "Brier (corrected)": [_num(v, 3) for v in table.get("brier_corrected",
@@ -2079,11 +2098,21 @@ def render_calibration(data: ThresholdReportData) -> str:
     if ("intercept_corrected" in table.columns
             and table["intercept_corrected"].isna().any()):
         missing_intercept = warning_box(
-            "The multivariable models' artifacts carry a bootstrap-corrected calibration "
-            "<em>slope</em> but only an apparent <em>intercept</em>, so that cell reports "
-            "the apparent value and says so. Producing a corrected intercept means "
-            "re-running the modelling phase's own validation loop; it is not derivable "
-            "from the stored coefficients, and it is not invented here.")
+            "Some model artifacts predate the corrected calibration intercept and carry "
+            "only the apparent value, which those cells report and label. Re-run "
+            "meningioma-modelling.ipynb to fill them; the number is not derivable from "
+            "the stored coefficients, and it is not invented here.")
+    elif "intercept_corrected" in table.columns:
+        widest = table["intercept_corrected"].abs().max()
+        if pd.notna(widest) and float(widest) < 0.05:
+            missing_intercept = _key(
+                "Why the intercept column is a row of near-zeros:",
+                f"calibration-in-the-large is anchored to the sample's own event rate, so "
+                f"it barely moves when the cohort is resampled — the largest corrected "
+                f"intercept here is {_signed(float(widest))}. That is a real result, not "
+                f"an empty column: <b>these models are not systematically over- or "
+                f"under-predicting risk.</b> The overfitting shows up in the "
+                f"<em>slope</em> instead, which is where to look.")
 
     return f"""
 <h3>Calibration — is the probability the right size?</h3>
@@ -2425,11 +2454,21 @@ def _calibration_answer(data: ThresholdReportData) -> str:
                 f"{_num(best['slope_corrected'].max())}, and the model with the most "
                 f"predictors has the worst of them — which is what overfitting looks "
                 f"like in a calibration column rather than in an argument.")
-    return (f"We report it, which most threshold papers do not. The uncut four-measurement "
-            f"model has a bootstrap-corrected calibration slope of <b>{slope}</b> — mildly "
-            f"over-extreme predictions, the expected direction, not a broken model. "
-            f"Calibration is the reason we present the count score as a five-level ladder "
-            f"rather than quoting a point probability off a curve.{span}")
+    intercepts = table.dropna(subset=["intercept_corrected"]) \
+        if "intercept_corrected" in table.columns else pd.DataFrame()
+    in_large = ""
+    if not intercepts.empty and float(intercepts["intercept_corrected"].abs().max()) < 0.05:
+        in_large = (" Calibration-in-the-large is essentially perfect across every model "
+                    f"(largest corrected intercept "
+                    f"{_signed(float(intercepts['intercept_corrected'].abs().max()))}), so "
+                    f"the models are not systematically over- or under-predicting; the "
+                    f"shortfall is in the slope alone.")
+    return (f"We report it, which most threshold papers do not, and we report both halves "
+            f"of it. The uncut four-measurement model has a bootstrap-corrected calibration "
+            f"slope of <b>{slope}</b> — mildly over-extreme predictions, the expected "
+            f"direction, not a broken model.{in_large} Calibration is the reason we present "
+            f"the count score as a five-level ladder rather than quoting a point "
+            f"probability off a curve.{span}")
 
 
 def _net_benefit_answer(data: ThresholdReportData, facts: CohortFacts) -> str:

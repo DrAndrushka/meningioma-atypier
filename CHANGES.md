@@ -25,6 +25,7 @@ The report is regenerated from the notebook; nothing in
 | Non-linearity p, adjusted | *(not computed)* | Holm **0.029 / 0.042 / 0.029 / 0.047** — all four survive. Bonferroni **0.037 / 0.084 / 0.029 / 0.189** — drops tumour volume and edema index | New. Multiplicity is now stated, not declined (P1.4). |
 | Calibration slope, uncut four-measurement model | *(not computed)* | **1.00 apparent → 0.911 bootstrap-corrected** | New (P1.5). |
 | Calibration slope, multivariable models | not in this report | **0.773 – 0.916 corrected**, worst for the 10-predictor model | Read from the modelling phase's own artifacts (P1.5). |
+| Calibration **intercept**, multivariable models | apparent only (0.00) | **−0.005 to +0.000 corrected** | The modelling phase now bootstrap-corrects the intercept as well as the slope, so the threshold report's cell is filled instead of blank. |
 | Brier score, uncut model | *(not computed)* | **0.189 apparent → 0.195 corrected** | New (P1.5). |
 | Net benefit | *(not computed)* | Uncut model best over **58.9%** of the 5–60% threshold range; best single cut-point best over **0%** | New (P1.5). |
 | Accrual window | not stated | **2018–2026**, 9 calendar years | Derived in `cohort_summary()` from `entry_year` (P3). |
@@ -108,11 +109,24 @@ corrected-vs-uncorrected. That also reconciles it with section 4's per-metric
 0.23 for tumour volume, which corrects for choosing a *cut-point* rather than
 for choosing *which metric to report*.
 
-**The multivariable models have no bootstrap-corrected calibration intercept.**
-Their artifacts carry a corrected slope and an apparent intercept only.
-Producing a corrected intercept means re-running the modelling phase's own
-validation loop — it is not derivable from the stored coefficients. The cell
-shows `— (apparent 0.00)` with a warning box rather than a filled-in number.
+**~~The multivariable models have no bootstrap-corrected calibration
+intercept.~~ Fixed.** `model_validation.bootstrap_internal_validation` now
+accumulates intercept optimism alongside slope optimism in the same loop, and
+exports `intercept_corrected` plus a "Calibration intercept" metrics row. Both
+notebooks were re-run.
+
+The result is worth stating plainly because it is anticlimactic: **every
+corrected intercept lands between −0.005 and +0.000.** Calibration-in-the-large
+is anchored to the sample's own event rate, so it barely moves under
+resampling. That is a real finding, not an empty column — these models are not
+systematically over- or under-predicting risk, and the entire calibration
+shortfall is in the slope. The report says so rather than presenting a column of
+zeros.
+
+Verified that nothing else moved: every model's AUC, Brier, calibration slope
+and shrunken coefficients are byte-identical to the previous artifacts. MICE was
+not re-run (the modelling notebook reads the cached draws), so the threshold
+phase's stability numbers are unaffected.
 
 ---
 

@@ -627,9 +627,41 @@ def test_calibration_reaches_section_7_and_section_9(cfg):
 
 
 def test_missing_corrected_intercept_is_shown_as_missing_not_filled_in(cfg):
+    """Artifacts predating the corrected intercept must degrade, not fabricate."""
     html = tr.build_report(cfg)
-    assert "apparent 0.00" in html
-    assert "carry a bootstrap-corrected calibration" in html
+    assert "apparent 0.000" in html
+    assert "predate the corrected calibration intercept" in html
+
+
+def test_a_present_corrected_intercept_is_reported_with_its_meaning(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "40_calibration.csv"
+    table = pd.read_csv(path)
+    table["intercept_corrected"] = [0.003, -0.004]
+    table.to_csv(path, index=False)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "predate the corrected calibration intercept" not in html
+    assert "Why the intercept column is a row of near-zeros" in html
+    assert "not systematically over- or under-predicting" in html
+
+
+def test_near_zero_intercepts_never_render_as_negative_zero(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "40_calibration.csv"
+    table = pd.read_csv(path)
+    table["intercept_corrected"] = [-0.0001, -0.004]
+    table.to_csv(path, index=False)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert ">-0.000<" not in html and ">-0.00<" not in html
+    assert ">0.000<" in html
+
+
+def test_signed_helper_collapses_negative_zero():
+    assert tr._signed(-0.0001) == "0.000"
+    assert tr._signed(0.0) == "0.000"
+    assert tr._signed(-0.004) == "-0.004"
+    assert tr._signed(0.003) == "+0.003"
+    assert tr._signed(np.nan) == "—"
 
 
 def test_net_benefit_reaches_section_7_and_section_9(cfg):
