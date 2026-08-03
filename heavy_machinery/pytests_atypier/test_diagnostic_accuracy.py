@@ -140,3 +140,35 @@ def test_screen_skips_non_binary_target(tmp_output):
             output_root=tmp_output,
         )
     assert out.empty
+
+
+def test_a_predictor_that_flags_nobody_returns_metrics_instead_of_raising():
+    """An AND of two rare signs can flag zero patients.
+
+    The 2×2 then has an empty row, chi2_contingency raises, and the whole rule
+    search dies. There is no test to run on such a table, so the p-value is
+    missing — but sensitivity, specificity and the counts are all still real
+    numbers and the caller needs them.
+    """
+    df = pd.DataFrame({
+        "flag": pd.array([False] * 8, dtype="boolean"),
+        "high_grade": pd.array([True, True, True, False, False, False, False, False],
+                               dtype="boolean"),
+    })
+    row = binary_diagnostic_metrics(df, "high_grade", "flag")
+    assert row["TP"] == 0
+    assert row["FP"] == 0
+    assert row["specificity"] == 1.0
+    assert np.isnan(row["p"])
+    assert row["test"] == "not applicable"
+
+
+def test_a_predictor_that_flags_everybody_also_survives():
+    df = pd.DataFrame({
+        "flag": pd.array([True] * 8, dtype="boolean"),
+        "high_grade": pd.array([True, True, True, False, False, False, False, False],
+                               dtype="boolean"),
+    })
+    row = binary_diagnostic_metrics(df, "high_grade", "flag")
+    assert row["sensitivity"] == 1.0
+    assert np.isnan(row["p"])

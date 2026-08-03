@@ -99,7 +99,17 @@ def _encode_feature_present(x: pd.Series) -> pd.Series:
 
 
 def _contingency_pvalue(tp: int, fp: int, fn: int, tn: int) -> tuple[float, str]:
+    """χ²/Fisher for the 2×2, or nothing when there is nothing to test.
+
+    A rule that flags nobody — an AND of two rare signs, say — gives a table
+    with an empty row. There is no association to test in that table, and
+    ``chi2_contingency`` raises rather than saying so. The accuracy numbers
+    around it are still real, so the p-value is reported missing and the row
+    survives.
+    """
     table = np.array([[tp, fp], [fn, tn]], dtype=float)
+    if (table.sum(axis=0) == 0).any() or (table.sum(axis=1) == 0).any():
+        return float("nan"), "not applicable"
     row = _chi2_row(table)
     return float(row["p"]), str(row["test"])
 
