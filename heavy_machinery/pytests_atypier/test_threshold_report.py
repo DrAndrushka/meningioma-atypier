@@ -701,6 +701,70 @@ def test_epv_is_a_column_not_an_argument(tmp_path):
     assert ">EPV</th>" in tr.build_report(tr.ThresholdReportConfig(output_root=root))
 
 
+# --------------------------------------------------------------------------
+# Methods placeholders (P3)
+# --------------------------------------------------------------------------
+def test_methods_section_comes_before_section_one(cfg):
+    html = tr.build_report(cfg)
+    assert html.index("Methods and cohort") < html.index("Three questions")
+
+
+def test_every_gap_is_both_visible_and_greppable(cfg):
+    html = tr.build_report(cfg)
+    assert html.count('class="todo"') == len(tr.METHODS_GAPS)
+    assert html.count("<!-- TODO: ANDY") == len(tr.METHODS_GAPS)
+    for gap in tr.METHODS_GAPS:
+        assert gap.heading in html
+        assert f'id="todo-{gap.key}"' in html
+
+
+def test_the_gaps_cover_what_the_pipeline_cannot_know(cfg):
+    keys = {g.key for g in tr.METHODS_GAPS}
+    assert keys == {
+        "who-version", "histology-reading", "dwi-acquisition", "adc-roi",
+        "volumetry", "edema-index", "inclusion", "ethics",
+        "prevalence-context", "stard",
+    }
+
+
+def test_no_clinical_fact_is_invented_in_the_methods_section(cfg):
+    """Specific values a reader would take on trust must never be supplied.
+
+    Asking for the approval number is fine; printing one is not — hence the
+    check is for asserted values, not for the words in the prompts.
+    """
+    html = tr.build_report(cfg)
+    for invented in ("b = 1000", "b-values of", "1.5 T", "3 T", "Siemens", "Philips",
+                     "WHO 2021 criteria were applied", "graded per the 2016",
+                     "approved by the", "consecutive patients operated between"):
+        assert invented not in html, invented
+
+
+def test_edema_index_formula_is_stated_from_the_pipeline(cfg):
+    html = tr.build_report(cfg)
+    assert "edema volume (cc) ÷ tumour volume (cc)" in html
+
+
+def test_accrual_window_is_derived_not_placeholdered(tmp_path):
+    root = _write_artifacts(tmp_path)
+    path = root / "thresholds" / "tables" / "00_cohort_summary.csv"
+    summary = pd.read_csv(path)
+    summary["accrual_first_year"] = 2018
+    summary["accrual_last_year"] = 2026
+    summary["accrual_n_years"] = 9
+    summary.to_csv(path, index=False)
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "from <b>2018</b> to <b>2026</b>" in html
+    assert "9 calendar years" in html
+
+
+def test_missing_accrual_columns_just_omit_the_sentence(cfg):
+    """An older run has no year columns; the section must still render."""
+    html = tr.build_report(cfg)
+    assert "Methods and cohort" in html
+    assert "calendar years" not in html
+
+
 def test_defence_section_cites_live_numbers(cfg):
     html = tr.build_report(cfg)
     assert "Is 352 patients enough" in html

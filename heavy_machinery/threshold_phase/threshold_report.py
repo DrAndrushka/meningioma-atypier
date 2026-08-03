@@ -192,6 +192,19 @@ table.report td.nowrap, table.report td.num { white-space: nowrap; }
 .grade-list .metric-name { font-weight: 600; }
 .grade-list .limit { color: var(--muted); font-size: 13.5px; display: block;
                      margin-top: 2px; }
+.todo {
+    border: 2px dashed var(--red); border-radius: 8px;
+    padding: 10px 14px 12px; margin: 12px 0; background: #fff7f7;
+}
+.todo-label {
+    display: inline-block; background: var(--red); color: #fff;
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    padding: 1px 8px; border-radius: 3px; margin-bottom: 6px;
+}
+.todo h4 { margin: 0 0 4px; font-size: 15px; text-transform: none;
+           letter-spacing: 0; font-weight: 650; }
+.todo p { margin: 0 0 6px; }
+.todo .todo-why { font-size: 13px; color: var(--muted); margin-bottom: 0; }
 """
 
 
@@ -754,6 +767,178 @@ always identical.</p>
 """
         f"{warn}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 0 — methods and cohort
+# ---------------------------------------------------------------------------
+# Everything the pipeline cannot know. These are clinical and procedural facts
+# that live in the study protocol and in the radiologists' heads, not in the
+# data — so they are emitted as visible placeholders rather than guessed at.
+# A guessed b-value or a guessed WHO edition in a conference document is worse
+# than a blank one, because nobody checks a sentence that reads plausibly.
+@dataclass(frozen=True)
+class MethodsGap:
+    key: str
+    heading: str
+    prompt: str
+    why: str
+
+
+METHODS_GAPS: tuple[MethodsGap, ...] = (
+    MethodsGap(
+        "who-version", "WHO CNS classification version",
+        "Which edition was used to grade these tumours, and whether the cases were "
+        "re-graded to the 2021 criteria (CDKN2A/B homozygous deletion, TERT promoter "
+        "mutation) or graded as reported under 2016.",
+        "The outcome variable is defined by this. A reviewer cannot interpret a "
+        "high-grade rate without knowing which edition produced it, and the 2021 "
+        "molecular criteria move cases across the grade 2 boundary."),
+    MethodsGap(
+        "histology-reading", "Who read the histology",
+        "How many pathologists reported the grade, whether they were blinded to the "
+        "imaging, and any inter-rater agreement statistic if two read the same slides.",
+        "The reference standard's own reliability bounds every accuracy figure in "
+        "this document. If the grade is not blinded to imaging, the whole design is "
+        "circular."),
+    MethodsGap(
+        "dwi-acquisition", "DWI acquisition",
+        "Field strength, scanner vendor and model, and the b-values used to compute "
+        "the ADC maps. Note any change of scanner or protocol across the accrual "
+        "window.",
+        "ADC values are not comparable between b-value schemes. Publishing an ADC "
+        "cut-point without them makes it unusable by anyone else — and the "
+        "cut-point is the section 4 headline."),
+    MethodsGap(
+        "adc-roi", "ADC ROI protocol",
+        "Whole-tumour volumetric ROI or single-slice; solid portion only or whole "
+        "mass including cystic/necrotic areas; how many readers placed the ROIs and "
+        "whether they were blinded to grade.",
+        "Single-slice and whole-tumour ADC differ systematically, which is the "
+        "leading explanation for why published ADC cut-points do not transfer."),
+    MethodsGap(
+        "volumetry", "Volumetry method and software",
+        "How tumour and peritumoral edema volumes were measured — manual, "
+        "semi-automated or automated — the named software and version, on which "
+        "sequence, and who did it.",
+        "Both volume thresholds are quoted in cc against published cut-points. "
+        "Those are only comparable if the segmentation is."),
+    MethodsGap(
+        "edema-index", "Definition of the edema index",
+        "The intended clinical definition, and the source it comes from if it is "
+        "taken from the literature rather than defined here.",
+        "This measurement is analysed throughout the document and its definition "
+        "is stated nowhere in it. See the computed formula noted alongside — "
+        "confirm that it is the definition you mean."),
+    MethodsGap(
+        "inclusion", "Inclusion and exclusion criteria",
+        "How the cohort was assembled: consecutive cases or selected; which "
+        "pre-operative sequences a patient had to have; what excluded a patient "
+        "(prior surgery, prior radiotherapy, no pre-op MRI, non-diagnostic study).",
+        "The accrual window below is derived from the data. The criteria are not "
+        "in the data at all, and a reader cannot judge selection bias without them."),
+    MethodsGap(
+        "ethics", "Ethics approval and consent",
+        "The IRB / ethics committee name and approval number, and the retrospective "
+        "consent waiver.",
+        "Required by every journal and by the ESNR abstract form."),
+    MethodsGap(
+        "prevalence-context", "Why the high-grade rate is above the literature rate",
+        "The published population figure for the WHO 2–3 share of meningiomas with a "
+        "citation, and one sentence on why a surgical series runs above it "
+        "(operated cases are selected for size, symptoms and worrying imaging).",
+        "The cohort's own rate is computed below. The comparison figure is a "
+        "literature value and is not invented here. This is the sentence that "
+        "supports the PPV/NPV transferability caveat in section 11."),
+    MethodsGap(
+        "stard", "STARD adherence",
+        "Whether the study is reported to STARD 2015, and where the completed "
+        "checklist and flow diagram will live.",
+        "This is a diagnostic accuracy study. The first methodological question a "
+        "reviewer asks is which reporting guideline it follows."),
+)
+
+
+def _todo_block(gap: MethodsGap) -> str:
+    """One placeholder: visible on the page and greppable in the source."""
+    return (
+        f"<!-- TODO: ANDY — {_esc(gap.key)}: {_esc(gap.prompt)} -->"
+        f'<div class="todo" id="todo-{_esc(gap.key)}">'
+        f'<div class="todo-label">TODO: ANDY</div>'
+        f"<h4>{_esc(gap.heading)}</h4>"
+        f"<p>{_esc(gap.prompt)}</p>"
+        f'<p class="todo-why"><b>Why it has to be here:</b> {_esc(gap.why)}</p>'
+        f"</div>")
+
+
+def render_methods(data: ThresholdReportData, facts: CohortFacts) -> str:
+    """Section 0 — what the pipeline knows, and visible holes where it cannot."""
+    summary = data.table("cohort_summary")
+    cohort = data.table("cohort")
+
+    accrual = ""
+    first, last = _first(summary, "accrual_first_year"), _first(summary, "accrual_last_year")
+    if pd.notna(first) and pd.notna(last):
+        accrual = (f" Cases carry entry years from <b>{_int(first)}</b> to "
+                   f"<b>{_int(last)}</b> ({_int(_first(summary, 'accrual_n_years'))} "
+                   f"calendar years), which is the accrual window as the data record "
+                   f"it — not necessarily the window the protocol specified.")
+
+    missingness = ""
+    if not cohort.empty and {"metric", "n_analysed", "n_missing"} <= set(cohort.columns):
+        missingness = _table(pd.DataFrame({
+            "Measurement": cohort["metric"],
+            "Measured in": cohort["n_analysed"],
+            "Missing": cohort["n_missing"],
+            "Missing (%)": [
+                _num(100.0 * m / (a + m), 1) + "%"
+                for a, m in zip(cohort["n_analysed"], cohort["n_missing"])],
+        }))
+
+    return f"""
+<p>What this analysis rests on. The numbers below come from the pipeline and refresh with
+every run. <b>The lettered blocks are the facts the pipeline cannot know</b> — they live in
+the study protocol and in the reading room, and they are left visibly blank rather than
+filled with a plausible guess.</p>
+
+{_key("Why blanks rather than sensible defaults:",
+      "a guessed b-value, a guessed WHO edition or a guessed ROI protocol reads exactly "
+      "like a real one. Nobody checks a sentence that sounds right, so a wrong one survives "
+      "into the manuscript. Every gap below is marked <code>TODO: ANDY</code> in both the "
+      "page and the HTML source, and they are listed together at the end of the "
+      "notebook run.")}
+
+<h3>What the pipeline does know</h3>
+
+<p>The cohort is <b>{facts.n} operated patients with histology</b>, of whom
+<b>{facts.events} ({_pct(facts.prevalence, 1)})</b> are WHO grade 2–3 and
+<b>{facts.benign}</b> are WHO grade 1.{accrual}</p>
+
+{missingness}
+
+<p class="muted">Each measurement is analysed on its own complete cases, so <em>n</em>
+differs by row. Section 6 checks whether that mattered.</p>
+
+<h3>The edema index, as computed</h3>
+
+<p>Stated here because it is used throughout the document and defined nowhere else in it.
+As implemented in the pipeline the edema index is</p>
+
+<p style="text-align:center"><code>edema index = edema volume (cc) ÷ tumour volume (cc)</code></p>
+
+<p>with the ratio left missing where tumour volume is zero. That is the formula the numbers
+in this report were produced from. Whether it is the definition intended clinically is the
+first placeholder below.</p>
+
+<h3>What has to be filled in before this is submitted</h3>
+
+{"".join(_todo_block(g) for g in METHODS_GAPS)}
+
+{warning_box(
+    f"{len(METHODS_GAPS)} placeholders above. None of them can be derived from the data, "
+    f"and none has been guessed. Search this document or its HTML source for "
+    f"<code>TODO: ANDY</code> to find them all.")}
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -2647,6 +2832,7 @@ def build_report(cfg: ThresholdReportConfig, data: ThresholdReportData | None = 
 
     sections = [
         render_header(cfg, data, facts),
+        section_block("0 · Methods and cohort", render_methods(data, facts), open=True),
         section_block("1 · Three questions that get confused",
                       render_questions(data, facts), open=True),
         section_block("2 · What we measured, and how much it overlaps",

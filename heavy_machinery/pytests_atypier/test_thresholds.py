@@ -385,3 +385,22 @@ def test_reading_view_keeps_every_usable_row_intact():
     view = th.reading_view(table)
     assert view.loc[0, "J"] == pytest.approx(0.24)
     assert view.loc[0, "Sens (95% CI)"] == "35% (27–45)"
+
+
+def test_cohort_summary_derives_the_accrual_window():
+    df = pd.DataFrame({
+        "high_grade": pd.array([True, False, True, False], dtype="boolean"),
+        "entry_year": [2018, 2020, 2026, np.nan],
+    })
+    row = th.cohort_summary(df, "high_grade").iloc[0]
+    assert row["accrual_first_year"] == 2018
+    assert row["accrual_last_year"] == 2026
+    assert row["accrual_n_years"] == 3
+    assert row["n_year_known"] == 3
+
+
+def test_cohort_summary_without_a_year_column_omits_the_window():
+    df = pd.DataFrame({"high_grade": pd.array([True, False], dtype="boolean")})
+    row = th.cohort_summary(df, "high_grade").iloc[0]
+    assert "accrual_first_year" not in row.index
+    assert row["n_patients"] == 2

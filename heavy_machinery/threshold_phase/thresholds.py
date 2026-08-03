@@ -522,23 +522,39 @@ def reading_view(table: pd.DataFrame) -> pd.DataFrame:
     })
 
 
-def cohort_summary(df: pd.DataFrame, target: str) -> pd.DataFrame:
+def cohort_summary(
+    df: pd.DataFrame, target: str, *, year_col: str = "entry_year",
+) -> pd.DataFrame:
     """Cohort-level counts — the denominators every downstream table is read against.
 
     Exported on its own because the per-metric table cannot give them: each
     metric drops its own missing rows, so no row of it knows how many patients
     or events the whole cohort holds.
+
+    The accrual window comes along when ``year_col`` is present. A methods
+    section has to state it, and deriving it here means the report never has
+    to be told what it is.
     """
     y = df[target].astype("boolean")
     n = int(len(df))
     events = int(y.sum())
-    return pd.DataFrame([{
+    row = {
         "n_patients": n,
         "n_high_grade": events,
         "n_benign": int((~y.fillna(False)).sum()) - int(y.isna().sum()),
         "n_outcome_missing": int(y.isna().sum()),
         "prevalence": float(y.mean()) if n else np.nan,
-    }])
+    }
+    if year_col in df.columns:
+        years = pd.to_numeric(df[year_col], errors="coerce").dropna()
+        if len(years):
+            row.update({
+                "accrual_first_year": int(years.min()),
+                "accrual_last_year": int(years.max()),
+                "accrual_n_years": int(years.nunique()),
+                "n_year_known": int(len(years)),
+            })
+    return pd.DataFrame([row])
 
 
 def metric_cohort_table(
