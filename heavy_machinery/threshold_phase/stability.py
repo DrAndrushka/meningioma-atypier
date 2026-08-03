@@ -122,7 +122,18 @@ def imputation_stability(
     of which was chosen with hindsight on its own draw.
     """
     by_col = {m.col: m for m in metrics}
-    cc = complete_case.set_index(["column", "rule"]) if len(complete_case) else None
+    # Only the selection rules can be compared with a per-draw cut-point, and
+    # only they are unique per (column, rule). A measurement can carry several
+    # *published* cut-points — three for max diameter — which share the key
+    # "literature", and looking that up returns a frame where a value is
+    # expected. They are dropped here rather than silently deduplicated: a
+    # published cut-point is not re-derived inside a draw, so there is nothing
+    # for this table to say about it.
+    cc = None
+    if len(complete_case):
+        selection_rules = set(draws["rule"].unique()) if "rule" in draws else set(RULES)
+        cc = (complete_case[complete_case["rule"].isin(selection_rules)]
+              .set_index(["column", "rule"]).sort_index())
 
     rows = []
     for (col, rule), grp in draws.groupby(["column", "rule"], sort=False):
@@ -159,7 +170,10 @@ def imputation_stability(
             "spec_at_mean": float(np.nanmean(spec_at)) if spec_at else np.nan,
         }
         if cc is not None and (col, rule) in cc.index:
-            cc_row = cc.loc[(col, rule)]
+            # List-of-one key: always a frame, so .iloc[0] is a row whatever the
+            # index does. Plain .loc[(col, rule)] returns a Series or a frame
+            # depending on how many rows match, and the frame reaches float().
+            cc_row = cc.loc[[(col, rule)]].iloc[0]
             row["cutoff_complete_case"] = float(cc_row["cutoff"])
             row["cutoff_boot_lo"] = float(cc_row.get("cutoff_boot_lo", np.nan))
             row["cutoff_boot_hi"] = float(cc_row.get("cutoff_boot_hi", np.nan))

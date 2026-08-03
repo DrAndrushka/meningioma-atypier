@@ -375,6 +375,7 @@ SUMMARY_COLUMN_ORDER = [
     "sensitivity", "sensitivity_lo", "sensitivity_hi",
     "specificity", "specificity_lo", "specificity_hi",
     "PPV", "PPV_lo", "PPV_hi", "NPV", "NPV_lo", "NPV_hi",
+    "OR", "OR_lo", "OR_hi",
     "youden_J", "youden_J_corrected", "optimism", "accuracy", "p", "test",
     "n_bootstrap", "rule_note", "source", "note",
 ]
@@ -451,6 +452,22 @@ def format_pct_ci(row: pd.Series | dict, stem: str) -> str:
     return f"{v * 100:.0f}% ({lo * 100:.0f}–{hi * 100:.0f})"
 
 
+def format_or_ci(row: pd.Series | dict) -> str:
+    """``3.01 (1.9–4.8)`` — the odds ratio for being above the cut-point.
+
+    Two decimals below 10 and one above: an OR of 12.4 with two decimals is
+    false precision on cells this size.
+    """
+    get = row.get
+    value, lo, hi = get("OR"), get("OR_lo"), get("OR_hi")
+    if value is None or pd.isna(value):
+        return ""
+    fmt = (lambda v: f"{v:.2f}") if float(value) < 10 else (lambda v: f"{v:.1f}")
+    if lo is None or pd.isna(lo):
+        return fmt(float(value))
+    return f"{fmt(float(value))} ({fmt(float(lo))}–{fmt(float(hi))})"
+
+
 def rule_reading(row: pd.Series | dict) -> str:
     """Why this row is not a usable rule, or "" when it is one.
 
@@ -516,6 +533,11 @@ def reading_view(table: pd.DataFrame) -> pd.DataFrame:
             [format_pct_ci(r, "PPV") for _, r in table.iterrows()]),
         "NPV (95% CI)": _blank_unusable(
             [format_pct_ci(r, "NPV") for _, r in table.iterrows()]),
+        # The effect size the literature quotes for a dichotomised feature, so a
+        # cut-point here reads next to a published one (Magill 2018: OR 1.69 at
+        # > 3 cm). An interval crossing 1 says the split separates nothing.
+        "OR (95% CI)": _blank_unusable(
+            [format_or_ci(r) for _, r in table.iterrows()]),
         "J": _blank_unusable(table["youden_J"].round(2)),
         "J (corr.)": _blank_unusable(corrected.round(2)),
         "Reading": readings,

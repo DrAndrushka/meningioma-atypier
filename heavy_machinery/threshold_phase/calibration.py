@@ -203,8 +203,12 @@ def uncut_model_calibration(
     which is what would happen to it at another hospital.
     """
     X, y, cols = uncut_design(df, metrics, target)
+    # Named from the metric list, not from memory: the label travels into the
+    # report's prose and the net-benefit legend, where "four-measurement" would
+    # quietly outlive the run that made it true.
+    label = f"Uncut {len(cols)}-measurement model"
     blank = {
-        "model": "Uncut four-measurement model", "n_used": int(y.size),
+        "model": label, "n_used": int(y.size),
         "events": int(y.sum()) if y.size else 0, "n_predictors": len(cols),
         "slope_apparent": np.nan, "slope_corrected": np.nan,
         "intercept_apparent": np.nan, "intercept_corrected": np.nan,

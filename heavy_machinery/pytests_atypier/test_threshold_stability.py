@@ -95,6 +95,27 @@ def test_stability_reading_view_is_all_strings(frames, observed):
     assert view["Complete-case"].str.startswith(("≥", "≤")).all()
 
 
+def test_several_published_cutpoints_for_one_metric_do_not_break_the_lookup(
+        frames, observed):
+    """Three published cut-points for the same measurement (max diameter has
+    exactly that) share the key ("column", "literature"). Looking that key up
+    returns a frame where a number is expected, which crashed the run."""
+    summary = threshold_summary(
+        observed, METRICS, TARGET, rules=["youden"], n_boot=20,
+        literature_cutoffs={"vol": [(9.0, "A 2018"), (12.0, "B 2021"),
+                                    (14.0, "C 2022")]},
+    )
+    assert (summary["rule"] == "literature").sum() == 3
+
+    draws = st.draw_cutoffs(frames, METRICS, TARGET, rules=["youden"])
+    out = st.imputation_stability(draws, frames, METRICS, TARGET, summary)
+
+    assert len(out) == len(METRICS)
+    # The published rows carry no per-draw counterpart, so they must not appear.
+    assert set(out["rule"]) == {"youden"}
+    assert out["cutoff_complete_case"].notna().all()
+
+
 def test_stability_survives_an_empty_complete_case_table(frames):
     draws = st.draw_cutoffs(frames, METRICS, TARGET, rules=["youden"])
     out = st.imputation_stability(draws, frames, METRICS, TARGET, pd.DataFrame())

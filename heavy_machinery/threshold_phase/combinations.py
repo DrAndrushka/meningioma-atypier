@@ -501,7 +501,7 @@ def full_rule_menu(
 
 def combination_reading_view(menu: pd.DataFrame, *, top: int | None = None) -> pd.DataFrame:
     """Rules ranked by Youden J, in the columns a clinician reads."""
-    from thresholds import format_pct_ci
+    from thresholds import format_or_ci, format_pct_ci
 
     ranked = menu.sort_values("youden_J", ascending=False)
     if top is not None:
@@ -519,6 +519,7 @@ def combination_reading_view(menu: pd.DataFrame, *, top: int | None = None) -> p
             if pd.notna(r["TP"]) else ""
             for _, r in ranked.iterrows()
         ],
+        "OR (95% CI)": [format_or_ci(r) for _, r in ranked.iterrows()],
         "J": ranked["youden_J"].round(2),
     })
 

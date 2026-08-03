@@ -270,6 +270,34 @@ def test_reading_view_columns_and_blank_handling():
     assert view["Sens (95% CI)"].str.contains("%").all()
 
 
+def test_every_cutpoint_carries_an_odds_ratio():
+    """Magill 2018 quotes OR 1.69 at > 3 cm; a cut-point of ours is only
+    comparable with that if it reports the same effect size.
+
+    Scored on an overlapping frame: the separable one has an empty 2×2 cell at
+    the Youden point, where the OR is a corrected estimate rather than the plain
+    ratio this test is about.
+    """
+    rng = np.random.default_rng(3)
+    df = pd.DataFrame({
+        "vol": np.concatenate([rng.normal(10.0, 4.0, 150), rng.normal(14.0, 4.0, 150)]),
+        TARGET: pd.array([False] * 150 + [True] * 150, dtype="boolean"),
+    })
+    out = th.threshold_summary(df, [HIGHER_METRIC], TARGET, n_boot=10)
+    row = out[out["rule"] == "youden"].iloc[0]
+    assert min(row["TP"], row["FP"], row["FN"], row["TN"]) > 0
+    assert row["OR"] == pytest.approx((row["TP"] * row["TN"]) / (row["FP"] * row["FN"]))
+    assert row["OR_lo"] < row["OR"] < row["OR_hi"]
+    assert "OR (95% CI)" in th.reading_view(out).columns
+
+
+def test_odds_ratio_formats_with_its_interval():
+    assert th.format_or_ci({"OR": 3.014, "OR_lo": 1.9, "OR_hi": 4.77}) == "3.01 (1.90–4.77)"
+    # Two decimals on a large OR is false precision on cells this size.
+    assert th.format_or_ci({"OR": 12.4, "OR_lo": 3.2, "OR_hi": 48.1}) == "12.4 (3.2–48.1)"
+    assert th.format_or_ci({"OR": float("nan")}) == ""
+
+
 def test_cohort_summary_counts_the_whole_cohort():
     """The per-metric table cannot give these — each metric drops its own rows."""
     df = separable_frame(n=100)

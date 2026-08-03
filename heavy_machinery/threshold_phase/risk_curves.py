@@ -144,7 +144,7 @@ def _fit_glm(design: np.ndarray, y: np.ndarray):
 class RiskCurve:
     """A fitted risk curve and the few numbers that can be read off it.
 
-    ``grid``/``risk`` are always on the metric's **original** scale (cc, ADC
+    ``grid``/``risk`` are always on the metric's **original** scale (cm³, ADC
     units) even when the spline was fitted on ``log1p(x)``, because that is the
     scale a radiologist reads off a scan.
     """
@@ -246,7 +246,7 @@ def fit_risk_curve(
 
     The threshold is reported in the metric's own clinical units, so the test
     has to be run in those units too; testing on the log scale and quoting a
-    cut-point in cc would be incoherent. Harrell's quantile knots already place
+    cut-point in cm³ would be incoherent. Harrell's quantile knots already place
     the flexibility where the patients are, which is what the log transform was
     there for. ``risk_curve_summary`` runs the log fit anyway and reports it as
     a sensitivity analysis, so the scale dependence is visible rather than a
@@ -625,7 +625,7 @@ def zero_share(
     A spline fitted across a zero-inflated metric puts its 10th-percentile knot
     *at* zero and then reports the resulting bend as a threshold. On this
     cohort a third of patients have no peritumoral edema at all, so a "threshold
-    at 3.5 cc" is substantially detecting edema present versus absent — a
+    at 3.5 cm³" is substantially detecting edema present versus absent — a
     binary distinction a radiologist makes by looking, not by measuring.
 
     Reported before the curve so the reader can see which claim is which.
@@ -679,7 +679,7 @@ def presence_rules(
 ) -> pd.DataFrame:
     """"Is there any at all?" scored as a yes/no test, with the full 2×2.
 
-    The comparator the 3.5 cc cut-point has to beat. If a rule that needs no
+    The comparator the 3.5 cm³ cut-point has to beat. If a rule that needs no
     measurement at all performs as well, the measured cut-point is not what is
     doing the work.
     """
