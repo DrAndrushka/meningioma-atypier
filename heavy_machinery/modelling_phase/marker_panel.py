@@ -22,6 +22,8 @@ import numpy as np
 import pandas as pd
 
 import plot_style as ps
+from diagnostic_accuracy import binary_diagnostic_metrics
+from thresholds import format_pct_ci
 
 _Z95 = 1.959963984540054
 
@@ -118,3 +120,89 @@ def markers_from_diagnostic_accuracy(
         BinaryMarker(str(r["predictor"]), ps.prettify_label(str(r["predictor"])))
         for _, r in rows.iterrows()
     ]
+
+
+_PANEL_COLUMNS = [
+    "marker", "label", "n_used", "present_n", "catches", "n_high_grade",
+    "TP", "FP", "FN", "TN",
+    "sensitivity", "sensitivity_lo", "sensitivity_hi",
+    "specificity", "specificity_lo", "specificity_hi",
+    "PPV", "PPV_lo", "PPV_hi", "NPV", "NPV_lo", "NPV_hi",
+    "AUC", "OR", "OR_lo", "OR_hi",
+    "lr_pos", "lr_pos_lo", "lr_pos_hi", "chance_overlap", "continuity_corrected",
+    "p", "test",
+]
+
+
+def marker_panel_table(
+    df: pd.DataFrame,
+    markers: Sequence[BinaryMarker],
+    target: str,
+) -> pd.DataFrame:
+    """Every marker on its own, ranked by how hard a positive finding argues.
+
+    Ranked by LR+, but ``catches`` is what keeps the ranking honest: the most
+    specific sign in a cohort is usually the one nobody ever sees, and a table
+    sorted on specificity alone puts it first. Markers whose interval covers 1
+    are sorted to the bottom instead of being given a rank they have not
+    earned.
+    """
+    if not markers:
+        return pd.DataFrame(columns=_PANEL_COLUMNS)
+
+    rows = []
+    for marker in markers:
+        row = binary_diagnostic_metrics(
+            df, target, marker.col, predictor_series=marker.flag(df),
+        )
+        row["marker"] = marker.col
+        row["label"] = marker.label
+        tp, fp = row.get("TP"), row.get("FP")
+        fn, tn = row.get("FN"), row.get("TN")
+        if any(pd.isna(v) for v in (tp, fp, fn, tn)):
+            row.update({"lr_pos": np.nan, "lr_pos_lo": np.nan, "lr_pos_hi": np.nan,
+                        "chance_overlap": False, "continuity_corrected": False})
+            row.update({"present_n": 0, "catches": 0, "n_high_grade": 0})
+        else:
+            row.update(likelihood_ratio_positive(tp, fp, fn, tn))
+            row["present_n"] = int(tp) + int(fp)
+            row["catches"] = int(tp)
+            row["n_high_grade"] = int(tp) + int(fn)
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    out["chance_overlap"] = out["chance_overlap"].astype(bool)
+    out = out.sort_values(
+        ["chance_overlap", "lr_pos"], ascending=[True, False], kind="mergesort",
+    ).reset_index(drop=True)
+    cols = [c for c in _PANEL_COLUMNS if c in out.columns]
+    return out[cols + [c for c in out.columns if c not in cols]]
+
+
+def _format_lr(row: pd.Series) -> str:
+    """``2.8 (1.7-4.6)``, or a sentence when the interval covers 1."""
+    if pd.isna(row.get("lr_pos")):
+        return "—"
+    if bool(row.get("chance_overlap")):
+        return "not distinguishable from chance"
+    text = f"{row['lr_pos']:.1f} ({row['lr_pos_lo']:.1f}–{row['lr_pos_hi']:.1f})"
+    return text + "*" if bool(row.get("continuity_corrected")) else text
+
+
+def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
+    """The aim-1 table in the columns a clinician reads."""
+    if panel is None or panel.empty:
+        return pd.DataFrame(columns=[
+            "Marker", "Present in", "Catches",
+            "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
+        ])
+    return pd.DataFrame({
+        "Marker": panel["label"],
+        "Present in": [f"{int(r['present_n'])}/{int(r['n_used'])}"
+                       for _, r in panel.iterrows()],
+        "Catches": [f"{int(r['catches'])} of {int(r['n_high_grade'])}"
+                    for _, r in panel.iterrows()],
+        "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in panel.iterrows()],
+        "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in panel.iterrows()],
+        "LR+ (95% CI)": [_format_lr(r) for _, r in panel.iterrows()],
+    })

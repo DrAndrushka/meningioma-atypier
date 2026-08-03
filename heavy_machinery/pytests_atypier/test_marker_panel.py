@@ -151,3 +151,72 @@ def test_the_exclude_list_excludes():
 def test_marker_labels_are_prettified():
     markers = mp.markers_from_diagnostic_accuracy(accuracy_table(), target=TARGET)
     assert markers[0].label == "Sign A"
+
+
+# --------------------------------------------------------------------------
+# Aim 1 — the marker table
+# --------------------------------------------------------------------------
+def test_marker_panel_reports_yield_alongside_specificity():
+    """The guard against the specificity trap.
+
+    ``rare`` is present in one patient and never in a benign tumor, so its
+    specificity is 1.0 — and it catches 1 of 5 high-grade tumors. Both numbers
+    must be in the row, or the table crowns a useless sign.
+    """
+    df = pd.DataFrame({
+        "rare": pd.array([True, False, False, False, False, False, False, False],
+                         dtype="boolean"),
+        "common": pd.array([True, True, True, False, True, True, False, False],
+                           dtype="boolean"),
+        TARGET: pd.array([True, True, True, True, True, False, False, False],
+                         dtype="boolean"),
+    })
+    markers = [mp.BinaryMarker("rare", "Rare"), mp.BinaryMarker("common", "Common")]
+    panel = mp.marker_panel_table(df, markers, TARGET)
+
+    rare = panel[panel["marker"] == "rare"].iloc[0]
+    assert rare["specificity"] == 1.0
+    assert rare["present_n"] == 1
+    assert rare["catches"] == 1
+    assert rare["n_high_grade"] == 5
+
+
+def test_markers_that_cannot_beat_chance_sort_last():
+    """A ranked table must not open with a row that says nothing."""
+    rng = np.random.default_rng(11)
+    y = rng.binomial(1, 0.3, 300).astype(bool)
+    df = pd.DataFrame({
+        "informative": pd.array(rng.binomial(1, 0.15 + 0.5 * y).astype(bool),
+                                dtype="boolean"),
+        "noise": pd.array(rng.binomial(1, 0.4, 300).astype(bool), dtype="boolean"),
+        TARGET: pd.array(y, dtype="boolean"),
+    })
+    markers = [mp.BinaryMarker("noise", "Noise"),
+               mp.BinaryMarker("informative", "Informative")]
+    panel = mp.marker_panel_table(df, markers, TARGET)
+
+    assert panel.iloc[0]["marker"] == "informative"
+    assert bool(panel.iloc[-1]["chance_overlap"]) is True
+
+
+def test_marker_reading_view_says_so_instead_of_printing_a_rank():
+    df = pd.DataFrame({
+        "noise": pd.array([True, False, True, False, True, False, True, False],
+                          dtype="boolean"),
+        TARGET: pd.array([True, True, False, False, True, False, True, False],
+                         dtype="boolean"),
+    })
+    panel = mp.marker_panel_table(df, [mp.BinaryMarker("noise", "Noise")], TARGET)
+    view = mp.marker_panel_reading_view(panel)
+    assert list(view.columns) == [
+        "Marker", "Present in", "Catches",
+        "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
+    ]
+    assert "not distinguishable from chance" in view.iloc[0]["LR+ (95% CI)"]
+
+
+def test_marker_panel_is_empty_not_broken_when_there_are_no_markers():
+    df = pd.DataFrame({TARGET: pd.array([True, False], dtype="boolean")})
+    panel = mp.marker_panel_table(df, [], TARGET)
+    assert panel.empty
+    assert mp.marker_panel_reading_view(panel).empty
