@@ -32,6 +32,7 @@ from report import (
     render_eda,
     render_header,
     render_inferential,
+    render_marker_panel,
     render_missingness,
     render_schema,
     svg_grid,
@@ -751,3 +752,106 @@ def test_main(tmp_output):
     code = main(["--output-root", str(tmp_output), "--out", str(tmp_output / "r.html")])
     assert code == 0
     assert (tmp_output / "r.html").exists()
+
+
+# --------------------------------------------------------------------------
+# Marker panel section
+# --------------------------------------------------------------------------
+@pytest.fixture
+def panel_output(tmp_output):
+    tables = tmp_output / "panel" / "tables"
+    tables.mkdir(parents=True)
+    pd.DataFrame([
+        {"marker": "cortical_destruction", "label": "Cortical destruction",
+         "n_used": 300, "present_n": 50, "catches": 27, "n_high_grade": 105,
+         "lr_pos": 2.76, "lr_pos_lo": 1.66, "lr_pos_hi": 4.59,
+         "chance_overlap": False, "continuity_corrected": False},
+    ]).to_csv(tables / "01_marker_panel.csv", index=False)
+    pd.DataFrame([
+        {"Marker": "Cortical destruction", "Present in": "50/300",
+         "Catches": "27 of 105", "Sens (95% CI)": "26% (19–35)",
+         "Spec (95% CI)": "91% (86–94)", "LR+ (95% CI)": "2.8 (1.7–4.6)"},
+    ]).to_csv(tables / "02_marker_panel_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"item": "Patients in the shared set", "value": 301, "note": "every marker observed"},
+    ]).to_csv(tables / "03_shared_cohort.csv", index=False)
+    pd.DataFrame([
+        {"n_criteria_met": 0, "n": 100, "n_high_grade": 11, "risk": 0.11,
+         "risk_lo": 0.06, "risk_hi": 0.19},
+        {"n_criteria_met": 1, "n": 90, "n_high_grade": 30, "risk": 0.33,
+         "risk_lo": 0.24, "risk_hi": 0.43},
+    ]).to_csv(tables / "07_count_score.csv", index=False)
+    pd.DataFrame([
+        {"side": "best single", "best_rule": "Cortical destruction",
+         "J_apparent": 0.21, "optimism": 0.04, "J_corrected": 0.17,
+         "winner_stability": 0.41, "n_bootstrap": 500, "gain_corrected": 0.06},
+        {"side": "best combination", "best_rule": "Cortical destruction OR Edema",
+         "J_apparent": 0.27, "optimism": 0.04, "J_corrected": 0.23,
+         "winner_stability": 0.33, "n_bootstrap": 500, "gain_corrected": 0.06},
+    ]).to_csv(tables / "09_selection_correction.csv", index=False)
+    pd.DataFrame([
+        {"Rule": "Cortical destruction OR Edema", "Type": "or", "n": 301,
+         "Sens (95% CI)": "58% (48–67)", "Spec (95% CI)": "65% (58–71)",
+         "PPV (95% CI)": "44% (36–53)", "NPV (95% CI)": "76% (69–82)",
+         "TP/FP/FN/TN": "55/70/40/136", "OR (95% CI)": "2.7 (1.6–4.4)", "J": 0.23},
+    ]).to_csv(tables / "06_rule_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"model": "amano_et_al_2021", "n_scored": 301,
+         "auc_shared_apparent": 0.74, "auc_artifact_corrected": 0.733,
+         "auc_artifact_apparent": 0.749, "best_single_rule": "Cortical destruction",
+         "best_single_J_corrected": 0.17, "note": ""},
+    ]).to_csv(tables / "10_model_vs_single.csv", index=False)
+    pd.DataFrame([
+        {"item": "Draws", "value": 20, "note": "20 scorable"},
+        {"item": "Winning rule reproduced", "value": 0.4,
+         "note": "most often: Cortical destruction OR Edema"},
+    ]).to_csv(tables / "11_imputation_stability.csv", index=False)
+
+    figures = tmp_output / "panel" / "figures"
+    figures.mkdir(parents=True)
+    for name in ("lr_forest.svg", "count_score.svg", "rule_space.svg"):
+        (figures / name).write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>',
+            encoding="utf-8",
+        )
+    return tmp_output
+
+
+def test_load_artifacts_finds_the_panel_tables(panel_output):
+    art = load_artifacts(ReportConfig(output_root=panel_output, title="T"))
+    assert art.panel_marker_reading_view is not None
+    assert art.panel_selection_correction is not None
+    assert len(art.panel_figures) == 3
+
+
+def test_marker_panel_section_answers_both_aims(panel_output):
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Cortical destruction" in html
+    assert "2.8 (1.7–4.6)" in html
+    assert "301" in html
+
+
+def test_marker_panel_section_quotes_the_corrected_gain_not_the_apparent_one(
+    panel_output,
+):
+    """0.06 is the corrected gain; 0.27 is the apparent combination J.
+
+    Quoting the apparent number is the CHANGES.md mistake in prose form.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "0.06" in html
+
+
+def test_marker_panel_degrades_to_a_warning_when_nothing_was_computed(tmp_output):
+    cfg = ReportConfig(output_root=tmp_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "warning" in html.lower()
+
+
+def test_the_panel_section_sits_between_modelling_and_the_appendix(panel_output):
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = build_report(cfg)
+    assert html.index("Multivariable modelling") < html.index("Which MRI markers")
+    assert html.index("Which MRI markers") < html.index("📎 Appendix")

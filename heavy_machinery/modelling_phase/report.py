@@ -219,6 +219,9 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 .warning-box.severe { border-left-color: var(--red); background: var(--red-bg); }
 .info-box { border-left-color: var(--accent); background: #eff6ff; }
 
+/* Lead sentence introducing a subsection */
+.lead { font-size: 15px; font-weight: 500; margin: 10px 0; }
+
 /* Figure grid */
 .figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr));
                gap: 14px; margin: 12px 0 18px; }
@@ -752,6 +755,17 @@ class Artifacts:
     inferential_model_experimental: dict[str, bool] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
 
+    # Marker panel
+    panel_marker: pd.DataFrame | None = None
+    panel_marker_reading_view: pd.DataFrame | None = None
+    panel_shared_cohort: pd.DataFrame | None = None
+    panel_rule_reading_view: pd.DataFrame | None = None
+    panel_count_score: pd.DataFrame | None = None
+    panel_selection_correction: pd.DataFrame | None = None
+    panel_model_vs_single: pd.DataFrame | None = None
+    panel_imputation_stability: pd.DataFrame | None = None
+    panel_figures: list[Path] = field(default_factory=list)
+
     # Warnings accumulated during load (rendered in appendix)
     warnings: list[str] = field(default_factory=list)
 
@@ -879,6 +893,34 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     inf_fig = root / "inferential" / "figures"
     if inf_fig.exists():
         art.inferential_figures = sorted(inf_fig.glob("*.svg"))
+
+    # Marker panel
+    panel_tab = root / "panel" / "tables"
+    art.panel_marker = _maybe_read_csv(panel_tab / "01_marker_panel.csv", art.warnings)
+    art.panel_marker_reading_view = _maybe_read_csv(
+        panel_tab / "02_marker_panel_reading_view.csv", art.warnings,
+    )
+    art.panel_shared_cohort = _maybe_read_csv(
+        panel_tab / "03_shared_cohort.csv", art.warnings,
+    )
+    art.panel_rule_reading_view = _maybe_read_csv(
+        panel_tab / "06_rule_reading_view.csv", art.warnings,
+    )
+    art.panel_count_score = _maybe_read_csv(
+        panel_tab / "07_count_score.csv", art.warnings,
+    )
+    art.panel_selection_correction = _maybe_read_csv(
+        panel_tab / "09_selection_correction.csv", art.warnings,
+    )
+    art.panel_model_vs_single = _maybe_read_csv(
+        panel_tab / "10_model_vs_single.csv", art.warnings,
+    )
+    art.panel_imputation_stability = _maybe_read_csv(
+        panel_tab / "11_imputation_stability.csv", art.warnings,
+    )
+    panel_fig = root / "panel" / "figures"
+    if panel_fig.exists():
+        art.panel_figures = sorted(panel_fig.glob("*.svg"))
 
     return art
 
@@ -2516,6 +2558,197 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
     return section_block("🧮 Multivariable modelling", "".join(body))
 
 
+# ---------------------------------------------------------------------------
+# Marker panel
+# ---------------------------------------------------------------------------
+
+def _lead(text: str) -> str:
+    return f'<p class="lead">{text}</p>'
+
+
+def _num(value: Any, digits: int = 2) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v:.{digits}f}"
+
+
+def _signed(value: Any, digits: int = 3) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v:+.{digits}f}"
+
+
+def _pct(value: Any) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v * 100:.0f}%"
+
+
+def _int(value: Any) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{int(round(v))}"
+
+
+def _table(df: pd.DataFrame) -> str:
+    return table_to_html(df)
+
+
+def _panel_figure(art: Artifacts, stem: str) -> str:
+    """One panel SVG by filename stem, or nothing if it was not written."""
+    for path in art.panel_figures:
+        if path.stem == stem:
+            return _figure_img_html(path)
+    return ""
+
+
+def _panel_shared_n(art: Artifacts) -> str:
+    """The denominator the head-to-head was run on, quoted from its own table."""
+    table = art.panel_shared_cohort
+    if table is None or table.empty:
+        return "—"
+    row = table[table["item"].astype(str) == "Patients in the shared set"]
+    return _int(row["value"].iloc[0]) if len(row) else "—"
+
+
+def _panel_aim_one(art: Artifacts) -> str:
+    view = art.panel_marker_reading_view
+    if view is None or view.empty:
+        return warning_box("No marker table was found.")
+    top = art.panel_marker.iloc[0] if art.panel_marker is not None and \
+        not art.panel_marker.empty else None
+    lead = ""
+    if top is not None and not bool(top.get("chance_overlap")):
+        lead = _lead(
+            f"<strong>{_esc(top['label'])}</strong> argues hardest for high grade: "
+            f"seeing it makes high grade {_num(top['lr_pos'], 1)}× more likely "
+            f"({_num(top['lr_pos_lo'], 1)}–{_num(top['lr_pos_hi'], 1)}). "
+            f"It is present in {_int(top['present_n'])} of "
+            f"{_int(top['n_used'])} scans and flags "
+            f"{_int(top['catches'])} of the {_int(top['n_high_grade'])} "
+            "high-grade tumours."
+        )
+    return (
+        "<h3>Which sign argues hardest for high grade</h3>"
+        + lead
+        + "<p>Ranked by <strong>positive likelihood ratio</strong> — how many "
+          "times more often the sign appears in a high-grade tumour than in a "
+          "benign one. <strong>Catches</strong> is there because the most "
+          "specific sign in any cohort is usually the one nobody ever sees: a "
+          "marker that is almost never present is almost perfectly specific "
+          "and almost never useful. A ratio whose interval covers 1 says "
+          "nothing, and is labelled rather than ranked.</p>"
+        + _table(view)
+        + _panel_figure(art, "lr_forest")
+    )
+
+
+def _panel_aim_two(art: Artifacts) -> str:
+    counts = art.panel_count_score
+    if counts is None or counts.empty:
+        return "<h3>Does a combination beat one sign?</h3>" + info_box(
+            "A combination needs at least two usable markers on a shared set of "
+            "patients; this run did not have them."
+        )
+
+    usable = counts[counts["n"] > 0]
+    lead = ""
+    if len(usable) >= 2:
+        first, last = usable.iloc[0], usable.iloc[-1]
+        lead = _lead(
+            f"Risk rises from {_pct(first['risk'])} with "
+            f"{_int(first['n_criteria_met'])} of the signs present to "
+            f"{_pct(last['risk'])} with {_int(last['n_criteria_met'])}."
+        )
+
+    corr = art.panel_selection_correction
+    correction_html = ""
+    if corr is not None and not corr.empty:
+        single = corr[corr["side"] == "best single"]
+        combo = corr[corr["side"] == "best combination"]
+        if len(single) and len(combo):
+            s, c = single.iloc[0], combo.iloc[0]
+            correction_html = (
+                "<p>Head-to-head on the same "
+                f"{_panel_shared_n(art)} patients, both sides corrected for "
+                "having been picked here: the best single sign "
+                f"(<em>{_esc(s['best_rule'])}</em>) scores "
+                f"{_num(s['J_corrected'])}, the best combination "
+                f"(<em>{_esc(c['best_rule'])}</em>) scores "
+                f"{_num(c['J_corrected'])} — a gain of "
+                f"<strong>{_signed(c['gain_corrected'])}</strong>. "
+                "The uncorrected gap is larger, and most of that difference is "
+                "the advantage of having chosen the winner on these same "
+                "patients.</p>"
+            )
+
+    model_html = ""
+    if art.panel_model_vs_single is not None and not art.panel_model_vs_single.empty:
+        model_html = (
+            "<h4>Against the multivariable models</h4>"
+            "<p><code>auc_shared_apparent</code> is each model re-scored on the "
+            "same patients as the markers — the like-for-like column, and "
+            "apparent, so it is optimistic. "
+            "<code>auc_artifact_corrected</code> is the model's own "
+            "optimism-corrected figure on its own patients; the gap between "
+            "the two artifact columns bounds how optimistic the re-scored one "
+            "is.</p>"
+            + _table(art.panel_model_vs_single)
+        )
+
+    stability_html = ""
+    if art.panel_imputation_stability is not None and \
+            not art.panel_imputation_stability.empty:
+        stability_html = details_block(
+            "🎲 Does filling in the missing scans change this?",
+            "<p>Every headline above is computed on patients whose markers were "
+            "actually recorded. Re-running across the MICE draws asks whether "
+            "the same answers come back. Reported as reproduction rates rather "
+            "than pooled estimates: averaging works for an estimate, not for a "
+            "choice, and 'which rule wins' is a choice.</p>"
+            + _table(art.panel_imputation_stability),
+        )
+
+    rules_html = ""
+    if art.panel_rule_reading_view is not None and \
+            not art.panel_rule_reading_view.empty:
+        rules_html = details_block(
+            "📋 Every rule, ranked",
+            "<p>Singles, AND/OR pairs and count rules on one patient set, "
+            "ranked by Youden J (sensitivity + specificity − 1).</p>"
+            + _table(art.panel_rule_reading_view)
+            + _panel_figure(art, "rule_space"),
+        )
+
+    return (
+        "<h3>Does a combination beat one sign?</h3>"
+        + lead
+        + _panel_figure(art, "count_score")
+        + correction_html
+        + model_html
+        + rules_html
+        + stability_html
+    )
+
+
+def render_marker_panel(cfg: ReportConfig, art: Artifacts) -> str:
+    """🎯 The two study aims, answered on one cohort.
+
+    Everything here is read from ``output/panel/``. The section is the last
+    substantive one because it depends on every section above it: the markers
+    come from the EDA screen, the models from multivariable modelling, and the
+    cut-points baked into the derived flags from the threshold notebook.
+    """
+    if art.panel_marker is None and art.panel_count_score is None:
+        return section_block(
+            "🎯 Which MRI markers, and do they combine?",
+            warning_box(
+                "No marker panel was found under <code>output/panel/</code>. "
+                "Run the marker panel cell in the modelling notebook."
+            ),
+        )
+    return section_block(
+        "🎯 Which MRI markers, and do they combine?",
+        _panel_aim_one(art) + _panel_aim_two(art),
+    )
+
+
 def _to_int_or_none(x: Any) -> int | None:
     v = _coerce_float(x)
     return int(v) if v is not None else None
@@ -3265,6 +3498,7 @@ def build_report(cfg: ReportConfig) -> str:
         render_missingness(cfg, art),
         render_eda(cfg, art),
         render_inferential(cfg, art),
+        render_marker_panel(cfg, art),
         render_appendix(cfg, art),
     ]
 
