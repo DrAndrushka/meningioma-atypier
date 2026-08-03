@@ -21,10 +21,12 @@ from typing import NamedTuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_auc_score
 
 import combinations as cb
 import plot_style as ps
 from diagnostic_accuracy import binary_diagnostic_metrics
+from model_calculator import predict_from_artifact
 from thresholds import format_pct_ci
 
 _Z95 = 1.959963984540054
@@ -439,3 +441,109 @@ def selection_correction(
 def rule_space_figure(menu: pd.DataFrame, *, top: int = 12) -> plt.Figure:
     """Every rule in sensitivity-specificity space, singles marked apart."""
     return cb.combination_figure(menu, top=top)
+
+
+def _artifact_auc(artifact: dict, key: str) -> float:
+    """Read one stored AUC (``apparent`` or ``optimism_corrected``) from a model."""
+    metrics = (artifact.get("validation") or {}).get("metrics") or []
+    for entry in metrics:
+        if str(entry.get("metric")) == "AUC":
+            value = entry.get(key)
+            return float(value) if value is not None else np.nan
+    return np.nan
+
+
+def score_model_on(df: pd.DataFrame, artifact: dict) -> pd.Series:
+    """Apply a saved model's coefficients to this cohort, row by row.
+
+    Re-scoring, not refitting. The coefficients are the ones the modelling
+    phase already fitted and shrank; only the patient set changes, which is the
+    whole point — a model AUC computed on 352 patients and a marker's Youden J
+    computed on 301 are not comparable, and the fix is to move the model, not
+    to hope the difference is small.
+
+    A patient missing any predictor scores ``NaN``. Filling one in here would
+    be imputation smuggled into a scoring helper, and the section's whole claim
+    is that its accuracy numbers describe findings someone actually saw.
+    """
+    features = artifact.get("features") or []
+    names = [str(f["name"]) for f in features]
+    missing_cols = [n for n in names if n not in df.columns]
+    if missing_cols:
+        raise KeyError(f"cohort is missing model predictors: {missing_cols}")
+
+    out: list[float] = []
+    for _, row in df.iterrows():
+        values = {n: row[n] for n in names}
+        if any(pd.isna(v) for v in values.values()):
+            out.append(np.nan)
+            continue
+        inputs = {
+            n: (bool(v) if str(f.get("type")) == "binary" else v)
+            for (n, v), f in zip(values.items(), features)
+        }
+        out.append(float(predict_from_artifact(inputs, artifact)))
+    return pd.Series(out, index=df.index, dtype="float64")
+
+
+def model_vs_single(
+    df: pd.DataFrame,
+    artifacts: dict[str, dict],
+    target: str,
+    correction: pd.DataFrame,
+) -> pd.DataFrame:
+    """Each multivariable model against the best single marker, labelled honestly.
+
+    Three AUC columns, deliberately not collapsed into one:
+
+    ``auc_shared_apparent``   the model re-scored on the shared set — the
+                              like-for-like comparison, and *apparent*, because
+                              correcting it would mean re-running the bootstrap
+                              on this set, which is refitting.
+    ``auc_artifact_corrected`` the model's own optimism-corrected AUC from its
+                              artifact, on its own patients. The gap between
+                              this and ``auc_artifact_apparent`` bounds how
+                              optimistic the re-scored column is.
+    ``best_single_J_corrected`` the single-marker side, corrected, from
+                              :func:`selection_correction`.
+    """
+    if not artifacts:
+        return pd.DataFrame(columns=[
+            "model", "n_scored", "auc_shared_apparent", "auc_artifact_corrected",
+            "auc_artifact_apparent", "best_single_rule", "best_single_J_corrected",
+            "note",
+        ])
+
+    single = correction[correction["side"] == "best single"]
+    best_rule = str(single["best_rule"].iloc[0]) if len(single) else ""
+    best_j = float(single["J_corrected"].iloc[0]) if len(single) else np.nan
+    y = df[target].astype("boolean")
+
+    rows: list[dict] = []
+    for name, artifact in artifacts.items():
+        note = ""
+        auc = np.nan
+        n_scored = 0
+        try:
+            probs = score_model_on(df, artifact)
+            usable = probs.notna() & y.notna()
+            n_scored = int(usable.sum())
+            truth = y[usable].astype(int)
+            if n_scored and truth.nunique() == 2:
+                auc = float(roc_auc_score(truth, probs[usable]))
+            else:
+                note = "not scorable on this set — one outcome class only"
+        except KeyError as exc:
+            note = f"not scorable on this set — {exc.args[0]}"
+
+        rows.append({
+            "model": name,
+            "n_scored": n_scored,
+            "auc_shared_apparent": auc,
+            "auc_artifact_corrected": _artifact_auc(artifact, "optimism_corrected"),
+            "auc_artifact_apparent": _artifact_auc(artifact, "apparent"),
+            "best_single_rule": best_rule,
+            "best_single_J_corrected": best_j,
+            "note": note,
+        })
+    return pd.DataFrame(rows)

@@ -405,3 +405,73 @@ def test_rule_space_figure_draws():
     fig = mp.rule_space_figure(menu)
     assert fig.axes
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Aim 2 — the multivariable comparison
+# --------------------------------------------------------------------------
+def tiny_artifact() -> dict:
+    """A two-predictor logistic model in the shape the pipeline saves."""
+    return {
+        "model_name": "Tiny model",
+        "target": TARGET,
+        "coefficients": {"const": -1.0, "sign_0": 1.5, "sign_1": 0.8},
+        "features": [
+            {"name": "sign_0", "type": "binary",
+             "encoding": {"sign_0": {"true": 1, "false": 0}}},
+            {"name": "sign_1", "type": "binary",
+             "encoding": {"sign_1": {"true": 1, "false": 0}}},
+        ],
+        "validation": {"metrics": [
+            {"metric": "AUC", "apparent": 0.71, "optimism_corrected": 0.68},
+        ]},
+    }
+
+
+def test_scoring_a_model_gives_one_probability_per_patient():
+    df = count_frame()
+    probs = mp.score_model_on(df, tiny_artifact())
+    assert len(probs) == len(df)
+    assert probs.between(0, 1).all()
+
+
+def test_a_patient_missing_a_predictor_scores_nan_not_a_guess():
+    """Imputing silently inside a scoring helper would be a lie by omission."""
+    df = count_frame().copy()
+    df.loc[df.index[0], "sign_0"] = pd.NA
+    probs = mp.score_model_on(df, tiny_artifact())
+    assert pd.isna(probs.iloc[0])
+    assert probs.iloc[1:].notna().all()
+
+
+def test_model_vs_single_keeps_the_two_aucs_in_separate_labelled_columns():
+    """The artifact AUC and the re-scored AUC are different patients.
+
+    Collapsing them into one column is the denominator mistake this section
+    exists to avoid, so the table carries both and says which is which.
+    """
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+
+    row = table.iloc[0]
+    assert row["model"] == "tiny"
+    assert row["auc_artifact_corrected"] == 0.68
+    assert row["auc_artifact_apparent"] == 0.71
+    assert 0.0 <= row["auc_shared_apparent"] <= 1.0
+    assert row["n_scored"] == len(df)
+    assert row["best_single_rule"] == correction.iloc[0]["best_rule"]
+
+
+def test_a_model_whose_predictors_are_absent_is_reported_not_dropped():
+    df = count_frame().drop(columns=["sign_0"])
+    correction = mp.selection_correction(df, COUNT_MARKERS[1:], TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+    assert pd.isna(table.iloc[0]["auc_shared_apparent"])
+    assert "sign_0" in table.iloc[0]["note"]
+
+
+def test_model_vs_single_is_empty_when_there_are_no_artifacts():
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    assert mp.model_vs_single(df, {}, TARGET, correction).empty
