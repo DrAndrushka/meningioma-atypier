@@ -144,6 +144,49 @@ def _write_artifacts(root, *, tables=None, figures=True, manifest=True, models=F
             {"Metric": "ADC", "Evidence": "moderate", "Criteria met": "4 of 5",
              "What limits it": "MICE reproducibility"},
         ]),
+        "40_calibration.csv": pd.DataFrame([
+            {"model": "Uncut four-measurement model", "n_used": 304, "events": 93,
+             "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.911,
+             "intercept_apparent": 0.0, "intercept_corrected": 0.003,
+             "brier_apparent": 0.189, "brier_corrected": 0.195, "n_bootstrap": 500,
+             "source": "threshold phase (fitted here)"},
+            # No corrected intercept — the modelling artifacts do not carry one.
+            {"model": "experimental 2", "n_used": 352, "events": 105,
+             "n_predictors": 10, "slope_apparent": 1.0, "slope_corrected": 0.773,
+             "intercept_apparent": 0.0, "intercept_corrected": np.nan,
+             "brier_apparent": 0.187, "brier_corrected": 0.199, "n_bootstrap": 1000,
+             "source": "modelling phase artifact"},
+        ]),
+        "41_calibration_bins_uncut.csv": pd.DataFrame([
+            {"predicted": 0.13, "observed": 0.10, "lo": 0.03, "hi": 0.28,
+             "n": 30, "events": 3},
+        ]),
+        "43_net_benefit.csv": pd.DataFrame([
+            {"strategy": "Treat all", "threshold": 0.05, "net_benefit": 0.27,
+             "kind": "reference"},
+            {"strategy": "Uncut four-measurement model", "threshold": 0.05,
+             "net_benefit": 0.27, "kind": "model"},
+            {"strategy": "Treat all", "threshold": 0.60, "net_benefit": -0.75,
+             "kind": "reference"},
+            {"strategy": "Uncut four-measurement model", "threshold": 0.60,
+             "net_benefit": 0.01, "kind": "model"},
+        ]),
+        "44_net_benefit_summary.csv": pd.DataFrame([
+            {"strategy": "Uncut four-measurement model", "is_reference": False,
+             "max_net_benefit": 0.27, "threshold_at_max": 0.05,
+             "beats_references_from": 0.05, "beats_references_to": 0.60,
+             "pct_of_range_beating_references": 76.8,
+             "pct_of_range_best_available": 58.9, "prevalence": 0.298},
+            {"strategy": "Best single cut-point (Edema volume ≥ 4.76)",
+             "is_reference": False, "max_net_benefit": 0.20, "threshold_at_max": 0.05,
+             "beats_references_from": np.nan, "beats_references_to": np.nan,
+             "pct_of_range_beating_references": 0.0,
+             "pct_of_range_best_available": 0.0, "prevalence": 0.298},
+            {"strategy": "Treat all", "is_reference": True, "max_net_benefit": 0.27,
+             "threshold_at_max": 0.05, "beats_references_from": np.nan,
+             "beats_references_to": np.nan, "pct_of_range_beating_references": 0.0,
+             "pct_of_range_best_available": 12.5, "prevalence": 0.298},
+        ]),
         "38_nonlinearity_multiplicity.csv": pd.DataFrame([
             {"metric": "ADC", "column": "adc", "family": "non-linearity LRT (primary)",
              "n_tests": 2, "p_raw": 0.009, "p_holm": 0.018, "p_bonferroni": 0.018,
@@ -561,6 +604,46 @@ def test_multiplicity_degrades_when_the_table_is_missing(tmp_path):
     (root / "thresholds" / "tables" / "38_nonlinearity_multiplicity.csv").unlink()
     html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
     assert "adjusted table was not found" in html
+
+
+# --------------------------------------------------------------------------
+# Calibration and net benefit
+# --------------------------------------------------------------------------
+def test_calibration_reaches_section_7_and_section_9(cfg):
+    html = tr.build_report(cfg)
+    assert "Calibration — is the probability the right size?" in html
+    assert "0.91" in html                       # the corrected slope
+    assert "Is the model calibrated?" in html
+
+
+def test_missing_corrected_intercept_is_shown_as_missing_not_filled_in(cfg):
+    html = tr.build_report(cfg)
+    assert "apparent 0.00" in html
+    assert "carry a bootstrap-corrected calibration" in html
+
+
+def test_net_benefit_reaches_section_7_and_section_9(cfg):
+    html = tr.build_report(cfg)
+    assert "Net benefit — what is each strategy actually worth?" in html
+    assert "Should anyone actually act on this?" in html
+    assert "59% of that range" in html
+
+
+def test_net_benefit_names_the_strategies_that_never_beat_the_references(cfg):
+    nb = tr.net_benefit_facts(tr.load_report_data(cfg))
+    assert nb.available
+    assert nb.winner == "Uncut four-measurement model"
+    assert nb.useless == ("Best single cut-point (Edema volume ≥ 4.76)",)
+    assert "never beats" in tr.build_report(cfg)
+
+
+def test_report_degrades_without_calibration_or_net_benefit(tmp_path):
+    root = _write_artifacts(tmp_path)
+    for name in ("40_calibration.csv", "44_net_benefit_summary.csv"):
+        (root / "thresholds" / "tables" / name).unlink()
+    html = tr.build_report(tr.ThresholdReportConfig(output_root=root))
+    assert "No calibration table was found" in html
+    assert "No decision curve was found" in html
 
 
 def test_defence_section_cites_live_numbers(cfg):

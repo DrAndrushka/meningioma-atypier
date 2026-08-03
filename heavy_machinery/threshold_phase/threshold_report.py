@@ -99,6 +99,10 @@ TABLE_FILES = {
     "zero_comparison": "37_zero_inflation_comparison.csv",
     "multiplicity": "38_nonlinearity_multiplicity.csv",
     "multiplicity_reading": "39_nonlinearity_multiplicity_reading_view.csv",
+    "calibration": "40_calibration.csv",
+    "calibration_bins": "41_calibration_bins_uncut.csv",
+    "net_benefit": "43_net_benefit.csv",
+    "net_benefit_summary": "44_net_benefit_summary.csv",
 }
 
 FIGURE_FILES = {
@@ -106,6 +110,8 @@ FIGURE_FILES = {
     "combined_roc": "10_combined_roc.svg",
     "combination_space": "14_combination_space.svg",
     "shared_combination_space": "33_shared_combination_space.svg",
+    "calibration": "42_calibration.svg",
+    "net_benefit": "45_net_benefit.svg",
     "count_score": "16_count_score.svg",
     "stability": "20_stability_youden.svg",
     "knee_stability": "22_knee_stability.svg",
@@ -1712,8 +1718,192 @@ a filled-in dataset nothing is missing, so every patient gets a count.</p>
 
 
 # ---------------------------------------------------------------------------
-# 7 — trade-offs
+# 7 — trade-offs, calibration, net benefit
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class NetBenefitFacts:
+    """What the decision curve concluded, in the form section 9 quotes."""
+
+    available: bool = False
+    lo: float = float("nan")          # low end of the plotted threshold range
+    hi: float = float("nan")
+    winner: str = ""                  # best available over most of the range
+    winner_share: float = float("nan")
+    useless: tuple[str, ...] = ()     # never beat treat-all / treat-none
+    rows: tuple[tuple, ...] = ()
+
+
+def net_benefit_facts(data: ThresholdReportData) -> NetBenefitFacts:
+    summary = data.table("net_benefit_summary")
+    curve = data.table("net_benefit")
+    if summary.empty or "pct_of_range_best_available" not in summary.columns:
+        return NetBenefitFacts()
+
+    strategies = summary[~summary["is_reference"].map(_truthy)]
+    if strategies.empty:
+        return NetBenefitFacts()
+    top = strategies.sort_values("pct_of_range_best_available", ascending=False).iloc[0]
+
+    lo = hi = float("nan")
+    if not curve.empty and "threshold" in curve.columns:
+        lo, hi = float(curve["threshold"].min()), float(curve["threshold"].max())
+
+    return NetBenefitFacts(
+        available=True, lo=lo, hi=hi,
+        winner=str(top["strategy"]),
+        winner_share=float(top["pct_of_range_best_available"]),
+        useless=tuple(strategies.loc[
+            strategies["pct_of_range_beating_references"] <= 0, "strategy"].astype(str)),
+        rows=tuple(strategies.itertuples(index=False)),
+    )
+
+
+def render_calibration(data: ThresholdReportData) -> str:
+    """Is the probability the right size? — the question AUC cannot answer."""
+    table = data.table("calibration")
+    if table.empty or "slope_corrected" not in table.columns:
+        return info_box(
+            "No calibration table was found. Re-run the thresholder notebook "
+            "(section 6) to produce <code>40_calibration.csv</code>.")
+
+    display = pd.DataFrame({
+        "Model": [str(m).replace("_", " ") for m in table["model"]],
+        "n": [_int(v) for v in table["n_used"]],
+        "Predictors": [_int(v) for v in table["n_predictors"]],
+        "Slope (corrected)": [_num(v) for v in table["slope_corrected"]],
+        "Intercept (corrected)": [
+            _num(v) if pd.notna(v) else f"— (apparent {_num(a)})"
+            for v, a in zip(table.get("intercept_corrected", pd.Series(dtype=float)),
+                            table.get("intercept_apparent", pd.Series(dtype=float)))],
+        "Brier (corrected)": [_num(v, 3) for v in table.get("brier_corrected",
+                                                            pd.Series(dtype=float))],
+        "Source": table.get("source", ""),
+    })
+
+    uncut = table[table["model"].astype(str).str.contains("Uncut", case=False, na=False)]
+    concrete = ""
+    if not uncut.empty:
+        r = uncut.iloc[0]
+        slope = float(r["slope_corrected"]) if pd.notna(r["slope_corrected"]) else np.nan
+        shrink = ((1.0 - slope) * 100.0) if np.isfinite(slope) else np.nan
+        concrete = _concrete(
+            f"the uncut four-measurement model has a bootstrap-corrected calibration slope "
+            f"of <b>{_num(slope)}</b>. A slope below 1 means the predictions are too "
+            f"spread out: on new patients the high risks would come in lower and the low "
+            f"risks higher, by roughly "
+            f"{_num(shrink, 0) if np.isfinite(shrink) else '—'}% of the distance from the "
+            f"cohort's own rate. It is a mild shrinkage, not a broken model — but it is the "
+            f"reason a predicted 70% should be quoted as 'high', not as '70%'.")
+
+    missing_intercept = ""
+    if ("intercept_corrected" in table.columns
+            and table["intercept_corrected"].isna().any()):
+        missing_intercept = warning_box(
+            "The multivariable models' artifacts carry a bootstrap-corrected calibration "
+            "<em>slope</em> but only an apparent <em>intercept</em>, so that cell reports "
+            "the apparent value and says so. Producing a corrected intercept means "
+            "re-running the modelling phase's own validation loop; it is not derivable "
+            "from the stored coefficients, and it is not invented here.")
+
+    return f"""
+<h3>Calibration — is the probability the right size?</h3>
+
+<p>Everything above this heading is <b>discrimination</b>: AUC, Youden J, sensitivity,
+specificity. None of it can see whether a predicted 30% happens 30% of the time. A model
+that says 90% where the truth is 40% has exactly the same AUC as one that says 40% — and
+this report presents its outputs as probabilities throughout.</p>
+
+{_key("Two numbers, two different failures:",
+      "the <b>slope</b> is the outcome regressed on the model's own log-odds. Below 1 means "
+      "the predictions are too extreme — the usual direction for a model scored on the "
+      "patients it was fitted on. The <b>intercept</b> comes from a separate fit with the "
+      "slope held at 1; it asks whether the risks are systematically too high or too low. "
+      "Both are bootstrap-corrected exactly the way the AUCs are.")}
+
+{_figure(data.figures.get("calibration"),
+         "Dots: observed high-grade rate against mean predicted risk in equal-count bins, "
+         "with 95% intervals. The diagonal is perfect calibration; dots below it mean the "
+         "model promises more risk than the patients delivered.")}
+
+{table_to_html(display)}
+
+{concrete}
+
+{missing_intercept}
+"""
+
+
+def render_net_benefit(data: ThresholdReportData, facts: CohortFacts) -> str:
+    """The decision curve — the direct answer to "what does the line cost"."""
+    nb = net_benefit_facts(data)
+    if not nb.available:
+        return info_box(
+            "No decision curve was found. Re-run the thresholder notebook (section 6) to "
+            "produce <code>44_net_benefit_summary.csv</code>.")
+
+    summary = data.table("net_benefit_summary")
+    strategies = summary[~summary["is_reference"].map(_truthy)]
+    display = pd.DataFrame({
+        "Strategy": strategies["strategy"],
+        "Best net benefit": [_num(v, 3) for v in strategies["max_net_benefit"]],
+        "Beats treat-all and treat-none": [
+            "never" if pd.isna(a) else f"{_pct(a)}–{_pct(b)} threshold"
+            for a, b in zip(strategies["beats_references_from"],
+                            strategies["beats_references_to"])],
+        "…over this share of the range": [
+            _num(v, 0) + "%" for v in strategies["pct_of_range_beating_references"]],
+        "Best available strategy over": [
+            _num(v, 0) + "%" for v in strategies["pct_of_range_best_available"]],
+    })
+
+    losers = ""
+    if nb.useless:
+        losers = warning_box(
+            f"{_esc(_join_names(list(nb.useless)))} never beats treating everyone or "
+            f"treating no one anywhere in the plotted range. A rule that cannot clear "
+            f"those two references is not worth applying, whatever its sensitivity and "
+            f"specificity look like in isolation.")
+
+    return f"""
+<h3>Net benefit — what is each strategy actually worth?</h3>
+
+<p>This section's title question — <em>what does the line cost</em> — has a direct answer,
+and it is not an AUC. Declare the <b>threshold probability</b> <em>t</em>: the risk above
+which you would act. That single declaration fixes the exchange rate between a missed
+high-grade tumour and a false alarm, and net benefit follows from it:</p>
+
+<p style="text-align:center"><code>net benefit = TP/n − (FP/n) × t/(1 − t)</code></p>
+
+{_key("What the units mean:",
+      f"true positives per patient. At <em>t</em> = 0.30 you are saying one missed WHO 2–3 "
+      f"is worth about 2.3 unnecessary alarms, so each false positive is charged 1/2.3 of a "
+      f"true one. The point of the measure is that <b>a cut-point, a count score, a model, "
+      f"treating everyone and treating no one all land on one axis</b> — which sensitivity "
+      f"and specificity never do.")}
+
+{_figure(data.figures.get("net_benefit"),
+         "Higher is better. The two grey references are the strategies that need no test at "
+         "all: treat everyone, and treat no one. A curve below both of them over the range "
+         "you care about is a strategy that would do harm.")}
+
+{table_to_html(display)}
+
+{_concrete(f"across threshold probabilities from {_pct(nb.lo)} to {_pct(nb.hi)}, "
+           f"<b>{_esc(nb.winner)}</b> is the best available strategy over "
+           f"{_num(nb.winner_share, 0)}% of the range. Below the cohort's own high-grade "
+           f"rate of {_pct(facts.prevalence)}, treating everyone is hard to beat — which is "
+           f"itself worth saying out loud in a surgical series.")}
+
+{losers}
+
+{_key("Why this belongs in the paper and not just in the appendix:",
+      "a reviewer who accepts that your AUC is 0.69 can still ask whether anyone should "
+      "act on it. The decision curve answers that in the reviewer's own terms: name the "
+      "threshold you would use, read off whether the rule beats doing nothing. It is the "
+      "one figure here that converts a statistic into a decision.")}
+"""
+
+
 def render_tradeoffs(data: ThresholdReportData, facts: CohortFacts) -> str:
     verdict = primary_verdict(data)
     models = data.model_aucs
@@ -1822,6 +2012,10 @@ about which constraint you are under.</p>
 
 {ladder}
 
+{render_calibration(data)}
+
+{render_net_benefit(data, facts)}
+
 {model_table}
 
 <h3>What should actually be reported</h3>
@@ -1902,6 +2096,57 @@ def _multiplicity_answer(m: MultiplicityFacts) -> str:
     return head
 
 
+def _calibration_answer(data: ThresholdReportData) -> str:
+    """Section 9's calibration answer, from the table rather than from memory."""
+    table = data.table("calibration")
+    if table.empty or "slope_corrected" not in table.columns:
+        return ("Yes, and it is reported in section 7 — but the calibration table was not "
+                "found in this run. Re-run the thresholder notebook to regenerate it.")
+    uncut = table[table["model"].astype(str).str.contains("Uncut", case=False, na=False)]
+    row = uncut.iloc[0] if not uncut.empty else table.iloc[0]
+    slope = _num(row.get("slope_corrected"))
+    best = table.dropna(subset=["slope_corrected"])
+    span = ""
+    if len(best) > 1:
+        span = (f" Across the multivariable variants the corrected slope runs "
+                f"{_num(best['slope_corrected'].min())}–"
+                f"{_num(best['slope_corrected'].max())}, and the model with the most "
+                f"predictors has the worst of them — which is what overfitting looks "
+                f"like in a calibration column rather than in an argument.")
+    return (f"We report it, which most threshold papers do not. The uncut four-measurement "
+            f"model has a bootstrap-corrected calibration slope of <b>{slope}</b> — mildly "
+            f"over-extreme predictions, the expected direction, not a broken model. "
+            f"Calibration is the reason we present the count score as a five-level ladder "
+            f"rather than quoting a point probability off a curve.{span}")
+
+
+def _net_benefit_answer(data: ThresholdReportData, facts: CohortFacts) -> str:
+    nb = net_benefit_facts(data)
+    if not nb.available:
+        return ("That is what section 7's decision curve answers, but it was not found in "
+                "this run. Re-run the thresholder notebook to regenerate it.")
+    tail = ""
+    if nb.useless:
+        tail = (f" And we say which strategies fail it: "
+                f"{_esc(_join_names(list(nb.useless)))} never beats treating everyone or "
+                f"treating no one anywhere in that range.")
+    return (f"We answer that directly rather than leaving it to the reader. A decision curve "
+            f"puts every strategy on one axis in units of true positives per patient, across "
+            f"threshold probabilities from {_pct(nb.lo)} to {_pct(nb.hi)}. "
+            f"<b>{_esc(nb.winner)}</b> is the best available strategy over "
+            f"{_num(nb.winner_share, 0)}% of that range. Below the cohort's high-grade rate "
+            f"of {_pct(facts.prevalence)} treating everyone is hard to beat, and we state "
+            f"that too.{tail}")
+
+
+def _net_benefit_evidence(nb: NetBenefitFacts) -> str:
+    if not nb.available:
+        return "Section 7, decision curve."
+    return (f"Section 7, decision curve and net-benefit table: {_esc(nb.winner)} best over "
+            f"{_num(nb.winner_share, 0)}% of the {_pct(nb.lo)}–{_pct(nb.hi)} threshold "
+            f"range.")
+
+
 def _multiplicity_evidence(m: MultiplicityFacts) -> str:
     if not m.available:
         return "Section 3, multiple-testing block."
@@ -1917,6 +2162,7 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
 
     v = facts.verdicts
     mult = multiplicity_facts(data)
+    nb = net_benefit_facts(data)
     widest = ""
     if "cutoff_boot_lo" in thresholds.columns:
         y = thresholds[thresholds["rule"] == "youden"].dropna(subset=["cutoff_boot_lo"])
@@ -2006,6 +2252,15 @@ def render_defence(data: ThresholdReportData, facts: CohortFacts) -> str:
             "statistic.",
             "Section 7 comparison table."),
 
+        _qa("You report discrimination everywhere. Is the model calibrated?",
+            _calibration_answer(data),
+            "Section 7, calibration figure and table — slope and intercept, "
+            "bootstrap-corrected the same way the AUCs are."),
+
+        _qa("Granted the AUC. Should anyone actually act on this?",
+            _net_benefit_answer(data, facts),
+            _net_benefit_evidence(nb)),
+
         _qa("Why the count score rather than a proper risk model?",
             "Both. The model is in the modelling arm of the study and performs better; we say "
             "so. The count score is offered as the applicable version — five levels, no "
@@ -2052,6 +2307,7 @@ line under every answer points at where in this document it lives.</p>
 # ---------------------------------------------------------------------------
 def render_reference(data: ThresholdReportData, facts: CohortFacts) -> str:
     verdict = primary_verdict(data)
+    nb_facts = net_benefit_facts(data)
     risk = data.table("risk_curves")
     thresholds = data.table("thresholds")
 
@@ -2156,6 +2412,21 @@ def render_reference(data: ThresholdReportData, facts: CohortFacts) -> str:
              "The reason PPV and NPV do not transfer between settings. Always state it next "
              "to them.",
              f"{_pct(facts.prevalence)} here — a surgical series, far above population rate."),
+        _ref("Calibration slope",
+             "The outcome regressed on the model's own predicted log-odds. 1.0 is perfect; "
+             "below 1 means the predictions are too spread out.",
+             "Quote it whenever you present a probability rather than a yes/no. AUC cannot "
+             "see it at all.",
+             f"{_num(_first(data.table('calibration'), 'slope_corrected'))} "
+             f"(bootstrap-corrected) for the uncut four-measurement model."),
+        _ref("Net benefit",
+             "True positives per patient, minus false positives priced at t/(1−t), where "
+             "t is the risk above which you would act.",
+             "The one measure that puts a cut-point, a score, a model and doing nothing on "
+             "the same axis. Use it to answer &quot;should anyone act on this?&quot;",
+             (f"{_esc(nb_facts.winner)} best over {_num(nb_facts.winner_share, 0)}% of the "
+              f"{_pct(nb_facts.lo)}–{_pct(nb_facts.hi)} range."
+              if nb_facts.available else "Section 7, decision curve.")),
         _ref("Risk crossing",
              "The value at which the fitted risk curve passes a chosen level, e.g. 30% or 50%.",
              "What you quote instead of a threshold when the risk rises smoothly. Far more "
