@@ -23,10 +23,11 @@ the same order out of two boolean matrices, and the two sides of the correction
 share one resample loop instead of independently drawing the identical
 resamples.
 
-Checked, not assumed. The pre-change full-budget run is preserved in
-`output/panel/baseline_2026-08-04/`, and `scripts/check_panel_against_baseline.py`
-reproduces all thirteen CSVs byte-for-byte. `test_combinations.py` additionally
-pins the pre-change bootstrap output to twelve decimal places.
+Checked, not assumed. The whole panel was regenerated with the new code and
+compared against the pre-change full-budget run: all thirteen CSVs came back
+byte-for-byte identical. `test_combinations.py` keeps that guarantee standing —
+it pins the pre-change bootstrap output to twelve decimal places, so a future
+change that moves one of these numbers fails the suite rather than the poster.
 
 | What | Was | Now |
 |---|---|---|
