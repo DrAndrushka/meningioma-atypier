@@ -353,6 +353,110 @@ def test_count_score_figure_labels_the_axis_with_the_marker_count():
     plt.close(fig)
 
 
+def test_a_short_marker_list_is_still_named_in_the_subtitle():
+    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
+    fig = mp.count_score_figure(counts, COUNT_MARKERS)
+    subtitle = " ".join(t.get_text() for t in fig.axes[0].texts) + \
+        fig.axes[0].get_title()
+    assert "Sign 0" in subtitle
+    plt.close(fig)
+
+
+def wide_frame(k: int = 16, n: int = 300, seed: int = 5) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    y = rng.binomial(1, 0.3, n).astype(bool)
+    cols = {
+        f"sign_{i}": pd.array(rng.binomial(1, 0.3 + 0.2 * y).astype(bool),
+                              dtype="boolean")
+        for i in range(k)
+    }
+    cols[TARGET] = pd.array(y, dtype="boolean")
+    return pd.DataFrame(cols)
+
+
+def test_a_long_marker_list_is_left_out_of_the_subtitle():
+    """Sixteen names is a 200-character line and matplotlib abandons the layout.
+
+    The count is still on the x-axis, and the names are the rows of the aim-1
+    table on the same page, so nothing is lost by dropping them here.
+    """
+    markers = [mp.BinaryMarker(f"sign_{i}", f"Sign {i}") for i in range(16)]
+    counts = mp.count_score(wide_frame(), markers, TARGET)
+    fig = mp.count_score_figure(counts, markers)
+    ax = fig.axes[0]
+    text = " ".join(t.get_text() for t in ax.texts) + ax.get_title()
+    assert "Sign 15" not in text
+    assert "16" in ax.get_xlabel()
+    plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Aim 2 — which two counts the headline sentence may quote
+# --------------------------------------------------------------------------
+def _counts(rows: list[tuple[int, int, int]]) -> pd.DataFrame:
+    """``(count, n, events)`` triples in the shape ``count_score`` returns."""
+    frame = pd.DataFrame([
+        {"n_criteria_met": c, "n": n, "n_high_grade": e,
+         "risk": (e / n) if n else np.nan,
+         "risk_lo": np.nan, "risk_hi": np.nan}
+        for c, n, e in rows
+    ])
+    frame.attrs["k"] = max(c for c, _, _ in rows)
+    return frame
+
+
+def test_the_headline_skips_counts_with_almost_nobody_in_them():
+    """The real failure: the top bin held one patient, whose 0% became the claim.
+
+    Occupied is not the same as usable. With the highest bin holding a single
+    patient, a sentence built from the first and last occupied rows reported
+    two coin flips as a trend.
+    """
+    head = mp.count_headline(_counts([
+        (3, 9, 0), (4, 12, 0), (8, 60, 18), (10, 40, 17), (15, 1, 0),
+    ]), min_n=10)
+    row = head.iloc[0]
+    assert row["low_count"] == 4
+    assert row["high_count"] == 10
+    assert row["direction"] == "rises"
+
+
+def test_the_headline_reports_a_fall_as_a_fall():
+    """The direction is measured. A hard-coded "rises" is a hope, not a finding."""
+    head = mp.count_headline(_counts([
+        (0, 40, 24), (1, 50, 20), (2, 60, 6),
+    ]), min_n=10)
+    assert head.iloc[0]["direction"] == "falls"
+
+
+def test_the_headline_says_flat_when_the_two_ends_agree():
+    head = mp.count_headline(_counts([
+        (0, 40, 20), (1, 30, 12), (2, 60, 30),
+    ]), min_n=10)
+    assert head.iloc[0]["direction"] == "flat"
+
+
+def test_the_headline_relaxes_its_floor_rather_than_going_silent():
+    """A thin honest sentence beats no sentence — but it must say it is thin."""
+    head = mp.count_headline(_counts([(0, 4, 0), (1, 5, 3)]), min_n=10)
+    row = head.iloc[0]
+    assert row["low_count"] == 0 and row["high_count"] == 1
+    assert row["min_n"] == 1
+    assert "no two counts" in row["note"]
+
+
+def test_the_headline_is_empty_when_one_count_is_occupied():
+    assert mp.count_headline(_counts([(2, 30, 9)]), min_n=10).empty
+    assert mp.count_headline(pd.DataFrame()).empty
+
+
+def test_the_headline_carries_the_denominators_it_quotes():
+    head = mp.count_headline(_counts([(1, 25, 2), (4, 40, 20)]), min_n=10)
+    row = head.iloc[0]
+    assert row["low_n"] == 25 and row["high_n"] == 40
+    assert row["k_markers"] == 4
+
+
 # --------------------------------------------------------------------------
 # Aim 2 — the rule menu, and paying for having picked a winner
 # --------------------------------------------------------------------------
@@ -384,6 +488,35 @@ def test_the_reported_gain_is_corrected_on_both_sides():
     combo = corr[corr["side"] == "best combination"].iloc[0]
     expected = combo["J_corrected"] - single["J_corrected"]
     assert corr["gain_corrected"].iloc[0] == pytest.approx(expected, abs=1e-9)
+
+
+def test_the_correction_records_both_gaps_and_which_way_it_moved_them():
+    """Whether correction shrinks the gap is data, not doctrine.
+
+    Correction subtracts each side's *own* selection optimism. When the
+    best-of-N-singles side pays more of it than the combination side, the
+    corrected gap is the larger one — so "the uncorrected gap is larger" is a
+    claim that has to be measured, and it is measured here rather than in the
+    report's prose.
+    """
+    corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
+    row = corr.iloc[1]
+    single, combo = corr.iloc[0], corr.iloc[1]
+    assert row["gain_apparent"] == pytest.approx(
+        combo["J_apparent"] - single["J_apparent"], abs=1e-9)
+    assert row["correction_effect"] in {"widens", "narrows", "unchanged"}
+    expected = ("widens" if row["gain_corrected"] > row["gain_apparent"]
+                else "narrows" if row["gain_corrected"] < row["gain_apparent"]
+                else "unchanged")
+    assert row["correction_effect"] == expected
+
+
+def test_a_widening_correction_is_labelled_widening():
+    """The real cohort's case, isolated: the single side costs more to choose."""
+    assert mp._correction_effect(0.119, 0.134) == "widens"
+    assert mp._correction_effect(0.134, 0.119) == "narrows"
+    assert mp._correction_effect(0.100, 0.100) == "unchanged"
+    assert mp._correction_effect(np.nan, 0.1) == ""
 
 
 def test_selection_correction_is_deterministic_for_a_seed():
@@ -463,6 +596,64 @@ def test_model_vs_single_keeps_the_two_aucs_in_separate_labelled_columns():
     assert row["best_single_rule"] == correction.iloc[0]["best_rule"]
 
 
+def second_artifact() -> dict:
+    """A model needing a third sign, so its complete cases are a smaller set."""
+    return {
+        "model_name": "Other model",
+        "target": TARGET,
+        "coefficients": {"const": -0.5, "sign_2": 1.1},
+        "features": [
+            {"name": "sign_2", "type": "binary",
+             "encoding": {"sign_2": {"true": 1, "false": 0}}},
+        ],
+        "validation": {"metrics": [
+            {"metric": "AUC", "apparent": 0.65, "optimism_corrected": 0.61},
+        ]},
+    }
+
+
+def test_every_model_is_scored_on_one_patient_set():
+    """The denominator error this section exists to prevent, in its own house.
+
+    Each model's predictors have their own missingness, so left alone the
+    models score on different patients and their AUCs sit in one column
+    inviting subtraction. Every model is restricted to the patients *all* of
+    them can score.
+    """
+    df = count_frame().copy()
+    df.loc[df.index[:20], "sign_2"] = pd.NA      # costs the second model only
+    df.loc[df.index[20:30], "sign_0"] = pd.NA    # costs the first model only
+    correction = mp.selection_correction(df, COUNT_MARKERS[:2], TARGET, n_boot=40)
+    table = mp.model_vs_single(
+        df, {"tiny": tiny_artifact(), "other": second_artifact()},
+        TARGET, correction,
+    )
+    assert table["n_scored"].nunique() == 1
+    assert int(table["n_scored"].iloc[0]) == len(df) - 30
+    assert set(table["denominator"]) == {mp.DENOM_SHARED}
+    own = dict(zip(table["model"], table["n_complete_own"]))
+    assert own["tiny"] == len(df) - 10
+    assert own["other"] == len(df) - 20
+    # The single-marker side is still on the whole marker shared set, and the
+    # table says so rather than letting the page imply one number for both.
+    assert set(table["n_best_single"]) == {len(df)}
+
+
+def test_the_single_marker_side_is_offered_as_an_auc_not_only_a_youden_j():
+    """A J of 0.14 beside an AUC of 0.75 reads as five times worse. It is 0.57.
+
+    For a yes/no rule the two scales are locked together by AUC = (J + 1) / 2,
+    so the comparable number exists and simply has to be printed.
+    """
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+    row = table.iloc[0]
+    assert row["best_single_auc_corrected"] == pytest.approx(
+        (row["best_single_J_corrected"] + 1) / 2, abs=1e-12)
+    assert 0.0 <= row["best_single_auc_corrected"] <= 1.0
+
+
 def test_a_model_whose_predictors_are_absent_is_reported_not_dropped():
     df = count_frame().drop(columns=["sign_0"])
     correction = mp.selection_correction(df, COUNT_MARKERS[1:], TARGET, n_boot=40)
@@ -518,6 +709,57 @@ def test_imputation_stability_says_so_when_there_are_no_draws():
 
 
 # --------------------------------------------------------------------------
+# Reading views — no machine column names on the page
+# --------------------------------------------------------------------------
+def test_the_model_view_names_its_columns_for_a_reader():
+    """A page that prints ``best_single_J_corrected`` asks the reader to know
+    which of two columns is on a 0.5–1 scale. The headings say so instead.
+    """
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+    view = mp.model_reading_view(table)
+    assert list(view.columns) == [
+        "Model", "Patients scored", "Model AUC here (apparent)",
+        "Model AUC, own patients (corrected)",
+        "Model AUC, own patients (apparent)", "Best single sign",
+        "Best single AUC (corrected)", "Best single Youden J (corrected)",
+        "Note",
+    ]
+    assert not any("_" in str(c) for c in view.columns)
+    assert view.iloc[0]["Model AUC, own patients (corrected)"] == "0.680"
+
+
+def test_the_model_view_prints_an_em_dash_where_there_is_no_number():
+    table = pd.DataFrame([{
+        "model": "tiny", "n_scored": 0, "n_complete_own": 0, "denominator": "",
+        "auc_shared_apparent": np.nan, "auc_artifact_corrected": np.nan,
+        "auc_artifact_apparent": np.nan, "best_single_rule": "",
+        "best_single_auc_corrected": np.nan, "best_single_J_corrected": np.nan,
+        "note": "not scorable",
+    }])
+    view = mp.model_reading_view(table)
+    assert view.iloc[0]["Model AUC here (apparent)"] == "—"
+    assert view.iloc[0]["Patients scored"] == "—"
+
+
+def test_the_stability_view_shows_rates_as_rates():
+    """``value`` holds a draw count and three proportions; 0.4 means 40%."""
+    draws = [count_frame(seed=s) for s in (1, 2, 3)]
+    out = mp.imputation_stability(draws, COUNT_MARKERS, TARGET, n_boot=20)
+    view = mp.stability_reading_view(out)
+    assert list(view.columns) == ["What was checked", "Result", "Detail"]
+    rows = dict(zip(view["What was checked"], view["Result"]))
+    assert rows["Draws"] == "3"
+    assert rows["Winning rule reproduced"].endswith("%")
+
+
+def test_the_reading_views_are_empty_not_broken_with_nothing_to_show():
+    assert mp.model_reading_view(pd.DataFrame()).empty
+    assert mp.stability_reading_view(pd.DataFrame()).empty
+
+
+# --------------------------------------------------------------------------
 # The orchestrator
 # --------------------------------------------------------------------------
 def panel_accuracy_table() -> pd.DataFrame:
@@ -544,6 +786,9 @@ def test_run_marker_panel_writes_every_table_and_figure(tmp_output):
         "09_selection_correction.csv",
         "10_model_vs_single.csv",
         "11_imputation_stability.csv",
+        "12_count_headline.csv",
+        "13_model_reading_view.csv",
+        "14_stability_reading_view.csv",
     ]
     figures = sorted(p.name for p in (tmp_output / "panel" / "figures").glob("*.svg"))
     assert figures == ["count_score.svg", "lr_forest.svg", "rule_space.svg"]
@@ -570,12 +815,7 @@ def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
     assert tables["05_rule_menu"].empty
 
 
-def test_run_marker_panel_forwards_n_boot_to_imputation_stability(tmp_output, monkeypatch):
-    """The caller's n_boot must govern every bootstrap the run does, including
-    the per-draw one inside imputation_stability — not just the two on the
-    shared set. Without forwarding, a caller who lowers n_boot for a quick run
-    would find the MICE-stability table silently still using 200.
-    """
+def _spy_on_stability(monkeypatch) -> dict:
     seen: dict = {}
     original = mp.imputation_stability
 
@@ -584,8 +824,35 @@ def test_run_marker_panel_forwards_n_boot_to_imputation_stability(tmp_output, mo
         return original(draws, markers, target, **kwargs)
 
     monkeypatch.setattr(mp, "imputation_stability", spy)
+    return seen
+
+
+def test_the_per_draw_bootstrap_has_its_own_budget(tmp_output, monkeypatch):
+    """``draw_n_boot`` governs the per-draw bootstrap; ``n_boot`` does not.
+
+    The shared-set correction runs twice; the one inside imputation_stability
+    runs once per MICE draw. Forwarding the shared-set budget multiplied a
+    four-minute correction by twenty — the notebook cell would have run for
+    about an hour and a half for a stability check whose answer is a
+    reproduction rate.
+    """
+    seen = _spy_on_stability(monkeypatch)
     mp.run_marker_panel(
         count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
-        output_root=tmp_output, n_boot=7, draws=[count_frame(seed=9)],
+        output_root=tmp_output, n_boot=40, draw_n_boot=6,
+        draws=[count_frame(seed=9)],
     )
-    assert seen.get("n_boot") == 7
+    assert seen.get("n_boot") == 6
+
+
+def test_the_per_draw_budget_defaults_low_even_when_n_boot_is_high(
+    tmp_output, monkeypatch,
+):
+    """A caller who raises only ``n_boot`` must not silently buy 20× that."""
+    seen = _spy_on_stability(monkeypatch)
+    mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40, draws=[],
+    )
+    assert seen.get("n_boot") == mp.DEFAULT_DRAW_N_BOOT
+    assert mp.DEFAULT_DRAW_N_BOOT < mp.DEFAULT_N_BOOT

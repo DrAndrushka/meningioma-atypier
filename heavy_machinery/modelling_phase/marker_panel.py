@@ -357,18 +357,107 @@ def count_thresholds(
     return cb.count_threshold_table(df, markers, target, complete_only=True)
 
 
+MAX_SUBTITLE_MARKERS = 5
+
+
 def count_score_figure(
     counts: pd.DataFrame,
     markers: Sequence[BinaryMarker],
     *,
     prevalence: float | None = None,
 ) -> plt.Figure:
-    """Threshold-phase figure, drawn on markers instead of cut-points."""
-    return cb.count_score_figure(counts, cutpoints=markers, prevalence=prevalence)
+    """Threshold-phase figure, drawn on markers instead of cut-points.
+
+    The subtitle lists the criteria by name, which works for the three or four
+    cut-points the threshold phase feeds it and does not work here: sixteen
+    marker names is a 200-character run-on line, and matplotlib gives up on the
+    layout rather than wrapping it. Past
+    :data:`MAX_SUBTITLE_MARKERS` the names are dropped and the axis label —
+    "Criteria met (of 16)" — carries the count instead. The marker names are
+    not lost; they are the rows of the aim-1 table on the same page.
+    """
+    counts = counts.copy()
+    counts.attrs.setdefault("k", len(markers))
+    listed = tuple(markers) if len(markers) <= MAX_SUBTITLE_MARKERS else ()
+    return cb.count_score_figure(counts, cutpoints=listed, prevalence=prevalence)
+
+
+MIN_HEADLINE_N = 10
+
+_HEADLINE_COLUMNS = [
+    "k_markers", "min_n", "n_bins_usable", "direction",
+    "low_count", "low_n", "low_risk",
+    "high_count", "high_n", "high_risk", "note",
+]
+
+
+def count_headline(
+    counts: pd.DataFrame,
+    *,
+    k: int | None = None,
+    min_n: int = MIN_HEADLINE_N,
+) -> pd.DataFrame:
+    """The two bins the headline sentence is allowed to quote, and which way it went.
+
+    The count-score table has a row for every possible count, and the rows at
+    the two ends are almost always the thinnest: on this cohort the highest
+    occupied bin holds a single patient, whose outcome sets that bin's "risk"
+    to 0% or 100% with nothing behind it. A sentence built from the first and
+    last *occupied* rows therefore reports two coin flips and calls it a trend.
+
+    So the endpoints are chosen from bins with at least ``min_n`` patients, and
+    the direction is measured rather than assumed. ``direction`` is
+    ``"rises"``, ``"falls"`` or ``"flat"``, and the renderer picks its wording
+    from that instead of hard-coding "rises" — a sentence that is true only
+    when the data cooperates is not a finding, it is a hope.
+
+    If no two bins clear ``min_n`` the floor is relaxed to "occupied at all"
+    and ``note`` says so, because a thin honest sentence beats no sentence.
+    """
+    if counts is None or counts.empty or "n" not in counts.columns:
+        return pd.DataFrame(columns=_HEADLINE_COLUMNS)
+
+    ordered = counts.sort_values("n_criteria_met", kind="mergesort")
+    occupied = ordered[(ordered["n"] > 0) & ordered["risk"].notna()]
+
+    note = ""
+    used_min = int(min_n)
+    usable = occupied[occupied["n"] >= used_min]
+    if len(usable) < 2:
+        usable = occupied
+        used_min = 1
+        note = (f"no two counts reached {int(min_n)} patients — the endpoints "
+                "below rest on whichever counts were occupied at all")
+    if len(usable) < 2:
+        return pd.DataFrame(columns=_HEADLINE_COLUMNS)
+
+    if k is None:
+        k = int(counts.attrs.get("k", int(ordered["n_criteria_met"].max())))
+    low, high = usable.iloc[0], usable.iloc[-1]
+    low_risk, high_risk = float(low["risk"]), float(high["risk"])
+    direction = (
+        "rises" if high_risk > low_risk
+        else "falls" if high_risk < low_risk
+        else "flat"
+    )
+    return pd.DataFrame([{
+        "k_markers": int(k),
+        "min_n": used_min,
+        "n_bins_usable": int(len(usable)),
+        "direction": direction,
+        "low_count": int(low["n_criteria_met"]),
+        "low_n": int(low["n"]),
+        "low_risk": low_risk,
+        "high_count": int(high["n_criteria_met"]),
+        "high_n": int(high["n"]),
+        "high_risk": high_risk,
+        "note": note,
+    }])
 
 
 DEFAULT_SEED = 20260801
 DEFAULT_N_BOOT = 500
+DEFAULT_DRAW_N_BOOT = 200
 
 
 def rule_menu(
@@ -436,8 +525,30 @@ def selection_correction(
         })
     out = pd.DataFrame(rows)
     gain = float(out.loc[1, "J_corrected"] - out.loc[0, "J_corrected"])
+    gain_apparent = float(out.loc[1, "J_apparent"] - out.loc[0, "J_apparent"])
+    out["gain_apparent"] = gain_apparent
     out["gain_corrected"] = gain
+    out["correction_effect"] = _correction_effect(gain_apparent, gain)
     return out
+
+
+def _correction_effect(gain_apparent: float, gain_corrected: float) -> str:
+    """Which way correcting both sides moved the gap — measured, not assumed.
+
+    The intuition is that correction shrinks a gap, and often it does. It is
+    not a law. Correction subtracts each side's *own* selection optimism, and
+    on this cohort the best-of-16-singles side pays more of it than the
+    best-of-210-combinations side, so the corrected gap is the **larger** one.
+    Prose that asserts "the uncorrected gap is larger" is therefore a claim
+    about the data, and belongs in a column where it can be wrong out loud.
+    """
+    if not (np.isfinite(gain_apparent) and np.isfinite(gain_corrected)):
+        return ""
+    if gain_corrected > gain_apparent:
+        return "widens"
+    if gain_corrected < gain_apparent:
+        return "narrows"
+    return "unchanged"
 
 
 def rule_space_figure(menu: pd.DataFrame, *, top: int = 12) -> plt.Figure:
@@ -488,15 +599,52 @@ def score_model_on(df: pd.DataFrame, artifact: dict) -> pd.Series:
     return pd.Series(out, index=df.index, dtype="float64")
 
 
+_MODEL_COLUMNS = [
+    "model", "n_scored", "n_complete_own", "denominator",
+    "auc_shared_apparent", "auc_artifact_corrected", "auc_artifact_apparent",
+    "best_single_rule", "n_best_single", "best_single_auc_corrected",
+    "best_single_J_corrected", "note",
+]
+
+DENOM_SHARED = "the patients every model could score"
+DENOM_OWN = "this model's own complete cases"
+
+
+def _complete_case_mask(df: pd.DataFrame, artifact: dict) -> tuple[pd.Series | None, list[str]]:
+    """Which patients have every one of this model's predictors recorded."""
+    names = [str(f["name"]) for f in (artifact.get("features") or [])]
+    missing_cols = [n for n in names if n not in df.columns]
+    if missing_cols:
+        return None, missing_cols
+    if not names:
+        return pd.Series(True, index=df.index), []
+    return df[names].notna().all(axis=1), []
+
+
 def model_vs_single(
     df: pd.DataFrame,
     artifacts: dict[str, dict],
     target: str,
     correction: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Each multivariable model against the best single marker, labelled honestly.
+    """Each multivariable model against the best single marker, on one patient set.
 
-    Three AUC columns, deliberately not collapsed into one:
+    **One denominator, for the models too.** Restricting the markers to a
+    shared set and then letting each model score on whatever patients happened
+    to have its own predictors would reinstate exactly the error this section
+    exists to prevent: an AUC on 344 patients and an AUC on 301 are two
+    different questions, and putting them in one column invites the reader to
+    subtract them. Every model is therefore scored on the intersection of the
+    shared set with *all* models' complete cases — one number in ``n_scored``,
+    the same for every row, named in ``denominator``. ``n_complete_own`` keeps
+    what each model could have scored, so the cost of the restriction is
+    visible rather than asserted.
+
+    If that intersection is empty or has only one outcome class — a degenerate
+    run, not a normal one — each model falls back to its own complete cases and
+    ``denominator`` says so on every row, so the table never silently mixes.
+
+    Four accuracy columns, deliberately not collapsed:
 
     ``auc_shared_apparent``   the model re-scored on the shared set — the
                               like-for-like comparison, and *apparent*, because
@@ -506,34 +654,66 @@ def model_vs_single(
                               artifact, on its own patients. The gap between
                               this and ``auc_artifact_apparent`` bounds how
                               optimistic the re-scored column is.
-    ``best_single_J_corrected`` the single-marker side, corrected, from
-                              :func:`selection_correction`.
+    ``best_single_auc_corrected`` the single-marker side as an **AUC**, which is
+                              the column that compares with the three above. For
+                              a yes/no rule ``AUC = (J + 1) / 2``, so a Youden J
+                              of 0.14 is an AUC of 0.57 — not 0.14. Printing the
+                              J beside an AUC and letting the reader compare
+                              them makes a modest model look five times better
+                              than the best sign.
+    ``best_single_J_corrected`` the same quantity on the Youden scale, kept
+                              because it is what the rule menu is ranked by. It
+                              compares with the rule table, not with an AUC.
+
+    ``n_best_single`` records that the single-marker side is scored on the
+    whole marker shared set, which the models' set is a subset of. The two are
+    not forced together: the marker shared set is the denominator the rest of
+    the section is built on, and re-running the selection bootstrap on the
+    smaller set would produce a second, different "best single" on the same
+    page. Both counts are written down so the residual difference is visible.
     """
     if not artifacts:
-        return pd.DataFrame(columns=[
-            "model", "n_scored", "auc_shared_apparent", "auc_artifact_corrected",
-            "auc_artifact_apparent", "best_single_rule", "best_single_J_corrected",
-            "note",
-        ])
+        return pd.DataFrame(columns=_MODEL_COLUMNS)
 
     single = correction[correction["side"] == "best single"]
     best_rule = str(single["best_rule"].iloc[0]) if len(single) else ""
     best_j = float(single["J_corrected"].iloc[0]) if len(single) else np.nan
+    best_auc = (best_j + 1.0) / 2.0 if np.isfinite(best_j) else np.nan
     y = df[target].astype("boolean")
+    known = y.notna()
+
+    masks: dict[str, pd.Series] = {}
+    missing_by_model: dict[str, list[str]] = {}
+    for name, artifact in artifacts.items():
+        mask, missing_cols = _complete_case_mask(df, artifact)
+        missing_by_model[name] = missing_cols
+        if mask is not None:
+            masks[name] = mask.fillna(False).astype(bool)
+
+    common = known.copy()
+    for mask in masks.values():
+        common = common & mask
+    use_common = bool(masks) and int(common.sum()) > 0 and \
+        y[common].astype(int).nunique() == 2
 
     rows: list[dict] = []
     for name, artifact in artifacts.items():
         note = ""
         auc = np.nan
         n_scored = 0
+        n_own = 0
+        denominator = ""
 
-        names = [str(f["name"]) for f in (artifact.get("features") or [])]
-        missing_cols = [n for n in names if n not in df.columns]
+        missing_cols = missing_by_model[name]
         if missing_cols:
             note = f"not scorable on this set — cohort is missing model predictors: {missing_cols}"
         else:
+            own = masks[name] & known
+            n_own = int(own.sum())
+            scored_on = common if use_common else own
+            denominator = DENOM_SHARED if use_common else DENOM_OWN
             probs = score_model_on(df, artifact)
-            usable = probs.notna() & y.notna()
+            usable = scored_on & probs.notna()
             n_scored = int(usable.sum())
             truth = y[usable].astype(int)
             if n_scored == 0:
@@ -546,14 +726,92 @@ def model_vs_single(
         rows.append({
             "model": name,
             "n_scored": n_scored,
+            "n_complete_own": n_own,
+            "denominator": denominator,
             "auc_shared_apparent": auc,
             "auc_artifact_corrected": _artifact_auc(artifact, "optimism_corrected"),
             "auc_artifact_apparent": _artifact_auc(artifact, "apparent"),
             "best_single_rule": best_rule,
+            "n_best_single": int(known.sum()),
+            "best_single_auc_corrected": best_auc,
             "best_single_J_corrected": best_j,
             "note": note,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows)[_MODEL_COLUMNS]
+
+
+def _fmt_num(value, digits: int = 3) -> str:
+    """A number for a reading view, or an em dash where there is none."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return "—" if not np.isfinite(v) else f"{v:.{digits}f}"
+
+
+def _fmt_count(value) -> str:
+    """A patient count, or an em dash when there is none to report."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    return "—" if not np.isfinite(v) or v <= 0 else f"{int(round(v))}"
+
+
+def _model_label(name: str) -> str:
+    """``amano_et_al_2021`` → ``Amano et al 2021``.
+
+    Not :func:`plot_style.prettify_label`, which expands acronyms and turns
+    ``et_al`` into ``ET AL``. The model keys are already author-and-year
+    citations; they only need their underscores back as spaces.
+    """
+    text = str(name).replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else ""
+
+
+_MODEL_VIEW_COLUMNS = [
+    "Model", "Patients scored", "Model AUC here (apparent)",
+    "Model AUC, own patients (corrected)", "Model AUC, own patients (apparent)",
+    "Best single sign", "Best single AUC (corrected)",
+    "Best single Youden J (corrected)", "Note",
+]
+
+
+def model_reading_view(table: pd.DataFrame) -> pd.DataFrame:
+    """The model comparison with column headings a reader can act on.
+
+    Machine names are fine in a CSV and wrong in a report: a page that prints
+    ``auc_shared_apparent`` beside ``best_single_J_corrected`` asks the reader
+    to know which of the two is on a 0.5–1 scale. The headings here say which
+    patients each number is on and whether it has been corrected, so the two
+    columns that are comparable look comparable and the one that is not is
+    named as a Youden J.
+    """
+    if table is None or table.empty:
+        return pd.DataFrame(columns=_MODEL_VIEW_COLUMNS)
+    return pd.DataFrame({
+        "Model": [_model_label(r["model"]) for _, r in table.iterrows()],
+        "Patients scored": [_fmt_count(r.get("n_scored"))
+                            for _, r in table.iterrows()],
+        "Model AUC here (apparent)": [
+            _fmt_num(r.get("auc_shared_apparent")) for _, r in table.iterrows()
+        ],
+        "Model AUC, own patients (corrected)": [
+            _fmt_num(r.get("auc_artifact_corrected")) for _, r in table.iterrows()
+        ],
+        "Model AUC, own patients (apparent)": [
+            _fmt_num(r.get("auc_artifact_apparent")) for _, r in table.iterrows()
+        ],
+        "Best single sign": [str(r.get("best_single_rule") or "")
+                             for _, r in table.iterrows()],
+        "Best single AUC (corrected)": [
+            _fmt_num(r.get("best_single_auc_corrected")) for _, r in table.iterrows()
+        ],
+        "Best single Youden J (corrected)": [
+            _fmt_num(r.get("best_single_J_corrected")) for _, r in table.iterrows()
+        ],
+        "Note": [str(r.get("note") or "") for _, r in table.iterrows()],
+    })
 
 
 def imputation_stability(
@@ -590,7 +848,7 @@ def imputation_stability(
             continue
         panel = marker_panel_table(draw, kept, target)
         if not panel.empty:
-            top_markers.append(str(panel.iloc[0]["marker"]))
+            top_markers.append(str(panel.iloc[0]["label"]))
         corr = selection_correction(draw, kept, target, n_boot=n_boot, seed=seed + i)
         winners.append(str(corr.loc[1, "best_rule"]))
         if float(corr.loc[0, "gain_corrected"]) > 0:
@@ -617,6 +875,40 @@ def imputation_stability(
     ])
 
 
+_STABILITY_VIEW_COLUMNS = ["What was checked", "Result", "Detail"]
+
+
+def stability_reading_view(table: pd.DataFrame) -> pd.DataFrame:
+    """The MICE-draw check with its rates shown as rates.
+
+    ``value`` holds two different kinds of number — a count of draws and three
+    proportions — so a raw dump prints ``0.4`` where the sentence is "in 40% of
+    draws". The count row keeps its integer; everything else is a percentage.
+    """
+    if table is None or table.empty:
+        return pd.DataFrame(columns=_STABILITY_VIEW_COLUMNS)
+
+    results: list[str] = []
+    for _, row in table.iterrows():
+        raw = row.get("value")
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            results.append("—" if raw is None else str(raw))
+            continue
+        if not np.isfinite(v):
+            results.append("—")
+        elif str(row.get("item")) == "Draws":
+            results.append(f"{int(round(v))}")
+        else:
+            results.append(f"{v * 100:.0f}%")
+    return pd.DataFrame({
+        "What was checked": [str(r.get("item") or "") for _, r in table.iterrows()],
+        "Result": results,
+        "Detail": [str(r.get("note") or "") for _, r in table.iterrows()],
+    })
+
+
 TABLES_DIRNAME = "tables"
 FIGURES_DIRNAME = "figures"
 
@@ -639,6 +931,7 @@ def run_marker_panel(
     artifacts: dict[str, dict] | None = None,
     draws: Sequence[pd.DataFrame] = (),
     n_boot: int = DEFAULT_N_BOOT,
+    draw_n_boot: int = DEFAULT_DRAW_N_BOOT,
     seed: int = DEFAULT_SEED,
     max_size: int = 2,
 ) -> dict[str, pd.DataFrame]:
@@ -648,6 +941,14 @@ def run_marker_panel(
     complete cases, because it ranks markers and each row stands alone. Every
     aim-2 comparison uses the shared set, because a Youden J compared across
     two different groups of patients is not a comparison.
+
+    Two bootstrap budgets on purpose too. ``n_boot`` buys the two corrections on
+    the shared set — run once each, so 500 resamples costs about four minutes.
+    ``draw_n_boot`` buys the one inside :func:`imputation_stability`, which runs
+    **per MICE draw**: at twenty draws, forwarding a shared-set budget of 500
+    turns a four-minute correction into an eighty-five-minute one for a
+    stability check whose answer is a reproduction rate. They are separate
+    parameters because they buy different things.
 
     Nothing here renders. ``report.py`` reads what this writes.
     """
@@ -676,21 +977,29 @@ def run_marker_panel(
             shared, kept, target, n_boot=n_boot, seed=seed, max_size=max_size,
         )
         counts = count_score(shared, kept, target)
+        models = model_vs_single(shared, artifacts or {}, target, correction)
+        stability = imputation_stability(list(draws), kept, target,
+                                          n_boot=draw_n_boot, seed=seed)
         _write_table(tables, root, "05_rule_menu", menu)
         _write_table(tables, root, "06_rule_reading_view", rule_reading_view(menu))
         _write_table(tables, root, "07_count_score", counts)
         _write_table(tables, root, "08_count_thresholds",
                      count_thresholds(shared, kept, target))
         _write_table(tables, root, "09_selection_correction", correction)
-        _write_table(tables, root, "10_model_vs_single",
-                     model_vs_single(shared, artifacts or {}, target, correction))
-        _write_table(tables, root, "11_imputation_stability",
-                     imputation_stability(list(draws), kept, target,
-                                           n_boot=n_boot, seed=seed))
+        _write_table(tables, root, "10_model_vs_single", models)
+        _write_table(tables, root, "11_imputation_stability", stability)
+        _write_table(tables, root, "12_count_headline",
+                     count_headline(counts, k=len(kept)))
+        _write_table(tables, root, "13_model_reading_view",
+                     model_reading_view(models))
+        _write_table(tables, root, "14_stability_reading_view",
+                     stability_reading_view(stability))
     else:
         for stem in ("05_rule_menu", "06_rule_reading_view", "07_count_score",
                      "08_count_thresholds", "09_selection_correction",
-                     "10_model_vs_single", "11_imputation_stability"):
+                     "10_model_vs_single", "11_imputation_stability",
+                     "12_count_headline", "13_model_reading_view",
+                     "14_stability_reading_view"):
             _write_table(tables, root, stem, empty)
         menu, counts = empty, empty
 
