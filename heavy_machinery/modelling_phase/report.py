@@ -761,9 +761,12 @@ class Artifacts:
     panel_shared_cohort: pd.DataFrame | None = None
     panel_rule_reading_view: pd.DataFrame | None = None
     panel_count_score: pd.DataFrame | None = None
+    panel_count_headline: pd.DataFrame | None = None
     panel_selection_correction: pd.DataFrame | None = None
     panel_model_vs_single: pd.DataFrame | None = None
+    panel_model_reading_view: pd.DataFrame | None = None
     panel_imputation_stability: pd.DataFrame | None = None
+    panel_stability_reading_view: pd.DataFrame | None = None
     panel_figures: list[Path] = field(default_factory=list)
 
     # Warnings accumulated during load (rendered in appendix)
@@ -917,6 +920,15 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     )
     art.panel_imputation_stability = _maybe_read_csv(
         panel_tab / "11_imputation_stability.csv", art.warnings,
+    )
+    art.panel_count_headline = _maybe_read_csv(
+        panel_tab / "12_count_headline.csv", art.warnings,
+    )
+    art.panel_model_reading_view = _maybe_read_csv(
+        panel_tab / "13_model_reading_view.csv", art.warnings,
+    )
+    art.panel_stability_reading_view = _maybe_read_csv(
+        panel_tab / "14_stability_reading_view.csv", art.warnings,
     )
     panel_fig = root / "panel" / "figures"
     if panel_fig.exists():
@@ -2639,6 +2651,146 @@ def _panel_aim_one(art: Artifacts) -> str:
     )
 
 
+_COUNT_LEAD_TEMPLATES = {
+    "rises": (
+        "Risk rises from {low_risk} among the {low_n} patients with "
+        "{low_count} of the {k} signs present to {high_risk} among the "
+        "{high_n} with {high_count}."
+    ),
+    "falls": (
+        "Risk falls from {low_risk} among the {low_n} patients with "
+        "{low_count} of the {k} signs present to {high_risk} among the "
+        "{high_n} with {high_count}."
+    ),
+    "flat": (
+        "Risk is {low_risk} at both ends of the usable range — {low_count} "
+        "of the {k} signs present ({low_n} patients) and {high_count} "
+        "({high_n})."
+    ),
+}
+
+
+def _panel_count_lead(art: Artifacts) -> str:
+    """The aim-2 headline sentence, wording and all, taken from its own table.
+
+    ``12_count_headline.csv`` decided which two counts have enough patients
+    behind them to quote and which way the risk went; this only chooses the
+    phrasing that matches. Nothing here compares two risks, which is the point:
+    a hard-coded "rises" is a claim the renderer cannot check.
+    """
+    head = art.panel_count_headline
+    if head is None or head.empty:
+        return ""
+    row = head.iloc[0]
+    template = _COUNT_LEAD_TEMPLATES.get(str(row.get("direction")))
+    if template is None:
+        return ""
+    sentence = template.format(
+        low_risk=_pct(row["low_risk"]), low_n=_int(row["low_n"]),
+        low_count=_int(row["low_count"]), k=_int(row["k_markers"]),
+        high_risk=_pct(row["high_risk"]), high_n=_int(row["high_n"]),
+        high_count=_int(row["high_count"]),
+    )
+    floor = _coerce_float(row.get("min_n"))
+    if floor is not None and floor > 1:
+        sentence += (
+            f" Counts held by fewer than {int(floor)} patients are left out of "
+            "this sentence; they are still in the figure."
+        )
+    note = str(row.get("note") or "").strip()
+    if note and note.lower() != "nan":
+        sentence += f" ({_esc(note)}.)"
+    return _lead(sentence)
+
+
+_CORRECTION_TEMPLATES = {
+    "widens": (
+        "Uncorrected the gap is {apparent}; paying for the selection on both "
+        "sides <strong>widens</strong> it to {corrected}, because choosing the "
+        "best of the single signs cost more than choosing the best combination "
+        "({single_cost} against {combo_cost} of Youden J)."
+    ),
+    "narrows": (
+        "Uncorrected the gap is {apparent}; paying for the selection on both "
+        "sides <strong>narrows</strong> it to {corrected}, so part of the raw "
+        "advantage was the benefit of having chosen the winner on these same "
+        "patients (selection cost {single_cost} for the single sign, "
+        "{combo_cost} for the combination)."
+    ),
+    "unchanged": (
+        "Uncorrected the gap is {apparent}, and correcting both sides leaves "
+        "it there: the two sides cost the same to choose ({single_cost} and "
+        "{combo_cost} of Youden J)."
+    ),
+}
+
+
+def _panel_correction_effect(single: pd.Series, combo: pd.Series) -> str:
+    """What correction did to the gap — read from the table, not asserted.
+
+    Correcting usually shrinks a winner's advantage, and the temptation is to
+    say so in prose. On this cohort it does the opposite: the best-of-sixteen
+    single side carries more selection optimism than the best-of-many
+    combination side, so the corrected gap is the larger one. Which way it went
+    is a column in ``09_selection_correction.csv``.
+    """
+    effect = str(combo.get("correction_effect") or "").strip()
+    template = _CORRECTION_TEMPLATES.get(effect)
+    if template is None:
+        return ""
+    return template.format(
+        apparent=_signed(combo.get("gain_apparent")),
+        corrected=_signed(combo.get("gain_corrected")),
+        single_cost=_num(single.get("optimism"), 3),
+        combo_cost=_num(combo.get("optimism"), 3),
+    )
+
+
+def _panel_model_prose(art: Artifacts) -> str:
+    """Which model column compares with which, and on whose patients."""
+    table = art.panel_model_vs_single
+    n_text, denominator, single_n = "", "", ""
+    if table is not None and not table.empty:
+        if "n_scored" in table.columns:
+            scored = sorted({_to_int_or_none(v) for v in table["n_scored"]} - {None, 0})
+            if len(scored) == 1:
+                n_text = f"one shared set of {scored[0]} patients"
+        if "denominator" in table.columns:
+            values = {str(v).strip() for v in table["denominator"]
+                      if str(v).strip() and str(v).strip().lower() != "nan"}
+            if len(values) == 1:
+                denominator = values.pop()
+        if "n_best_single" in table.columns:
+            single_n = _int(table["n_best_single"].iloc[0])
+
+    if n_text and denominator:
+        where = (f"<strong>Model AUC here</strong> is each model re-scored on "
+                 f"{n_text} — {_esc(denominator)} — so the models are "
+                 "comparable with one another as well as with the signs.")
+    else:
+        where = ("<strong>Model AUC here</strong> is each model re-scored on "
+                 "its own complete cases, so the models are <em>not</em> "
+                 "directly comparable with one another; the "
+                 "<em>Patients scored</em> column gives each one's "
+                 "denominator.")
+    subset = (
+        f" The single-sign columns are scored on the {single_n} patients with "
+        "every marker observed, which the models' set is drawn from."
+        if single_n and single_n != "—" else ""
+    )
+    return (
+        "<p>" + where + " It is <em>apparent</em> — correcting it would mean "
+        "re-running the bootstrap here, which is refitting — so it is "
+        "optimistic, and the gap between the two <em>own patients</em> columns "
+        "bounds by how much." + subset + " The column it should be read "
+        "against is <strong>Best single AUC (corrected)</strong>: both are "
+        "areas under the curve, where 0.5 is a coin toss. The Youden J beside "
+        "it is the same single sign on a different scale (0 is useless, and "
+        "<em>AUC = (J + 1) / 2</em> for a yes/no rule), so it compares with the "
+        "rule table below, never with an AUC.</p>"
+    )
+
+
 def _panel_aim_two(art: Artifacts) -> str:
     counts = art.panel_count_score
     if counts is None or counts.empty:
@@ -2647,15 +2799,7 @@ def _panel_aim_two(art: Artifacts) -> str:
             "patients; this run did not have them."
         )
 
-    usable = counts[counts["n"] > 0]
-    lead = ""
-    if len(usable) >= 2:
-        first, last = usable.iloc[0], usable.iloc[-1]
-        lead = _lead(
-            f"Risk rises from {_pct(first['risk'])} with "
-            f"{_int(first['n_criteria_met'])} of the signs present to "
-            f"{_pct(last['risk'])} with {_int(last['n_criteria_met'])}."
-        )
+    lead = _panel_count_lead(art)
 
     corr = art.panel_selection_correction
     correction_html = ""
@@ -2673,28 +2817,21 @@ def _panel_aim_two(art: Artifacts) -> str:
                 f"(<em>{_esc(c['best_rule'])}</em>) scores "
                 f"{_num(c['J_corrected'])} — a gain of "
                 f"<strong>{_signed(c['gain_corrected'])}</strong>. "
-                "The uncorrected gap is larger, and most of that difference is "
-                "the advantage of having chosen the winner on these same "
-                "patients.</p>"
+                + _panel_correction_effect(s, c) + "</p>"
             )
 
     model_html = ""
-    if art.panel_model_vs_single is not None and not art.panel_model_vs_single.empty:
+    model_view = art.panel_model_reading_view
+    if model_view is not None and not model_view.empty:
         model_html = (
             "<h4>Against the multivariable models</h4>"
-            "<p><code>auc_shared_apparent</code> is each model re-scored on the "
-            "same patients as the markers — the like-for-like column, and "
-            "apparent, so it is optimistic. "
-            "<code>auc_artifact_corrected</code> is the model's own "
-            "optimism-corrected figure on its own patients; the gap between "
-            "the two artifact columns bounds how optimistic the re-scored one "
-            "is.</p>"
-            + _table(art.panel_model_vs_single)
+            + _panel_model_prose(art)
+            + _table(model_view)
         )
 
     stability_html = ""
-    if art.panel_imputation_stability is not None and \
-            not art.panel_imputation_stability.empty:
+    stability_view = art.panel_stability_reading_view
+    if stability_view is not None and not stability_view.empty:
         stability_html = details_block(
             "🎲 Does filling in the missing scans change this?",
             "<p>Every headline above is computed on patients whose markers were "
@@ -2702,7 +2839,7 @@ def _panel_aim_two(art: Artifacts) -> str:
             "the same answers come back. Reported as reproduction rates rather "
             "than pooled estimates: averaging works for an estimate, not for a "
             "choice, and 'which rule wins' is a choice.</p>"
-            + _table(art.panel_imputation_stability),
+            + _table(stability_view),
         )
 
     rules_html = ""
@@ -2739,7 +2876,7 @@ def render_marker_panel(cfg: ReportConfig, art: Artifacts) -> str:
         return section_block(
             "🎯 Which MRI markers, and do they combine?",
             warning_box(
-                "No marker panel was found under <code>output/panel/</code>. "
+                "No marker panel was found under output/panel/. "
                 "Run the marker panel cell in the modelling notebook."
             ),
         )

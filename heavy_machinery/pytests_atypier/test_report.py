@@ -783,11 +783,15 @@ def panel_output(tmp_output):
     ]).to_csv(tables / "07_count_score.csv", index=False)
     pd.DataFrame([
         {"side": "best single", "best_rule": "Cortical destruction",
-         "J_apparent": 0.21, "optimism": 0.04, "J_corrected": 0.17,
-         "winner_stability": 0.41, "n_bootstrap": 500, "gain_corrected": 0.06},
+         "J_apparent": 0.300, "optimism": 0.056, "J_corrected": 0.244,
+         "winner_stability": 0.41, "n_bootstrap": 500,
+         "gain_apparent": 0.120, "gain_corrected": 0.133,
+         "correction_effect": "widens"},
         {"side": "best combination", "best_rule": "Cortical destruction OR Edema",
-         "J_apparent": 0.27, "optimism": 0.04, "J_corrected": 0.23,
-         "winner_stability": 0.33, "n_bootstrap": 500, "gain_corrected": 0.06},
+         "J_apparent": 0.420, "optimism": 0.043, "J_corrected": 0.377,
+         "winner_stability": 0.33, "n_bootstrap": 500,
+         "gain_apparent": 0.120, "gain_corrected": 0.133,
+         "correction_effect": "widens"},
     ]).to_csv(tables / "09_selection_correction.csv", index=False)
     pd.DataFrame([
         {"Rule": "Cortical destruction OR Edema", "Type": "or", "n": 301,
@@ -796,16 +800,37 @@ def panel_output(tmp_output):
          "TP/FP/FN/TN": "55/70/40/136", "OR (95% CI)": "2.7 (1.6–4.4)", "J": 0.23},
     ]).to_csv(tables / "06_rule_reading_view.csv", index=False)
     pd.DataFrame([
-        {"model": "amano_et_al_2021", "n_scored": 301,
+        {"model": "amano_et_al_2021", "n_scored": 301, "n_complete_own": 324,
+         "denominator": "the patients every model could score",
          "auc_shared_apparent": 0.74, "auc_artifact_corrected": 0.733,
          "auc_artifact_apparent": 0.749, "best_single_rule": "Cortical destruction",
-         "best_single_J_corrected": 0.17, "note": ""},
+         "n_best_single": 344, "best_single_auc_corrected": 0.622,
+         "best_single_J_corrected": 0.244, "note": ""},
     ]).to_csv(tables / "10_model_vs_single.csv", index=False)
     pd.DataFrame([
         {"item": "Draws", "value": 20, "note": "20 scorable"},
         {"item": "Winning rule reproduced", "value": 0.4,
          "note": "most often: Cortical destruction OR Edema"},
     ]).to_csv(tables / "11_imputation_stability.csv", index=False)
+    pd.DataFrame([
+        {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "rises",
+         "low_count": 0, "low_n": 100, "low_risk": 0.11,
+         "high_count": 1, "high_n": 90, "high_risk": 0.33, "note": ""},
+    ]).to_csv(tables / "12_count_headline.csv", index=False)
+    pd.DataFrame([
+        {"Model": "Amano et al 2021", "Patients scored": "301",
+         "Model AUC here (apparent)": "0.740",
+         "Model AUC, own patients (corrected)": "0.733",
+         "Model AUC, own patients (apparent)": "0.749",
+         "Best single sign": "Cortical destruction",
+         "Best single AUC (corrected)": "0.622",
+         "Best single Youden J (corrected)": "0.244", "Note": ""},
+    ]).to_csv(tables / "13_model_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"What was checked": "Draws", "Result": "20", "Detail": "20 scorable"},
+        {"What was checked": "Winning rule reproduced", "Result": "40%",
+         "Detail": "most often: Cortical destruction OR Edema"},
+    ]).to_csv(tables / "14_stability_reading_view.csv", index=False)
 
     figures = tmp_output / "panel" / "figures"
     figures.mkdir(parents=True)
@@ -835,13 +860,122 @@ def test_marker_panel_section_answers_both_aims(panel_output):
 def test_marker_panel_section_quotes_the_corrected_gain_not_the_apparent_one(
     panel_output,
 ):
-    """0.06 is the corrected gain; 0.27 is the apparent combination J.
+    """+0.133 is the corrected gain; +0.120 is the uncorrected one, and 0.42 is
+    the combination's apparent Youden J.
 
-    Quoting the apparent number is the CHANGES.md mistake in prose form.
+    Quoting an apparent number where the corrected one belongs is the
+    CHANGES.md mistake in prose form, so the headline gain must be the
+    corrected one *and* the apparent figures must not be able to stand in for
+    it. Asserting only that the corrected value appears cannot catch that.
     """
     cfg = ReportConfig(output_root=panel_output, title="T")
     html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "0.06" in html
+    assert "<strong>+0.133</strong>" in html
+    assert "<strong>+0.120</strong>" not in html
+    assert "0.42" not in html
+
+
+def test_the_correction_sentence_reports_which_way_correction_moved_the_gap(
+    panel_output,
+):
+    """On the real cohort the corrected gap is the *larger* one.
+
+    The best-of-16-singles side carries more selection optimism than the
+    best-of-many-combinations side, so prose asserting "the uncorrected gap is
+    larger" is false there. The direction is a column, and the sentence follows
+    it.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "widens" in html
+    assert "+0.120" in html          # the uncorrected gap, named as such
+    assert "0.056" in html and "0.043" in html   # what each side cost to choose
+
+
+def test_the_correction_sentence_flips_when_correction_narrows_the_gap(
+    panel_output,
+):
+    """The same page, opposite data: the wording must follow the table."""
+    tables = panel_output / "panel" / "tables"
+    corr = pd.read_csv(tables / "09_selection_correction.csv")
+    corr["gain_apparent"] = 0.200
+    corr["correction_effect"] = "narrows"
+    corr.to_csv(tables / "09_selection_correction.csv", index=False)
+
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "narrows" in html
+    assert "widens" not in html
+
+
+def test_the_headline_sentence_follows_the_measured_direction(panel_output):
+    """The aim-2 lead said "Risk rises" whatever the table held.
+
+    On the real cohort that sentence read "Risk rises from 0% with 3 of the
+    signs present to 0% with 15" — the two thinnest bins, and not a rise. The
+    direction now comes from ``12_count_headline.csv``.
+    """
+    tables = panel_output / "panel" / "tables"
+    pd.DataFrame([
+        {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "falls",
+         "low_count": 0, "low_n": 100, "low_risk": 0.33,
+         "high_count": 1, "high_n": 90, "high_risk": 0.11, "note": ""},
+    ]).to_csv(tables / "12_count_headline.csv", index=False)
+
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Risk falls from 33%" in html
+    assert "Risk rises" not in html
+
+
+def test_the_headline_sentence_quotes_the_denominators_behind_it(panel_output):
+    """A bin holding one patient is what made the old sentence wrong; showing
+    each endpoint's patient count makes a thin endpoint visible on the page."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Risk rises from 11% among the 100 patients" in html
+    assert "33% among the 90 with 1" in html
+
+
+def test_the_panel_tables_never_show_raw_machine_column_names(panel_output):
+    """Every other table in the section goes through a reading view; these two
+    used to be dumped straight from the CSV."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    for machine_name in ("auc_shared_apparent", "auc_artifact_corrected",
+                         "best_single_J_corrected", "n_bootstrap", "n_scored"):
+        assert machine_name not in html
+
+
+def test_the_model_prose_names_which_column_compares_with_which(panel_output):
+    """A Youden J of 0.24 beside an AUC of 0.74 reads as three times worse.
+
+    They are different scales, so the page has to say which column is the
+    like-for-like one — the corrected single-marker AUC, not the J.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Best single AUC (corrected)" in html
+    assert "0.622" in html
+    assert "(J + 1) / 2" in html
+
+
+def test_the_model_prose_names_the_one_patient_set_the_models_share(panel_output):
+    """Seven models with seven different denominators in one column invites the
+    reader to subtract them. They are restricted to one set, and it is named —
+    together with the wider set the single-sign columns are scored on."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "one shared set of 301 patients" in html
+    assert "the patients every model could score" in html
+    assert "the 344 patients with every marker observed" in html
+
+
+def test_the_panel_warning_shows_no_escaped_markup(tmp_output):
+    cfg = ReportConfig(output_root=tmp_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "&lt;code&gt;" not in html
+    assert "output/panel/" in html
 
 
 def test_marker_panel_degrades_to_a_warning_when_nothing_was_computed(tmp_output):
