@@ -176,13 +176,21 @@ def calibration_figure(
     place_legend(ax, loc="upper left", scale=0.78)
 
     slope = cal.get("slope_corrected")
-    intercept = cal.get("intercept_apparent")
+    # Prefer the corrected intercept now that validation produces one; older
+    # artifacts carry only the apparent value, and those still render.
+    intercept = cal.get("intercept_corrected")
+    intercept_label = "corrected intercept"
+    if intercept is None or not np.isfinite(float(intercept)):
+        intercept, intercept_label = cal.get("intercept_apparent"), "apparent intercept"
     parts = [_sample_note(validation)]
     if slope is not None:
         parts.append(f"corrected slope {float(slope):.2f}")
     if intercept is not None:
-        # ``or 0.0`` collapses -0.0 so a null intercept never prints as "-0.00".
-        parts.append(f"intercept {round(float(intercept), 2) or 0.0:+.2f}")
+        # Three decimals: calibration-in-the-large is anchored to the sample's
+        # event rate and lands within a few thousandths of zero, so two decimals
+        # round -0.005 to "-0.01" and read as ten times the real value.
+        # ``or 0.0`` collapses -0.0 so a null intercept never prints as "-0.000".
+        parts.append(f"{intercept_label} {round(float(intercept), 3) or 0.0:+.3f}")
     set_titles(ax, title or "Calibration", " · ".join(parts))
     return fig
 

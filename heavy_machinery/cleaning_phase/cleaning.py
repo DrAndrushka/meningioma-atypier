@@ -841,9 +841,12 @@ def _build_cleaning_summary(
     n_dup = 0 if dupes is None else len(dupes)
     rows.append({
         "step": "duplicate_audit",
+        # The row is emitted either way — the report's cohort table leads with
+        # it, and a clean audit is itself a result. "(flagged, not removed)"
+        # only applies when there is something to flag.
         "detail": (
             f"{n_dup} row(s) in duplicate ID groups (flagged, not removed)"
-            if n_dup else "no duplicate ID groups"
+            if n_dup else "no duplicates found"
         ),
         "n_rows": n_rows_after_schema,
         "n_columns": n_columns_after_schema,

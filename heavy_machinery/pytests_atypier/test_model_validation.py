@@ -87,7 +87,9 @@ def test_bootstrap_internal_validation(tiny_model_df):
         df, "event", design_cols, coefficients, n_bootstrap=30,
     )
     assert out["method"] == "bootstrap internal validation"
-    assert len(out["metrics"]) == 3
+    assert len(out["metrics"]) == 4
+    assert [m["metric"] for m in out["metrics"]] == [
+        "AUC", "Brier score", "Calibration slope", "Calibration intercept"]
     assert "roc_curves" in out
     assert out["roc_curves"]["curves"][0]["fpr"]
 
@@ -133,3 +135,43 @@ def test_enrich_streamlit_artifact_adds_validation(tiny_model_df):
     assert "coefficient_processing" in enriched
     assert enriched["coefficient_processing"]["shrinkage_applied"] is True
     assert "missing_data_policy" in enriched
+
+
+# --------------------------------------------------------------------------
+# Calibration-in-the-large
+# --------------------------------------------------------------------------
+def test_calibration_intercept_is_corrected_not_just_apparent(separable_model_df):
+    """Correcting only the slope reports half the calibration."""
+    df, design_cols, coefficients = separable_model_df
+    out = bootstrap_internal_validation(
+        df, "event", design_cols, coefficients, n_bootstrap=60,
+    )
+    cal = out["calibration"]
+    assert "intercept_corrected" in cal
+    assert np.isfinite(cal["intercept_corrected"])
+    # Apparent calibration-in-the-large on the development sample is 0 by
+    # construction; the corrected value is what the model would do elsewhere.
+    assert cal["intercept_apparent"] == pytest.approx(0.0, abs=0.01)
+
+
+def test_corrected_intercept_appears_in_the_metrics_list(separable_model_df):
+    df, design_cols, coefficients = separable_model_df
+    out = bootstrap_internal_validation(
+        df, "event", design_cols, coefficients, n_bootstrap=40,
+    )
+    row = next(m for m in out["metrics"] if m["metric"] == "Calibration intercept")
+    assert row["optimism_corrected"] == out["calibration"]["intercept_corrected"]
+    assert row["apparent"] == out["calibration"]["intercept_apparent"]
+
+
+def test_an_overfitted_model_loses_both_slope_and_intercept(tiny_model_df):
+    """Eight noise predictors on 80 patients: the slope must fall well short of 1."""
+    rng = np.random.default_rng(23)
+    n, k = 90, 8
+    noise = {f"z{i}": rng.normal(size=n) for i in range(k)}
+    df = pd.DataFrame({**noise, "event": rng.integers(0, 2, n)})
+    out = bootstrap_internal_validation(
+        df, "event", list(noise), {}, n_bootstrap=60,
+    )
+    assert out["calibration"]["slope_corrected"] < 0.8
+    assert np.isfinite(out["calibration"]["intercept_corrected"])

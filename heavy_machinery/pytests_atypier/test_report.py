@@ -32,6 +32,7 @@ from report import (
     render_eda,
     render_header,
     render_inferential,
+    render_marker_panel,
     render_missingness,
     render_schema,
     svg_grid,
@@ -189,35 +190,82 @@ def test_render_cleaning(report_cfg, report_art):
     assert "<section" in render_cleaning(report_cfg, report_art)
 
 
-def test_summary_with_derived_step_one_row_per_column():
-    summary = pd.DataFrame([
-        {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 2, "criterion": ""},
-        {"step": "final", "detail": "done", "n_rows": 10, "n_columns": 2, "criterion": ""},
+def test_cohort_flow_table_uses_log_counts_and_shows_zero_duplicates():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 2, "criterion": ""},
+            {"step": "duplicate_audit",
+             "detail": "no duplicates found",
+             "n_rows": 10, "n_columns": 2, "criterion": ""},
+            {"step": "drop_rows", "detail": "grade exists", "n_rows": 9,
+             "n_columns": 2, "criterion": "WHO grade recorded"},
+            {"step": "final", "detail": "done", "n_rows": 9, "n_columns": 2, "criterion": ""},
+        ]),
+        cleaning_log=pd.DataFrame([
+            {"step": "drop_rows", "reason": "grade exists", "criterion": "WHO grade recorded",
+             "n_before": 10.0, "n_dropped": 1.0, "n_remaining": 9.0},
+        ]),
+    )
+    html = rp._cohort_flow_table(art)
+    # Duplicate audit leads the table even with nothing found.
+    assert "Duplicate ID audit" in html
+    assert "no duplicates found" in html
+    # n_before/n_dropped come from the log, as ints not floats.
+    assert "<td>10</td>" in html and "<td>1</td>" in html
+    assert "10.0" not in html
+    assert "WHO grade recorded" in html
+    assert "Analysed cohort" in html
+
+
+def test_cohort_flow_table_falls_back_to_summary_without_log():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "drop_rows", "detail": "grade exists", "n_rows": 9,
+             "n_columns": 2, "criterion": "WHO grade recorded"},
+        ]),
+    )
+    html = rp._cohort_flow_table(art)
+    assert "grade exists" in html and "WHO grade recorded" in html
+
+
+def test_derived_tables_split_added_from_recoded():
+    log = pd.DataFrame([
+        {"derivation": "high_grade", "source": "who_grade", "kind": "binary",
+         "rule": "who_grade in {2, 3}", "rows_nonmissing": 9, "rows_missing": 0,
+         "schema_action": "added ColSpec (binary) for high_grade", "reason": "WHO 2021."},
+        {"derivation": "edema_volume_cm3", "source": "perifocal_edema", "kind": "continuous",
+         "rule": "set to 0 where edema absent", "rows_nonmissing": 8, "rows_missing": 1,
+         "schema_action": "updated ColSpec (continuous) for edema_volume_cm3",
+         "reason": "Structural zero."},
+        {"derivation": "skipped_one", "source": "nope", "kind": "binary", "rule": "",
+         "rows_nonmissing": "", "rows_missing": "",
+         "schema_action": "skipped (inactive)", "reason": ""},
     ])
-    derivation_log = pd.DataFrame([
-        {
-            "derivation": "high_grade",
-            "source": "who_grade",
-            "reason": "WHO grade 2/3 = high-grade.",
-            "schema_action": "added ColSpec (binary) for high_grade",
-        },
-        {
-            "derivation": "age_bins_10",
-            "source": "age",
-            "reason": "Age groups (10-year bins).",
-            "schema_action": "added ColSpec (ordinal) for age_bins_10",
-        },
-    ])
-    out = rp._summary_with_derived_step(summary, derivation_log)
-    derived = out[out["step"] == "derived"]
-    assert len(derived) == 2
-    assert derived.iloc[0]["detail"] == "added high_grade ← who_grade"
-    assert derived.iloc[0]["criterion"] == "WHO grade 2/3 = high-grade."
-    assert derived.iloc[0]["n_columns"] == 3
-    assert derived.iloc[1]["detail"] == "added age_bins_10 ← age"
-    assert derived.iloc[1]["criterion"] == "Age groups (10-year bins)."
-    assert derived.iloc[1]["n_columns"] == 4
-    assert out.loc[out["step"] == "final", "n_columns"].iloc[0] == 4
+    html = rp._derived_tables(log)
+    assert "Derived variables" in html and "Recoded variables" in html
+    assert "who_grade in {2, 3}" in html
+    assert "set to 0 where edema absent" in html
+    # Skipped derivations belong to the raw log only, not these tables.
+    assert "skipped_one" not in html
+
+
+def test_cleaning_provenance_reports_each_shape():
+    art = Artifacts(
+        output_root=Path("."),
+        cleaning_summary=pd.DataFrame([
+            {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 5, "criterion": ""},
+            {"step": "apply_schema", "detail": "coerced dtypes", "n_rows": 10,
+             "n_columns": 4, "criterion": ""},
+            {"step": "final", "detail": "done", "n_rows": 9, "n_columns": 6, "criterion": ""},
+        ]),
+    )
+    html = rp._cleaning_provenance(art)
+    assert "10 rows × 5 columns" in html
+    assert "10 rows × 4 columns" in html
+    assert "9 rows × 6 columns" in html
+    assert "coerced dtypes" in html
 
 
 def test_render_cleaning_coercion_audit(report_cfg, report_art):
@@ -704,3 +752,240 @@ def test_main(tmp_output):
     code = main(["--output-root", str(tmp_output), "--out", str(tmp_output / "r.html")])
     assert code == 0
     assert (tmp_output / "r.html").exists()
+
+
+# --------------------------------------------------------------------------
+# Marker panel section
+# --------------------------------------------------------------------------
+@pytest.fixture
+def panel_output(tmp_output):
+    tables = tmp_output / "panel" / "tables"
+    tables.mkdir(parents=True)
+    pd.DataFrame([
+        {"marker": "cortical_destruction", "label": "Cortical destruction",
+         "n_used": 300, "present_n": 50, "catches": 27, "n_high_grade": 105,
+         "lr_pos": 2.76, "lr_pos_lo": 1.66, "lr_pos_hi": 4.59,
+         "chance_overlap": False, "continuity_corrected": False},
+    ]).to_csv(tables / "01_marker_panel.csv", index=False)
+    pd.DataFrame([
+        {"Marker": "Cortical destruction", "Present in": "50/300",
+         "Catches": "27 of 105", "Sens (95% CI)": "26% (19–35)",
+         "Spec (95% CI)": "91% (86–94)", "LR+ (95% CI)": "2.8 (1.7–4.6)"},
+    ]).to_csv(tables / "02_marker_panel_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"item": "Patients in the shared set", "value": 301, "note": "every marker observed"},
+    ]).to_csv(tables / "03_shared_cohort.csv", index=False)
+    pd.DataFrame([
+        {"n_criteria_met": 0, "n": 100, "n_high_grade": 11, "risk": 0.11,
+         "risk_lo": 0.06, "risk_hi": 0.19},
+        {"n_criteria_met": 1, "n": 90, "n_high_grade": 30, "risk": 0.33,
+         "risk_lo": 0.24, "risk_hi": 0.43},
+    ]).to_csv(tables / "07_count_score.csv", index=False)
+    pd.DataFrame([
+        {"side": "best single", "best_rule": "Cortical destruction",
+         "J_apparent": 0.300, "optimism": 0.056, "J_corrected": 0.244,
+         "winner_stability": 0.41, "n_bootstrap": 500,
+         "gain_apparent": 0.120, "gain_corrected": 0.133,
+         "correction_effect": "widens"},
+        {"side": "best combination", "best_rule": "Cortical destruction OR Edema",
+         "J_apparent": 0.420, "optimism": 0.043, "J_corrected": 0.377,
+         "winner_stability": 0.33, "n_bootstrap": 500,
+         "gain_apparent": 0.120, "gain_corrected": 0.133,
+         "correction_effect": "widens"},
+    ]).to_csv(tables / "09_selection_correction.csv", index=False)
+    pd.DataFrame([
+        {"Rule": "Cortical destruction OR Edema", "Type": "or", "n": 301,
+         "Sens (95% CI)": "58% (48–67)", "Spec (95% CI)": "65% (58–71)",
+         "PPV (95% CI)": "44% (36–53)", "NPV (95% CI)": "76% (69–82)",
+         "TP/FP/FN/TN": "55/70/40/136", "OR (95% CI)": "2.7 (1.6–4.4)", "J": 0.23},
+    ]).to_csv(tables / "06_rule_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"model": "amano_et_al_2021", "n_scored": 301, "n_complete_own": 324,
+         "denominator": "the patients every model could score",
+         "auc_shared_apparent": 0.74, "auc_artifact_corrected": 0.733,
+         "auc_artifact_apparent": 0.749, "best_single_rule": "Cortical destruction",
+         "n_best_single": 344, "best_single_auc_corrected": 0.622,
+         "best_single_J_corrected": 0.244, "note": ""},
+    ]).to_csv(tables / "10_model_vs_single.csv", index=False)
+    pd.DataFrame([
+        {"item": "Draws", "value": 20, "note": "20 scorable"},
+        {"item": "Winning rule reproduced", "value": 0.4,
+         "note": "most often: Cortical destruction OR Edema"},
+    ]).to_csv(tables / "11_imputation_stability.csv", index=False)
+    pd.DataFrame([
+        {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "rises",
+         "low_count": 0, "low_n": 100, "low_risk": 0.11,
+         "high_count": 1, "high_n": 90, "high_risk": 0.33, "note": ""},
+    ]).to_csv(tables / "12_count_headline.csv", index=False)
+    pd.DataFrame([
+        {"Model": "Amano et al 2021", "Patients scored": "301",
+         "Model AUC here (apparent)": "0.740",
+         "Model AUC, own patients (corrected)": "0.733",
+         "Model AUC, own patients (apparent)": "0.749",
+         "Best single sign": "Cortical destruction",
+         "Best single AUC (corrected)": "0.622",
+         "Best single Youden J (corrected)": "0.244", "Note": ""},
+    ]).to_csv(tables / "13_model_reading_view.csv", index=False)
+    pd.DataFrame([
+        {"What was checked": "Draws", "Result": "20", "Detail": "20 scorable"},
+        {"What was checked": "Winning rule reproduced", "Result": "40%",
+         "Detail": "most often: Cortical destruction OR Edema"},
+    ]).to_csv(tables / "14_stability_reading_view.csv", index=False)
+
+    figures = tmp_output / "panel" / "figures"
+    figures.mkdir(parents=True)
+    for name in ("lr_forest.svg", "count_score.svg", "rule_space.svg"):
+        (figures / name).write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>',
+            encoding="utf-8",
+        )
+    return tmp_output
+
+
+def test_load_artifacts_finds_the_panel_tables(panel_output):
+    art = load_artifacts(ReportConfig(output_root=panel_output, title="T"))
+    assert art.panel_marker_reading_view is not None
+    assert art.panel_selection_correction is not None
+    assert len(art.panel_figures) == 3
+
+
+def test_marker_panel_section_answers_both_aims(panel_output):
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Cortical destruction" in html
+    assert "2.8 (1.7–4.6)" in html
+    assert "301" in html
+
+
+def test_marker_panel_section_quotes_the_corrected_gain_not_the_apparent_one(
+    panel_output,
+):
+    """+0.133 is the corrected gain; +0.120 is the uncorrected one, and 0.42 is
+    the combination's apparent Youden J.
+
+    Quoting an apparent number where the corrected one belongs is the
+    CHANGES.md mistake in prose form, so the headline gain must be the
+    corrected one *and* the apparent figures must not be able to stand in for
+    it. Asserting only that the corrected value appears cannot catch that.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "<strong>+0.133</strong>" in html
+    assert "<strong>+0.120</strong>" not in html
+    assert "0.42" not in html
+
+
+def test_the_correction_sentence_reports_which_way_correction_moved_the_gap(
+    panel_output,
+):
+    """On the real cohort the corrected gap is the *larger* one.
+
+    The best-of-16-singles side carries more selection optimism than the
+    best-of-many-combinations side, so prose asserting "the uncorrected gap is
+    larger" is false there. The direction is a column, and the sentence follows
+    it.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "widens" in html
+    assert "+0.120" in html          # the uncorrected gap, named as such
+    assert "0.056" in html and "0.043" in html   # what each side cost to choose
+
+
+def test_the_correction_sentence_flips_when_correction_narrows_the_gap(
+    panel_output,
+):
+    """The same page, opposite data: the wording must follow the table."""
+    tables = panel_output / "panel" / "tables"
+    corr = pd.read_csv(tables / "09_selection_correction.csv")
+    corr["gain_apparent"] = 0.200
+    corr["correction_effect"] = "narrows"
+    corr.to_csv(tables / "09_selection_correction.csv", index=False)
+
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "narrows" in html
+    assert "widens" not in html
+
+
+def test_the_headline_sentence_follows_the_measured_direction(panel_output):
+    """The aim-2 lead said "Risk rises" whatever the table held.
+
+    On the real cohort that sentence read "Risk rises from 0% with 3 of the
+    signs present to 0% with 15" — the two thinnest bins, and not a rise. The
+    direction now comes from ``12_count_headline.csv``.
+    """
+    tables = panel_output / "panel" / "tables"
+    pd.DataFrame([
+        {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "falls",
+         "low_count": 0, "low_n": 100, "low_risk": 0.33,
+         "high_count": 1, "high_n": 90, "high_risk": 0.11, "note": ""},
+    ]).to_csv(tables / "12_count_headline.csv", index=False)
+
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Risk falls from 33%" in html
+    assert "Risk rises" not in html
+
+
+def test_the_headline_sentence_quotes_the_denominators_behind_it(panel_output):
+    """A bin holding one patient is what made the old sentence wrong; showing
+    each endpoint's patient count makes a thin endpoint visible on the page."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Risk rises from 11% among the 100 patients" in html
+    assert "33% among the 90 with 1" in html
+
+
+def test_the_panel_tables_never_show_raw_machine_column_names(panel_output):
+    """Every other table in the section goes through a reading view; these two
+    used to be dumped straight from the CSV."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    for machine_name in ("auc_shared_apparent", "auc_artifact_corrected",
+                         "best_single_J_corrected", "n_bootstrap", "n_scored"):
+        assert machine_name not in html
+
+
+def test_the_model_prose_names_which_column_compares_with_which(panel_output):
+    """A Youden J of 0.24 beside an AUC of 0.74 reads as three times worse.
+
+    They are different scales, so the page has to say which column is the
+    like-for-like one — the corrected single-marker AUC, not the J.
+    """
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "Best single AUC (corrected)" in html
+    assert "0.622" in html
+    assert "(J + 1) / 2" in html
+
+
+def test_the_model_prose_names_the_one_patient_set_the_models_share(panel_output):
+    """Seven models with seven different denominators in one column invites the
+    reader to subtract them. They are restricted to one set, and it is named —
+    together with the wider set the single-sign columns are scored on."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "one shared set of 301 patients" in html
+    assert "the patients every model could score" in html
+    assert "the 344 patients with every marker observed" in html
+
+
+def test_the_panel_warning_shows_no_escaped_markup(tmp_output):
+    cfg = ReportConfig(output_root=tmp_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "&lt;code&gt;" not in html
+    assert "output/panel/" in html
+
+
+def test_marker_panel_degrades_to_a_warning_when_nothing_was_computed(tmp_output):
+    cfg = ReportConfig(output_root=tmp_output, title="T")
+    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    assert "warning" in html.lower()
+
+
+def test_the_panel_section_sits_between_modelling_and_the_appendix(panel_output):
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    html = build_report(cfg)
+    assert html.index("Multivariable modelling") < html.index("Which MRI markers")
+    assert html.index("Which MRI markers") < html.index("📎 Appendix")

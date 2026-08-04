@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from diagnostic_accuracy import (
+    _odds_ratio_ci,
     binary_diagnostic_metrics,
     screen_diagnostic_accuracy,
 )
@@ -51,6 +52,36 @@ def test_binary_diagnostic_metrics_counts():
     assert not np.isnan(m["p"])
     assert 0 <= m["sensitivity_lo"] <= m["sensitivity_hi"] <= 1
     assert 0 <= m["accuracy_lo"] <= m["accuracy_hi"] <= 1
+
+
+def test_odds_ratio_matches_the_hand_calculation():
+    """The effect size the literature quotes for a dichotomised feature, so it
+    has to be the plain (TP·TN)/(FP·FN) a reader can check on the 2×2."""
+    odds_ratio, lo, hi = _odds_ratio_ci(tp=40, fp=60, fn=20, tn=80)
+    assert odds_ratio == pytest.approx((40 * 80) / (60 * 20))
+    assert lo < odds_ratio < hi
+    assert lo > 1  # this table separates, and the interval says so
+
+
+def test_odds_ratio_survives_an_empty_cell():
+    """A cut-point that nobody falls above gives a zero cell: without the
+    Haldane correction the OR is infinite and the interval undefined."""
+    odds_ratio, lo, hi = _odds_ratio_ci(tp=10, fp=0, fn=5, tn=20)
+    assert np.isfinite(odds_ratio) and np.isfinite(lo) and np.isfinite(hi)
+    assert odds_ratio > 1
+
+
+def test_odds_ratio_is_missing_when_a_margin_is_empty():
+    """No events at all — there is no ratio to report, and 0 or inf would both
+    read as a number."""
+    assert np.isnan(_odds_ratio_ci(tp=0, fp=10, fn=0, tn=20)[0])
+
+
+def test_odds_ratio_travels_with_every_2x2():
+    df = _tiny_binary_df()
+    m = binary_diagnostic_metrics(df, "high_grade", "necrosis", positive_class=True)
+    assert m["OR"] == pytest.approx((1 * 2) / (1 * 2))
+    assert m["OR_lo"] < m["OR"] < m["OR_hi"]
 
 
 def test_binary_diagnostic_metrics_dropna():
@@ -109,3 +140,35 @@ def test_screen_skips_non_binary_target(tmp_output):
             output_root=tmp_output,
         )
     assert out.empty
+
+
+def test_a_predictor_that_flags_nobody_returns_metrics_instead_of_raising():
+    """An AND of two rare signs can flag zero patients.
+
+    The 2×2 then has an empty row, chi2_contingency raises, and the whole rule
+    search dies. There is no test to run on such a table, so the p-value is
+    missing — but sensitivity, specificity and the counts are all still real
+    numbers and the caller needs them.
+    """
+    df = pd.DataFrame({
+        "flag": pd.array([False] * 8, dtype="boolean"),
+        "high_grade": pd.array([True, True, True, False, False, False, False, False],
+                               dtype="boolean"),
+    })
+    row = binary_diagnostic_metrics(df, "high_grade", "flag")
+    assert row["TP"] == 0
+    assert row["FP"] == 0
+    assert row["specificity"] == 1.0
+    assert np.isnan(row["p"])
+    assert row["test"] == "not applicable"
+
+
+def test_a_predictor_that_flags_everybody_also_survives():
+    df = pd.DataFrame({
+        "flag": pd.array([True] * 8, dtype="boolean"),
+        "high_grade": pd.array([True, True, True, False, False, False, False, False],
+                               dtype="boolean"),
+    })
+    row = binary_diagnostic_metrics(df, "high_grade", "flag")
+    assert row["sensitivity"] == 1.0
+    assert np.isnan(row["p"])

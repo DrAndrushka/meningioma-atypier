@@ -8,9 +8,10 @@ Usage from notebooks at the repo root (``meningioma-atypier/``)::
 cohort · column_rename_map · schema_overrides · row_filters ·
 missingness · derivations · analysis · report_settings
 
-Importing this package prepends ``cleaning_phase/`` and ``modelling_phase/`` to
-``sys.path`` so library modules can use flat sibling imports
-(``from schema_infer import ColSpec``) and tests can reuse the same layout.
+Importing this package prepends ``cleaning_phase/``, ``modelling_phase/`` and
+``threshold_phase/`` to ``sys.path`` so library modules can use flat sibling
+imports (``from schema_infer import ColSpec``) and tests can reuse the same
+layout.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from pathlib import Path
 _CONFIG_DIR = Path(__file__).resolve().parent
 _HEAVY_MACHINERY = _CONFIG_DIR.parent
 
-for _phase in ("cleaning_phase", "modelling_phase"):
+for _phase in ("cleaning_phase", "modelling_phase", "threshold_phase"):
     _path = str(_HEAVY_MACHINERY / _phase)
     if _path not in sys.path:
         sys.path.insert(0, _path)

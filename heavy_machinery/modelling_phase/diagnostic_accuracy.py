@@ -58,6 +58,32 @@ def _wilson_ci(successes: int, nobs: int) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
+def _odds_ratio_ci(tp: int, fp: int, fn: int, tn: int) -> tuple[float, float, float]:
+    """Odds ratio for the 2×2, with a Woolf (log-scale) 95% interval.
+
+    The effect size the meningioma literature quotes for a dichotomised
+    imaging feature — Magill 2018 reports OR 1.69 for > 3 cm and 3.01 for
+    > 6 cm — so a cut-point here can be read next to a published one.
+
+    A zero cell makes the OR 0 or infinite and the log interval undefined, so
+    the Haldane–Anscombe correction (add 0.5 to every cell) is applied in that
+    case. It is a real change to the estimate, which is why it only happens
+    when the alternative is no estimate at all.
+    """
+    cells = [tp, fp, fn, tn]
+    if any(c < 0 for c in cells) or (tp + fn) == 0 or (fp + tn) == 0:
+        return np.nan, np.nan, np.nan
+    a, b, c, d = (float(v) + 0.5 for v in cells) if 0 in cells else map(float, cells)
+    if b == 0 or c == 0:  # both margins non-empty, so this cannot happen
+        return np.nan, np.nan, np.nan
+    odds_ratio = (a * d) / (b * c)
+    se = np.sqrt(1 / a + 1 / b + 1 / c + 1 / d)
+    log_or = np.log(odds_ratio)
+    return (float(odds_ratio),
+            float(np.exp(log_or - 1.96 * se)),
+            float(np.exp(log_or + 1.96 * se)))
+
+
 def _encode_feature_present(x: pd.Series) -> pd.Series:
     """Map predictor to 1 = feature present, 0 = absent; preserve NaN."""
     if pd.api.types.is_bool_dtype(x):
@@ -73,7 +99,17 @@ def _encode_feature_present(x: pd.Series) -> pd.Series:
 
 
 def _contingency_pvalue(tp: int, fp: int, fn: int, tn: int) -> tuple[float, str]:
+    """χ²/Fisher for the 2×2, or nothing when there is nothing to test.
+
+    A rule that flags nobody — an AND of two rare signs, say — gives a table
+    with an empty row. There is no association to test in that table, and
+    ``chi2_contingency`` raises rather than saying so. The accuracy numbers
+    around it are still real, so the p-value is reported missing and the row
+    survives.
+    """
     table = np.array([[tp, fp], [fn, tn]], dtype=float)
+    if (table.sum(axis=0) == 0).any() or (table.sum(axis=1) == 0).any():
+        return float("nan"), "not applicable"
     row = _chi2_row(table)
     return float(row["p"]), str(row["test"])
 
@@ -130,6 +166,7 @@ def binary_diagnostic_metrics(
         auc = (sensitivity + specificity) / 2.0
 
     p, test = _contingency_pvalue(tp, fp, fn, tn)
+    odds_ratio, or_lo, or_hi = _odds_ratio_ci(tp, fp, fn, tn)
 
     sens_lo, sens_hi = _wilson_ci(tp, tp + fn)
     spec_lo, spec_hi = _wilson_ci(tn, tn + fp)
@@ -160,6 +197,9 @@ def binary_diagnostic_metrics(
         "accuracy_lo": acc_lo,
         "accuracy_hi": acc_hi,
         "AUC": auc,
+        "OR": odds_ratio,
+        "OR_lo": or_lo,
+        "OR_hi": or_hi,
         "p": p,
         "test": test,
         "note": "",
@@ -173,7 +213,7 @@ def _empty_metrics(predictor: str, *, note: str = "") -> dict:
         "PPV", "PPV_lo", "PPV_hi",
         "NPV", "NPV_lo", "NPV_hi",
         "accuracy", "accuracy_lo", "accuracy_hi",
-        "AUC",
+        "AUC", "OR", "OR_lo", "OR_hi",
     )
     row = {
         "predictor": predictor,

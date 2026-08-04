@@ -219,6 +219,9 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 .warning-box.severe { border-left-color: var(--red); background: var(--red-bg); }
 .info-box { border-left-color: var(--accent); background: #eff6ff; }
 
+/* Lead sentence introducing a subsection */
+.lead { font-size: 15px; font-weight: 500; margin: 10px 0; }
+
 /* Figure grid */
 .figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr));
                gap: 14px; margin: 12px 0 18px; }
@@ -752,6 +755,20 @@ class Artifacts:
     inferential_model_experimental: dict[str, bool] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
 
+    # Marker panel
+    panel_marker: pd.DataFrame | None = None
+    panel_marker_reading_view: pd.DataFrame | None = None
+    panel_shared_cohort: pd.DataFrame | None = None
+    panel_rule_reading_view: pd.DataFrame | None = None
+    panel_count_score: pd.DataFrame | None = None
+    panel_count_headline: pd.DataFrame | None = None
+    panel_selection_correction: pd.DataFrame | None = None
+    panel_model_vs_single: pd.DataFrame | None = None
+    panel_model_reading_view: pd.DataFrame | None = None
+    panel_imputation_stability: pd.DataFrame | None = None
+    panel_stability_reading_view: pd.DataFrame | None = None
+    panel_figures: list[Path] = field(default_factory=list)
+
     # Warnings accumulated during load (rendered in appendix)
     warnings: list[str] = field(default_factory=list)
 
@@ -879,6 +896,43 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     inf_fig = root / "inferential" / "figures"
     if inf_fig.exists():
         art.inferential_figures = sorted(inf_fig.glob("*.svg"))
+
+    # Marker panel
+    panel_tab = root / "panel" / "tables"
+    art.panel_marker = _maybe_read_csv(panel_tab / "01_marker_panel.csv", art.warnings)
+    art.panel_marker_reading_view = _maybe_read_csv(
+        panel_tab / "02_marker_panel_reading_view.csv", art.warnings,
+    )
+    art.panel_shared_cohort = _maybe_read_csv(
+        panel_tab / "03_shared_cohort.csv", art.warnings,
+    )
+    art.panel_rule_reading_view = _maybe_read_csv(
+        panel_tab / "06_rule_reading_view.csv", art.warnings,
+    )
+    art.panel_count_score = _maybe_read_csv(
+        panel_tab / "07_count_score.csv", art.warnings,
+    )
+    art.panel_selection_correction = _maybe_read_csv(
+        panel_tab / "09_selection_correction.csv", art.warnings,
+    )
+    art.panel_model_vs_single = _maybe_read_csv(
+        panel_tab / "10_model_vs_single.csv", art.warnings,
+    )
+    art.panel_imputation_stability = _maybe_read_csv(
+        panel_tab / "11_imputation_stability.csv", art.warnings,
+    )
+    art.panel_count_headline = _maybe_read_csv(
+        panel_tab / "12_count_headline.csv", art.warnings,
+    )
+    art.panel_model_reading_view = _maybe_read_csv(
+        panel_tab / "13_model_reading_view.csv", art.warnings,
+    )
+    art.panel_stability_reading_view = _maybe_read_csv(
+        panel_tab / "14_stability_reading_view.csv", art.warnings,
+    )
+    panel_fig = root / "panel" / "figures"
+    if panel_fig.exists():
+        art.panel_figures = sorted(panel_fig.glob("*.svg"))
 
     return art
 
@@ -1214,78 +1268,143 @@ def _render_cleaning_log_tables(log: pd.DataFrame) -> str:
     return "".join(parts) if parts else table_to_html(log, max_rows=200)
 
 
-def _summary_with_derived_step(
-    summary: pd.DataFrame,
-    derivation_log: pd.DataFrame | None,
-) -> pd.DataFrame:
-    """Insert one ``derived`` row per new column into the cleaning summary.
+def _cleaning_provenance(art: Artifacts) -> str:
+    """Provenance strip: dataset shape at each hand-off point."""
+    summary = art.cleaning_summary
+    if summary is None or summary.empty or "step" not in summary.columns:
+        return ""
 
-    Uses derivation ``reason`` as ``criterion`` so each column's rule is visible.
-    """
-    if (derivation_log is None or derivation_log.empty
-            or "derivation" not in derivation_log.columns):
-        return summary
-    # Source pipeline may already bake in the 'derived' rows — don't duplicate.
-    if "step" in summary.columns and (summary["step"] == "derived").any():
-        return summary
+    def _step(name: str):
+        hit = summary[summary["step"] == name]
+        return hit.iloc[0] if not hit.empty else None
 
-    created = derivation_log
-    if "schema_action" in created.columns:
-        mask = created["schema_action"].astype(str).str.startswith("added ColSpec")
-        created = created[mask]
-    if created.empty:
-        return summary
+    def _shape(row) -> str:
+        if row is None:
+            return "—"
+        n_rows, n_cols = _fmt_count(row.get("n_rows")), _fmt_count(row.get("n_columns"))
+        if n_rows == "" and n_cols == "":
+            return "—"
+        return f"{n_rows} rows × {n_cols} columns"
 
-    n_rows_val = ""
-    base_cols: int | None = None
-    if "step" in summary.columns:
-        fin = summary[summary["step"] == "final"]
-        if not fin.empty:
-            if "n_rows" in summary.columns:
-                n_rows_val = fin.iloc[0]["n_rows"]
-            if "n_columns" in summary.columns and pd.notna(fin.iloc[0].get("n_columns")):
-                try:
-                    base_cols = int(fin.iloc[0]["n_columns"])
-                except (TypeError, ValueError):
-                    base_cols = None
+    schema_row = _step("apply_schema")
+    items = [
+        ("Raw export", _shape(_step("raw_data"))),
+        ("After schema", _shape(schema_row)),
+        ("Analysed cohort", _shape(_step("final"))),
+        ("Report generated", datetime.now().strftime("%Y-%m-%d %H:%M")),
+    ]
+    detail = "" if schema_row is None else str(schema_row.get("detail", "") or "").strip()
+    if detail:
+        items.insert(2, ("Schema step", detail))
+    return table_to_html(pd.DataFrame(items, columns=["Item", "Value"]))
+
+
+_COHORT_COLUMNS = ["#", "Criterion", "Rule", "n before", "n excluded", "n remaining"]
+
+
+def _cohort_flow_table(art: Artifacts) -> str:
+    """Inclusion/exclusion criteria in applied order, led by the duplicate audit."""
+    summary = art.cleaning_summary
+    has_summary = summary is not None and "step" in summary.columns
+
+    def _step(name: str):
+        if not has_summary:
+            return None
+        hit = summary[summary["step"] == name]
+        return hit.iloc[0] if not hit.empty else None
 
     rows: list[dict] = []
-    for i, (_, entry) in enumerate(created.iterrows()):
-        col = str(entry.get("derivation", "")).strip()
-        if not col:
-            continue
-        source = str(entry.get("source", "") or "").strip()
-        reason = str(entry.get("reason", "") or "").strip()
-        new_row = {c: "" for c in summary.columns}
-        if "step" in new_row:
-            new_row["step"] = "derived"
-        if "detail" in new_row:
-            new_row["detail"] = (
-                f"added {col} ← {source}" if source else f"added {col}"
-            )
-        if "n_rows" in new_row:
-            new_row["n_rows"] = n_rows_val
-        if "n_columns" in new_row and base_cols is not None:
-            new_row["n_columns"] = base_cols + i + 1
-        if "criterion" in new_row:
-            new_row["criterion"] = reason
-        rows.append(new_row)
+    dup = _step("duplicate_audit")
+    if dup is not None:
+        n = _fmt_count(dup.get("n_rows"))
+        rows.append({
+            "#": "—", "Criterion": "Duplicate ID audit",
+            "Rule": str(dup.get("detail", "") or ""),
+            "n before": n, "n excluded": 0, "n remaining": n,
+        })
+
+    # n_before/n_dropped are only kept in the cleaning log — the summary carries
+    # n_remaining alone — so read the log first and fall back when it is absent.
+    drops: list[dict] = []
+    log = art.cleaning_log
+    if log is not None and "step" in log.columns:
+        drops = [
+            {"name": r.get("reason"), "rule": r.get("criterion"),
+             "before": r.get("n_before"), "excluded": r.get("n_dropped"),
+             "remaining": r.get("n_remaining")}
+            for _, r in log[log["step"] == "drop_rows"].iterrows()
+        ]
+    if not drops and has_summary:
+        drops = [
+            {"name": r.get("detail"), "rule": r.get("criterion"),
+             "before": None, "excluded": None, "remaining": r.get("n_rows")}
+            for _, r in summary[summary["step"] == "drop_rows"].iterrows()
+        ]
+
+    for i, d in enumerate(drops, start=1):
+        rows.append({
+            "#": i,
+            "Criterion": str(d["name"] or ""),
+            "Rule": str(d["rule"] or ""),
+            "n before": _fmt_count(d["before"]),
+            "n excluded": _fmt_count(d["excluded"]),
+            "n remaining": _fmt_count(d["remaining"]),
+        })
 
     if not rows:
-        return summary
+        return ""
 
-    new_df = pd.DataFrame(rows, columns=summary.columns)
-    # Place derived rows just before the 'final' row when present.
-    if "step" in summary.columns and (summary["step"] == "final").any():
-        pos = summary.index.get_loc(summary.index[summary["step"] == "final"][0])
-        if "n_columns" in summary.columns and base_cols is not None:
-            summary = summary.copy()
-            summary.loc[summary["step"] == "final", "n_columns"] = (
-                base_cols + len(rows)
-            )
-        return pd.concat(
-            [summary.iloc[:pos], new_df, summary.iloc[pos:]], ignore_index=True)
-    return pd.concat([summary, new_df], ignore_index=True)
+    raw, final = _step("raw_data"), _step("final")
+    n_raw, n_final = _to_int_or_none(
+        None if raw is None else raw.get("n_rows")), _to_int_or_none(
+        None if final is None else final.get("n_rows"))
+    if n_raw is not None and n_final is not None:
+        rows.append({
+            "#": "", "Criterion": "Analysed cohort", "Rule": "",
+            "n before": n_raw, "n excluded": n_raw - n_final, "n remaining": n_final,
+        })
+    return table_to_html(pd.DataFrame(rows, columns=_COHORT_COLUMNS))
+
+
+# (log column, report heading) for the derived / recoded variable tables.
+_DERIVED_COLUMNS = [
+    ("derivation", "New column"), ("source", "Derived from"), ("rule", "Rule"),
+    ("kind", "Kind"), ("rows_missing", "n missing"), ("reason", "Source"),
+]
+_RECODED_COLUMNS = [
+    ("derivation", "Column"), ("rule", "Rule"), ("kind", "Kind"),
+    ("rows_nonmissing", "n non-missing"), ("rows_missing", "n missing"),
+]
+
+
+def _derived_tables(log: pd.DataFrame | None) -> str:
+    """New columns (``added ColSpec``), then in-place recodes (``updated ColSpec``)."""
+    if log is None or log.empty or "derivation" not in log.columns:
+        return ""
+    action = log.get("schema_action", pd.Series("", index=log.index)).astype(str)
+
+    def _project(sub: pd.DataFrame, spec: list[tuple[str, str]]) -> pd.DataFrame:
+        pairs = [(c, label) for c, label in spec if c in sub.columns]
+        out = sub[[c for c, _ in pairs]].copy()
+        out.columns = [label for _, label in pairs]
+        return _format_count_cols(out, ["n missing", "n non-missing"])
+
+    parts: list[str] = []
+    added = log[action.str.startswith("added ColSpec")]
+    if not added.empty:
+        parts.append("<h3>Derived variables</h3>")
+        parts.append("<p class='muted'>Columns computed from the cleaned cohort. "
+                     "<em>Rule</em> is the definition; <em>Source</em> cites the "
+                     "study a cutoff was taken from.</p>")
+        parts.append(table_to_html(_project(added, _DERIVED_COLUMNS), max_rows=200))
+
+    updated = log[action.str.startswith("updated ColSpec")]
+    if not updated.empty:
+        parts.append("<h3>Recoded variables</h3>")
+        parts.append("<p class='muted'>Existing columns rewritten in place "
+                     "(e.g. structural zeros); no new column is created.</p>")
+        parts.append(table_to_html(_project(updated, _RECODED_COLUMNS), max_rows=200))
+    return "".join(parts)
 
 
 def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1304,14 +1423,19 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
             "performed, but no cleaning audit table was exported."))
         return section_block("🧹 Cleaning story", "".join(body))
 
-    if art.cleaning_summary is not None and not art.cleaning_summary.empty:
-        body.append("<h3>Summary</h3>")
-        summary = _summary_with_derived_step(
-            art.cleaning_summary, art.derivation_log)
-        wanted = ["step", "detail", "n_rows", "n_columns", "criterion"]
-        summary = summary[[c for c in wanted if c in summary.columns]]
-        summary = _format_count_cols(summary, ["n_rows", "n_columns"])
-        body.append(table_to_html(summary))
+    provenance = _cleaning_provenance(art)
+    if provenance:
+        body.append("<h3>Provenance</h3>")
+        body.append(provenance)
+
+    cohort = _cohort_flow_table(art)
+    if cohort:
+        body.append("<h3>Inclusion / exclusion criteria</h3>")
+        body.append("<p class='muted'>Criteria applied in the order shown; each "
+                    "exclusion count is conditional on the criteria above it.</p>")
+        body.append(cohort)
+
+    body.append(_derived_tables(art.derivation_log))
 
     if has_coercion:
         coer = collapse_coercion_audit_rows(art.schema_coercion.copy())
@@ -1347,9 +1471,10 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
         log_html = (_render_cleaning_log_tables(art.cleaning_log) if has_log else "")
         if has_deriv:
             log_html += (
-                "<h4>Derived variables</h4>"
-                "<p>New columns computed from existing ones "
-                "(binning, custom transforms).</p>"
+                "<h4>Derivation log (raw)</h4>"
+                "<p>Every declared derivation, including entries that were "
+                "skipped as inactive or because their source was missing — "
+                "those do not appear in the tables above.</p>"
                 + table_to_html(art.derivation_log, max_rows=200)
             )
         body.append(details_block("📜 Full cleaning log", log_html))
@@ -2172,10 +2297,15 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             )
         sub["p"] = sub["p"].apply(human_p)
         sub["p_fdr"] = sub["p_fdr"].apply(human_p)
-        target_body.append(table_to_html(
-            sub[display_cols], row_class_fn=_row_class,
-            # 'strength' is a pre-built <span> badge — don't HTML-escape it.
-            safe_html_cols=("strength",),
+        # The full ranked screen is long — keep it folded so the summary,
+        # diagnostic accuracy and interpretation stay visible on open.
+        target_body.append(details_block(
+            f"🧬 The Full Sweep — every predictor, ranked ({len(sub)})",
+            table_to_html(
+                sub[display_cols], row_class_fn=_row_class,
+                # 'strength' is a pre-built <span> badge — don't HTML-escape it.
+                safe_html_cols=("strength",),
+            ),
         ))
         target_body.append(_render_diagnostic_accuracy(target, art, cfg))
         target_body.append(_render_eda_interpretation(target, interp_df, cfg))
@@ -2438,6 +2568,322 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
     body.append(glossary_block(_inferential_glossary()))
 
     return section_block("🧮 Multivariable modelling", "".join(body))
+
+
+# ---------------------------------------------------------------------------
+# Marker panel
+# ---------------------------------------------------------------------------
+
+def _lead(text: str) -> str:
+    return f'<p class="lead">{text}</p>'
+
+
+def _num(value: Any, digits: int = 2) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v:.{digits}f}"
+
+
+def _signed(value: Any, digits: int = 3) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v:+.{digits}f}"
+
+
+def _pct(value: Any) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{v * 100:.0f}%"
+
+
+def _int(value: Any) -> str:
+    v = _coerce_float(value)
+    return "—" if v is None else f"{int(round(v))}"
+
+
+def _table(df: pd.DataFrame) -> str:
+    return table_to_html(df)
+
+
+def _panel_figure(art: Artifacts, stem: str) -> str:
+    """One panel SVG by filename stem, or nothing if it was not written."""
+    for path in art.panel_figures:
+        if path.stem == stem:
+            return _figure_img_html(path)
+    return ""
+
+
+def _panel_shared_n(art: Artifacts) -> str:
+    """The denominator the head-to-head was run on, quoted from its own table."""
+    table = art.panel_shared_cohort
+    if table is None or table.empty:
+        return "—"
+    row = table[table["item"].astype(str) == "Patients in the shared set"]
+    return _int(row["value"].iloc[0]) if len(row) else "—"
+
+
+def _panel_aim_one(art: Artifacts) -> str:
+    view = art.panel_marker_reading_view
+    if view is None or view.empty:
+        return warning_box("No marker table was found.")
+    top = art.panel_marker.iloc[0] if art.panel_marker is not None and \
+        not art.panel_marker.empty else None
+    lead = ""
+    if top is not None and not bool(top.get("chance_overlap")):
+        lead = _lead(
+            f"<strong>{_esc(top['label'])}</strong> argues hardest for high grade: "
+            f"seeing it makes high grade {_num(top['lr_pos'], 1)}× more likely "
+            f"({_num(top['lr_pos_lo'], 1)}–{_num(top['lr_pos_hi'], 1)}). "
+            f"It is present in {_int(top['present_n'])} of "
+            f"{_int(top['n_used'])} scans and flags "
+            f"{_int(top['catches'])} of the {_int(top['n_high_grade'])} "
+            "high-grade tumours."
+        )
+    return (
+        "<h3>Which sign argues hardest for high grade</h3>"
+        + lead
+        + "<p>Ranked by <strong>positive likelihood ratio</strong> — how many "
+          "times more often the sign appears in a high-grade tumour than in a "
+          "benign one. <strong>Catches</strong> is there because the most "
+          "specific sign in any cohort is usually the one nobody ever sees: a "
+          "marker that is almost never present is almost perfectly specific "
+          "and almost never useful. A ratio whose interval covers 1 says "
+          "nothing, and is labelled rather than ranked.</p>"
+        + _table(view)
+        + _panel_figure(art, "lr_forest")
+    )
+
+
+_COUNT_LEAD_TEMPLATES = {
+    "rises": (
+        "Risk rises from {low_risk} among the {low_n} patients with "
+        "{low_count} of the {k} signs present to {high_risk} among the "
+        "{high_n} with {high_count}."
+    ),
+    "falls": (
+        "Risk falls from {low_risk} among the {low_n} patients with "
+        "{low_count} of the {k} signs present to {high_risk} among the "
+        "{high_n} with {high_count}."
+    ),
+    "flat": (
+        "Risk is {low_risk} at both ends of the usable range — {low_count} "
+        "of the {k} signs present ({low_n} patients) and {high_count} "
+        "({high_n})."
+    ),
+}
+
+
+def _panel_count_lead(art: Artifacts) -> str:
+    """The aim-2 headline sentence, wording and all, taken from its own table.
+
+    ``12_count_headline.csv`` decided which two counts have enough patients
+    behind them to quote and which way the risk went; this only chooses the
+    phrasing that matches. Nothing here compares two risks, which is the point:
+    a hard-coded "rises" is a claim the renderer cannot check.
+    """
+    head = art.panel_count_headline
+    if head is None or head.empty:
+        return ""
+    row = head.iloc[0]
+    template = _COUNT_LEAD_TEMPLATES.get(str(row.get("direction")))
+    if template is None:
+        return ""
+    sentence = template.format(
+        low_risk=_pct(row["low_risk"]), low_n=_int(row["low_n"]),
+        low_count=_int(row["low_count"]), k=_int(row["k_markers"]),
+        high_risk=_pct(row["high_risk"]), high_n=_int(row["high_n"]),
+        high_count=_int(row["high_count"]),
+    )
+    floor = _coerce_float(row.get("min_n"))
+    if floor is not None and floor > 1:
+        sentence += (
+            f" Counts held by fewer than {int(floor)} patients are left out of "
+            "this sentence; they are still in the figure."
+        )
+    note = str(row.get("note") or "").strip()
+    if note and note.lower() != "nan":
+        sentence += f" ({_esc(note)}.)"
+    return _lead(sentence)
+
+
+_CORRECTION_TEMPLATES = {
+    "widens": (
+        "Uncorrected the gap is {apparent}; paying for the selection on both "
+        "sides <strong>widens</strong> it to {corrected}, because choosing the "
+        "best of the single signs cost more than choosing the best combination "
+        "({single_cost} against {combo_cost} of Youden J)."
+    ),
+    "narrows": (
+        "Uncorrected the gap is {apparent}; paying for the selection on both "
+        "sides <strong>narrows</strong> it to {corrected}, so part of the raw "
+        "advantage was the benefit of having chosen the winner on these same "
+        "patients (selection cost {single_cost} for the single sign, "
+        "{combo_cost} for the combination)."
+    ),
+    "unchanged": (
+        "Uncorrected the gap is {apparent}, and correcting both sides leaves "
+        "it there: the two sides cost the same to choose ({single_cost} and "
+        "{combo_cost} of Youden J)."
+    ),
+}
+
+
+def _panel_correction_effect(single: pd.Series, combo: pd.Series) -> str:
+    """What correction did to the gap — read from the table, not asserted.
+
+    Correcting usually shrinks a winner's advantage, and the temptation is to
+    say so in prose. On this cohort it does the opposite: the best-of-sixteen
+    single side carries more selection optimism than the best-of-many
+    combination side, so the corrected gap is the larger one. Which way it went
+    is a column in ``09_selection_correction.csv``.
+    """
+    effect = str(combo.get("correction_effect") or "").strip()
+    template = _CORRECTION_TEMPLATES.get(effect)
+    if template is None:
+        return ""
+    return template.format(
+        apparent=_signed(combo.get("gain_apparent")),
+        corrected=_signed(combo.get("gain_corrected")),
+        single_cost=_num(single.get("optimism"), 3),
+        combo_cost=_num(combo.get("optimism"), 3),
+    )
+
+
+def _panel_model_prose(art: Artifacts) -> str:
+    """Which model column compares with which, and on whose patients."""
+    table = art.panel_model_vs_single
+    n_text, denominator, single_n = "", "", ""
+    if table is not None and not table.empty:
+        if "n_scored" in table.columns:
+            scored = sorted({_to_int_or_none(v) for v in table["n_scored"]} - {None, 0})
+            if len(scored) == 1:
+                n_text = f"one shared set of {scored[0]} patients"
+        if "denominator" in table.columns:
+            values = {str(v).strip() for v in table["denominator"]
+                      if str(v).strip() and str(v).strip().lower() != "nan"}
+            if len(values) == 1:
+                denominator = values.pop()
+        if "n_best_single" in table.columns:
+            single_n = _int(table["n_best_single"].iloc[0])
+
+    if n_text and denominator:
+        where = (f"<strong>Model AUC here</strong> is each model re-scored on "
+                 f"{n_text} — {_esc(denominator)} — so the models are "
+                 "comparable with one another as well as with the signs.")
+    else:
+        where = ("<strong>Model AUC here</strong> is each model re-scored on "
+                 "its own complete cases, so the models are <em>not</em> "
+                 "directly comparable with one another; the "
+                 "<em>Patients scored</em> column gives each one's "
+                 "denominator.")
+    subset = (
+        f" The single-sign columns are scored on the {single_n} patients with "
+        "every marker observed, which the models' set is drawn from."
+        if single_n and single_n != "—" else ""
+    )
+    return (
+        "<p>" + where + " It is <em>apparent</em> — correcting it would mean "
+        "re-running the bootstrap here, which is refitting — so it is "
+        "optimistic, and the gap between the two <em>own patients</em> columns "
+        "bounds by how much." + subset + " The column it should be read "
+        "against is <strong>Best single AUC (corrected)</strong>: both are "
+        "areas under the curve, where 0.5 is a coin toss. The Youden J beside "
+        "it is the same single sign on a different scale (0 is useless, and "
+        "<em>AUC = (J + 1) / 2</em> for a yes/no rule), so it compares with the "
+        "rule table below, never with an AUC.</p>"
+    )
+
+
+def _panel_aim_two(art: Artifacts) -> str:
+    counts = art.panel_count_score
+    if counts is None or counts.empty:
+        return "<h3>Does a combination beat one sign?</h3>" + info_box(
+            "A combination needs at least two usable markers on a shared set of "
+            "patients; this run did not have them."
+        )
+
+    lead = _panel_count_lead(art)
+
+    corr = art.panel_selection_correction
+    correction_html = ""
+    if corr is not None and not corr.empty:
+        single = corr[corr["side"] == "best single"]
+        combo = corr[corr["side"] == "best combination"]
+        if len(single) and len(combo):
+            s, c = single.iloc[0], combo.iloc[0]
+            correction_html = (
+                "<p>Head-to-head on the same "
+                f"{_panel_shared_n(art)} patients, both sides corrected for "
+                "having been picked here: the best single sign "
+                f"(<em>{_esc(s['best_rule'])}</em>) scores "
+                f"{_num(s['J_corrected'])}, the best combination "
+                f"(<em>{_esc(c['best_rule'])}</em>) scores "
+                f"{_num(c['J_corrected'])} — a gain of "
+                f"<strong>{_signed(c['gain_corrected'])}</strong>. "
+                + _panel_correction_effect(s, c) + "</p>"
+            )
+
+    model_html = ""
+    model_view = art.panel_model_reading_view
+    if model_view is not None and not model_view.empty:
+        model_html = (
+            "<h4>Against the multivariable models</h4>"
+            + _panel_model_prose(art)
+            + _table(model_view)
+        )
+
+    stability_html = ""
+    stability_view = art.panel_stability_reading_view
+    if stability_view is not None and not stability_view.empty:
+        stability_html = details_block(
+            "🎲 Does filling in the missing scans change this?",
+            "<p>Every headline above is computed on patients whose markers were "
+            "actually recorded. Re-running across the MICE draws asks whether "
+            "the same answers come back. Reported as reproduction rates rather "
+            "than pooled estimates: averaging works for an estimate, not for a "
+            "choice, and 'which rule wins' is a choice.</p>"
+            + _table(stability_view),
+        )
+
+    rules_html = ""
+    if art.panel_rule_reading_view is not None and \
+            not art.panel_rule_reading_view.empty:
+        rules_html = details_block(
+            "📋 Every rule, ranked",
+            "<p>Singles, AND/OR pairs and count rules on one patient set, "
+            "ranked by Youden J (sensitivity + specificity − 1).</p>"
+            + _table(art.panel_rule_reading_view)
+            + _panel_figure(art, "rule_space"),
+        )
+
+    return (
+        "<h3>Does a combination beat one sign?</h3>"
+        + lead
+        + _panel_figure(art, "count_score")
+        + correction_html
+        + model_html
+        + rules_html
+        + stability_html
+    )
+
+
+def render_marker_panel(cfg: ReportConfig, art: Artifacts) -> str:
+    """🎯 The two study aims, answered on one cohort.
+
+    Everything here is read from ``output/panel/``. The section is the last
+    substantive one because it depends on every section above it: the markers
+    come from the EDA screen, the models from multivariable modelling, and the
+    cut-points baked into the derived flags from the threshold notebook.
+    """
+    if art.panel_marker is None and art.panel_count_score is None:
+        return section_block(
+            "🎯 Which MRI markers, and do they combine?",
+            warning_box(
+                "No marker panel was found under output/panel/. "
+                "Run the marker panel cell in the modelling notebook."
+            ),
+        )
+    return section_block(
+        "🎯 Which MRI markers, and do they combine?",
+        _panel_aim_one(art) + _panel_aim_two(art),
+    )
 
 
 def _to_int_or_none(x: Any) -> int | None:
@@ -3189,6 +3635,7 @@ def build_report(cfg: ReportConfig) -> str:
         render_missingness(cfg, art),
         render_eda(cfg, art),
         render_inferential(cfg, art),
+        render_marker_panel(cfg, art),
         render_appendix(cfg, art),
     ]
 
