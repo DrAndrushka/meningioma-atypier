@@ -685,7 +685,8 @@ def run_marker_panel(
         _write_table(tables, root, "10_model_vs_single",
                      model_vs_single(shared, artifacts or {}, target, correction))
         _write_table(tables, root, "11_imputation_stability",
-                     imputation_stability(list(draws), kept, target, seed=seed))
+                     imputation_stability(list(draws), kept, target,
+                                           n_boot=n_boot, seed=seed))
     else:
         for stem in ("05_rule_menu", "06_rule_reading_view", "07_count_score",
                      "08_count_thresholds", "09_selection_correction",

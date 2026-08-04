@@ -568,3 +568,24 @@ def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
     )
     assert not tables["01_marker_panel"].empty
     assert tables["05_rule_menu"].empty
+
+
+def test_run_marker_panel_forwards_n_boot_to_imputation_stability(tmp_output, monkeypatch):
+    """The caller's n_boot must govern every bootstrap the run does, including
+    the per-draw one inside imputation_stability — not just the two on the
+    shared set. Without forwarding, a caller who lowers n_boot for a quick run
+    would find the MICE-stability table silently still using 200.
+    """
+    seen: dict = {}
+    original = mp.imputation_stability
+
+    def spy(draws, markers, target, **kwargs):
+        seen.update(kwargs)
+        return original(draws, markers, target, **kwargs)
+
+    monkeypatch.setattr(mp, "imputation_stability", spy)
+    mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=7, draws=[count_frame(seed=9)],
+    )
+    assert seen.get("n_boot") == 7
