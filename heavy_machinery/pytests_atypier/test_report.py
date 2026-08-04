@@ -989,3 +989,44 @@ def test_the_panel_section_sits_between_modelling_and_the_appendix(panel_output)
     html = build_report(cfg)
     assert html.index("Multivariable modelling") < html.index("Which MRI markers")
     assert html.index("Which MRI markers") < html.index("📎 Appendix")
+
+
+# --------------------------------------------------------------------------
+# The model table's Note cell carries the paper link
+# --------------------------------------------------------------------------
+def test_model_note_url_becomes_an_anchor():
+    view = pd.DataFrame([{"Model": "Yao et al 2022",
+                          "Note": "https://pubmed.ncbi.nlm.nih.gov/30317276/"}])
+    out = rp._linked_model_notes(view)
+    cell = out.iloc[0]["Note"]
+    assert 'href="https://pubmed.ncbi.nlm.nih.gov/30317276/"' in cell
+    assert 'rel="noopener noreferrer"' in cell
+    assert "Paper" in cell
+
+
+def test_model_note_keeps_surrounding_text():
+    view = pd.DataFrame([{"Model": "m", "Note": "not scorable here https://x.org/a"}])
+    cell = rp._linked_model_notes(view).iloc[0]["Note"]
+    assert "not scorable here" in cell
+    assert 'href="https://x.org/a"' in cell
+
+
+def test_model_note_without_a_url_is_escaped_not_linked():
+    view = pd.DataFrame([{"Model": "m", "Note": "one outcome class only"}])
+    cell = rp._linked_model_notes(view).iloc[0]["Note"]
+    assert cell == "one outcome class only"
+    assert "<a " not in cell
+
+
+def test_model_note_escapes_markup_around_the_url():
+    """The column is emitted as safe HTML, so everything else must be escaped."""
+    view = pd.DataFrame([{"Model": "m",
+                          "Note": "<script>alert(1)</script> https://x.org/a"}])
+    cell = rp._linked_model_notes(view).iloc[0]["Note"]
+    assert "<script>" not in cell
+    assert "&lt;script&gt;" in cell
+
+
+def test_model_note_survives_a_view_without_the_column():
+    view = pd.DataFrame([{"Model": "m"}])
+    assert list(rp._linked_model_notes(view).columns) == ["Model"]

@@ -15,7 +15,7 @@ perfectly specific and perfectly useless.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -608,7 +608,7 @@ _MODEL_COLUMNS = [
     "model", "n_scored", "n_complete_own", "denominator",
     "auc_shared_apparent", "auc_artifact_corrected", "auc_artifact_apparent",
     "best_single_rule", "n_best_single", "best_single_auc_corrected",
-    "best_single_J_corrected", "note",
+    "best_single_J_corrected", "note", "source_link",
 ]
 
 DENOM_SHARED = "the patients every model could score"
@@ -631,8 +631,15 @@ def model_vs_single(
     artifacts: dict[str, dict],
     target: str,
     correction: pd.DataFrame,
+    links: Mapping[str, str] | None = None,
 ) -> pd.DataFrame:
     """Each multivariable model against the best single marker, on one patient set.
+
+    ``links`` maps a model key to the paper its predictor set came from, and
+    lands in ``source_link``. A reader comparing our AUC against a published
+    one should be one click from the published one. Models with no entry — the
+    experimental variants are ours — get an empty string rather than a guess;
+    inventing a citation is worse than omitting it.
 
     **One denominator, for the models too.** Restricting the markers to a
     shared set and then letting each model score on whatever patients happened
@@ -741,6 +748,7 @@ def model_vs_single(
             "best_single_auc_corrected": best_auc,
             "best_single_J_corrected": best_j,
             "note": note,
+            "source_link": str((links or {}).get(name, "") or ""),
         })
     return pd.DataFrame(rows)[_MODEL_COLUMNS]
 
@@ -782,6 +790,18 @@ _MODEL_VIEW_COLUMNS = [
 ]
 
 
+def _model_note(row: pd.Series) -> str:
+    """The row's note and its source link, in that order, one cell.
+
+    Kept as a bare URL rather than an anchor: this cell is written to CSV as
+    well as rendered, and a CSV full of ``<a href>`` is a CSV nobody can open
+    in a spreadsheet. ``report.py`` turns the URL into a link at render time.
+    """
+    note = str(row.get("note") or "").strip()
+    link = str(row.get("source_link") or "").strip()
+    return " ".join(part for part in (note, link) if part)
+
+
 def model_reading_view(table: pd.DataFrame) -> pd.DataFrame:
     """The model comparison with column headings a reader can act on.
 
@@ -815,7 +835,7 @@ def model_reading_view(table: pd.DataFrame) -> pd.DataFrame:
         "Best single Youden J (corrected)": [
             _fmt_num(r.get("best_single_J_corrected")) for _, r in table.iterrows()
         ],
-        "Note": [str(r.get("note") or "") for _, r in table.iterrows()],
+        "Note": [_model_note(r) for _, r in table.iterrows()],
     })
 
 
@@ -935,6 +955,7 @@ def run_marker_panel(
     exclude: Collection[str] = (),
     artifacts: dict[str, dict] | None = None,
     draws: Sequence[pd.DataFrame] = (),
+    model_links: Mapping[str, str] | None = None,
     n_boot: int = DEFAULT_N_BOOT,
     draw_n_boot: int = DEFAULT_DRAW_N_BOOT,
     seed: int = DEFAULT_SEED,
@@ -982,7 +1003,8 @@ def run_marker_panel(
             shared, kept, target, n_boot=n_boot, seed=seed, max_size=max_size,
         )
         counts = count_score(shared, kept, target)
-        models = model_vs_single(shared, artifacts or {}, target, correction)
+        models = model_vs_single(shared, artifacts or {}, target, correction,
+                                 links=model_links)
         stability = imputation_stability(list(draws), kept, target,
                                           n_boot=draw_n_boot, seed=seed)
         _write_table(tables, root, "05_rule_menu", menu)

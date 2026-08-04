@@ -17,6 +17,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -2602,6 +2603,37 @@ def _table(df: pd.DataFrame) -> str:
     return table_to_html(df)
 
 
+_URL_IN_NOTE = re.compile(r"https?://\S+")
+
+
+def _linked_model_notes(view: pd.DataFrame) -> pd.DataFrame:
+    """Turn the bare paper URL in ``Note`` into an anchor, escaping the rest.
+
+    The panel writes the URL as plain text so the CSV stays openable in a
+    spreadsheet. Here it becomes a link, and the anchor text is "Paper" rather
+    than the URL itself — the Cureus one is 110 characters and would set the
+    column width for the whole table. Everything around it is escaped by hand,
+    because the column is handed to ``table_to_html`` as safe HTML.
+    """
+    if "Note" not in view.columns:
+        return view
+
+    def render(cell) -> str:
+        text = str(cell or "")
+        match = _URL_IN_NOTE.search(text)
+        if not match:
+            return _esc(text)
+        url = match.group(0)
+        rest = _esc((text[:match.start()] + text[match.end():]).strip())
+        anchor = (f'<a href="{_esc(url)}" target="_blank" '
+                  f'rel="noopener noreferrer">Paper&nbsp;↗</a>')
+        return f"{rest} {anchor}".strip() if rest else anchor
+
+    out = view.copy()
+    out["Note"] = [render(c) for c in out["Note"]]
+    return out
+
+
 def _panel_figure(art: Artifacts, stem: str) -> str:
     """One panel SVG by filename stem, or nothing if it was not written."""
     for path in art.panel_figures:
@@ -2826,7 +2858,8 @@ def _panel_aim_two(art: Artifacts) -> str:
         model_html = (
             "<h4>Against the multivariable models</h4>"
             + _panel_model_prose(art)
-            + _table(model_view)
+            + table_to_html(_linked_model_notes(model_view),
+                            safe_html_cols=("Note",))
         )
 
     stability_html = ""

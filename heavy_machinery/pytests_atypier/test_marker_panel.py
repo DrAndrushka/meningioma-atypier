@@ -856,3 +856,63 @@ def test_the_per_draw_budget_defaults_low_even_when_n_boot_is_high(
     )
     assert seen.get("n_boot") == mp.DEFAULT_DRAW_N_BOOT
     assert mp.DEFAULT_DRAW_N_BOOT < mp.DEFAULT_N_BOOT
+
+
+# --------------------------------------------------------------------------
+# Source links — the published model rows carry a link to the paper they came
+# from, so a reader comparing our AUC against theirs can go and read theirs.
+# --------------------------------------------------------------------------
+PAPER = "https://pubmed.ncbi.nlm.nih.gov/30317276/"
+
+
+def test_model_vs_single_carries_the_source_link_when_one_is_known():
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction,
+                               links={"tiny": PAPER})
+    assert table.iloc[0]["source_link"] == PAPER
+
+
+def test_model_vs_single_leaves_the_link_blank_for_our_own_models():
+    """The experimental variants are ours. Inventing a citation for them would
+    be worse than leaving the cell empty."""
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction,
+                               links={"someone_else": PAPER})
+    assert table.iloc[0]["source_link"] == ""
+
+
+def test_model_vs_single_has_a_link_column_even_with_no_links_argument():
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction)
+    assert "source_link" in table.columns
+    assert table.iloc[0]["source_link"] == ""
+
+
+def test_model_reading_view_puts_the_link_in_the_note():
+    df = count_frame()
+    correction = mp.selection_correction(df, COUNT_MARKERS, TARGET, n_boot=40)
+    table = mp.model_vs_single(df, {"tiny": tiny_artifact()}, TARGET, correction,
+                               links={"tiny": PAPER})
+    view = mp.model_reading_view(table)
+    assert PAPER in str(view.iloc[0]["Note"])
+
+
+def test_model_reading_view_keeps_an_existing_note_beside_the_link():
+    """A row can be both unscorable and cited; the note must not lose either."""
+    table = pd.DataFrame([{
+        "model": "tiny", "n_scored": 0, "n_complete_own": 0, "denominator": "",
+        "auc_shared_apparent": float("nan"),
+        "auc_artifact_corrected": float("nan"),
+        "auc_artifact_apparent": float("nan"),
+        "best_single_rule": "", "n_best_single": 0,
+        "best_single_auc_corrected": float("nan"),
+        "best_single_J_corrected": float("nan"),
+        "note": "not scorable on this set — one outcome class only",
+        "source_link": PAPER,
+    }])
+    note = str(mp.model_reading_view(table).iloc[0]["Note"])
+    assert "one outcome class only" in note
+    assert PAPER in note
