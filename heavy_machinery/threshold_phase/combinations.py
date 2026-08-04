@@ -551,6 +551,87 @@ def bootstrap_best_rule(
     }
 
 
+def bootstrap_best_rules(
+    df: pd.DataFrame,
+    cutpoints: Sequence[CutPoint],
+    target: str,
+    *,
+    sides: dict[str, Sequence[str] | None],
+    n_boot: int = 500,
+    seed: int = 20260801,
+    max_size: int = 2,
+) -> dict[str, dict]:
+    """Several restricted selections off one set of resamples.
+
+    Correcting "best single" and "best combination" means running the same
+    bootstrap twice on the same seed and taking the arg-max over a different
+    slice of the same menu each time — the resamples were always identical.
+    Scoring each resample once and taking one arg-max per side is the same
+    arithmetic for half the work, and the halving matters: this runs once per
+    MICE draw.
+
+    ``sides`` maps a name to a ``kinds`` filter, ``None`` meaning the whole
+    menu. Each value of the result has the same keys as
+    :func:`bootstrap_best_rule`. Sides keep separate tallies, because a
+    resample can leave every count rule undefined while the singles are fine,
+    and the two are not obliged to agree on ``n_bootstrap``.
+    """
+    rng = np.random.default_rng(seed)
+    n = len(df)
+    matrix = rmx.rule_matrix(df, cutpoints, target, max_size=max_size)
+    apparent = rmx.youden_j(matrix, max_size=max_size)
+
+    masks, best, gaps, winners = {}, {}, {}, {}
+    for name, kinds in sides.items():
+        mask = (np.ones(len(matrix.labels), dtype=bool) if kinds is None
+                else np.isin(matrix.kinds, list(kinds)))
+        masks[name] = mask
+        side = np.where(mask, apparent, np.nan)
+        best[name] = (None if (not mask.any() or np.isnan(side).all())
+                      else int(np.nanargmax(side)))
+        gaps[name], winners[name] = [], []
+
+    live = [name for name, idx in best.items() if idx is not None]
+    if live:
+        for _ in range(int(n_boot)):
+            take = rng.integers(0, n, n)
+            if np.count_nonzero(matrix.positive[take]) < 5:
+                continue
+            scored = rmx.youden_j(matrix, take, max_size=max_size)
+            for name in live:
+                boot = np.where(masks[name], scored, np.nan)
+                if np.isnan(boot).all():
+                    continue
+                i_b = int(np.nanargmax(boot))
+                on_original = apparent[i_b]
+                if not np.isfinite(on_original):
+                    continue
+                gaps[name].append(float(boot[i_b]) - float(on_original))
+                winners[name].append(i_b)
+
+    out: dict[str, dict] = {}
+    for name in sides:
+        idx = best[name]
+        if idx is None:
+            out[name] = {"optimism": np.nan, "n_bootstrap": 0, "best_rule": "",
+                         "J_apparent": np.nan, "J_corrected": np.nan,
+                         "winner_stability": np.nan}
+            continue
+        g, w = gaps[name], winners[name]
+        optimism = float(np.mean(g)) if g else np.nan
+        j_apparent = float(apparent[idx])
+        out[name] = {
+            "optimism": optimism,
+            "n_bootstrap": len(g),
+            "best_rule": matrix.labels[idx],
+            "J_apparent": j_apparent,
+            "J_corrected": j_apparent - optimism if g else np.nan,
+            "winner_stability": (float(np.mean([x == idx for x in w])) if w
+                                 else np.nan),
+        }
+    return out
+
+
 def full_rule_menu(
     df: pd.DataFrame,
     cutpoints: Sequence[CutPoint],

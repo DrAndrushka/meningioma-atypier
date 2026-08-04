@@ -443,3 +443,36 @@ def test_bootstrap_is_fast_enough_to_run_in_a_notebook():
     start = time.perf_counter()
     cb.bootstrap_best_rule(df, cps, TARGET, n_boot=300, seed=1)
     assert time.perf_counter() - start < 10.0
+
+
+def test_bootstrap_best_rules_equals_running_each_side_separately():
+    """One shared resample loop, two answers, identical to two separate runs."""
+    df = two_signal_frame()
+    cps = cb.cutpoints_for_rule(df, [A, B, C], TARGET, "youden")
+    kw = dict(n_boot=60, seed=20260801)
+
+    together = cb.bootstrap_best_rules(
+        df, cps, TARGET,
+        sides={"single": ("single",), "combo": ("and", "or", "count")}, **kw)
+    apart = {
+        "single": cb.bootstrap_best_rule(df, cps, TARGET, kinds=("single",), **kw),
+        "combo": cb.bootstrap_best_rule(df, cps, TARGET,
+                                        kinds=("and", "or", "count"), **kw),
+    }
+
+    assert set(together) == set(apart)
+    for name in apart:
+        assert together[name]["best_rule"] == apart[name]["best_rule"]
+        assert together[name]["n_bootstrap"] == apart[name]["n_bootstrap"]
+        for key in ("optimism", "J_apparent", "J_corrected", "winner_stability"):
+            assert together[name][key] == pytest.approx(apart[name][key],
+                                                        rel=0, abs=1e-12)
+
+
+def test_bootstrap_best_rules_degrades_on_an_unknown_kind():
+    df = two_signal_frame()
+    cps = cb.cutpoints_for_rule(df, [A, B], TARGET, "youden")
+    out = cb.bootstrap_best_rules(df, cps, TARGET,
+                                  sides={"nope": ("nope",)}, n_boot=5, seed=1)
+    assert out["nope"]["best_rule"] == ""
+    assert np.isnan(out["nope"]["optimism"])

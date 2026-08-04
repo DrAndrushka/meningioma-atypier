@@ -503,26 +503,31 @@ def selection_correction(
     recorded in ``CHANGES.md``: it reported a gain of +0.008 that was really
     +0.050, because choosing the best of the singles costs almost exactly as
     much as choosing the best of the combinations.
+
+    Both sides come out of one resample loop. They always used the same seed,
+    so they were already visiting the same resamples; the second run was only
+    re-scoring the same menu to look at a different part of it.
     """
-    sides = [
-        ("best single", ("single",)),
-        ("best combination", ("and", "or", "count")),
-    ]
-    rows: list[dict] = []
-    for label, kinds in sides:
-        result = cb.bootstrap_best_rule(
-            df, markers, target, n_boot=n_boot, seed=seed,
-            max_size=max_size, kinds=kinds,
-        )
-        rows.append({
+    sides = {
+        "best single": ("single",),
+        "best combination": ("and", "or", "count"),
+    }
+    results = cb.bootstrap_best_rules(
+        df, markers, target, sides=sides, n_boot=n_boot, seed=seed,
+        max_size=max_size,
+    )
+    rows = [
+        {
             "side": label,
-            "best_rule": result.get("best_rule", ""),
-            "J_apparent": result.get("J_apparent", np.nan),
-            "optimism": result.get("optimism", np.nan),
-            "J_corrected": result.get("J_corrected", np.nan),
-            "winner_stability": result.get("winner_stability", np.nan),
-            "n_bootstrap": result.get("n_bootstrap", 0),
-        })
+            "best_rule": results[label].get("best_rule", ""),
+            "J_apparent": results[label].get("J_apparent", np.nan),
+            "optimism": results[label].get("optimism", np.nan),
+            "J_corrected": results[label].get("J_corrected", np.nan),
+            "winner_stability": results[label].get("winner_stability", np.nan),
+            "n_bootstrap": results[label].get("n_bootstrap", 0),
+        }
+        for label in sides
+    ]
     out = pd.DataFrame(rows)
     gain = float(out.loc[1, "J_corrected"] - out.loc[0, "J_corrected"])
     gain_apparent = float(out.loc[1, "J_apparent"] - out.loc[0, "J_apparent"])
