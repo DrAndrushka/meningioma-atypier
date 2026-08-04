@@ -947,13 +947,13 @@ def run_marker_panel(
     aim-2 comparison uses the shared set, because a Youden J compared across
     two different groups of patients is not a comparison.
 
-    Two bootstrap budgets on purpose too. ``n_boot`` buys the two corrections on
-    the shared set — run once each, so 500 resamples costs about four minutes.
-    ``draw_n_boot`` buys the one inside :func:`imputation_stability`, which runs
-    **per MICE draw**: at twenty draws, forwarding a shared-set budget of 500
-    turns a four-minute correction into an eighty-five-minute one for a
-    stability check whose answer is a reproduction rate. They are separate
-    parameters because they buy different things.
+    Two bootstrap budgets on purpose too. ``n_boot`` buys the two corrections
+    on the shared set, run once each; ``draw_n_boot`` buys the one inside
+    :func:`imputation_stability`, which runs **per MICE draw** — twenty times
+    over. They stayed separate parameters after the menu scoring moved to
+    :mod:`rule_matrix`, because they still buy different things: the shared-set
+    correction is a number the report prints, and the per-draw one only has to
+    settle a reproduction rate.
 
     Nothing here renders. ``report.py`` reads what this writes.
     """

@@ -9,6 +9,33 @@ The report is regenerated from the notebook; nothing in
 
 ---
 
+## 2026-08-04 — §04.5 marker panel: same numbers, 14 seconds instead of 102 minutes
+
+**No number moved.** The seed (`20260801`), both bootstrap budgets (500 on the
+shared set, 200 per draw) and all 20 MICE draws are unchanged. This is a speed
+change only.
+
+The selection-optimism bootstrap was rebuilding the entire 650-rule menu on
+every resample — a Wilson interval, a χ² and an odds ratio for each rule — and
+then reading one column of it, `youden_J`. That column now comes from
+`heavy_machinery/threshold_phase/rule_matrix.py`, which scores the same menu in
+the same order out of two boolean matrices, and the two sides of the correction
+share one resample loop instead of independently drawing the identical
+resamples.
+
+Checked, not assumed. The pre-change full-budget run is preserved in
+`output/panel/baseline_2026-08-04/`, and `scripts/check_panel_against_baseline.py`
+reproduces all thirteen CSVs byte-for-byte. `test_combinations.py` additionally
+pins the pre-change bootstrap output to twelve decimal places.
+
+| What | Was | Now |
+|---|---|---|
+| One 650-rule menu | 614 ms | 1.5 ms |
+| Shared-set correction (2 × 500 resamples) | 9.0 min | 1.3 s |
+| §04.5 end to end | 102 min | **13.9 s** |
+
+---
+
 ## Numbers that moved
 
 | What | Was | Now | Why |
