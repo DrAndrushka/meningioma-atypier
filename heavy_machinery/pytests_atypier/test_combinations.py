@@ -355,3 +355,74 @@ def test_count_score_figure_builds():
     fig = cb.count_score_figure(counts, cutpoints=cps, prevalence=0.3)
     assert fig.get_axes()
     plt.close(fig)
+
+
+# --------------------------------------------------------------------------
+# Characterization: these numbers came out of the pandas implementation on
+# 2026-08-04, before the numpy scorer replaced it. They are not a claim about
+# what is statistically right — they are a tripwire. If the scorer is not
+# bit-for-bit equivalent, one of them moves.
+# --------------------------------------------------------------------------
+GOLDEN_BOOT = {
+    None: {
+        "optimism": 0.0046525807268937265,
+        "n_bootstrap": 50,
+        "best_rule": "≥ 2 of 3 criteria",
+        "J_apparent": 0.6254960317460316,
+        "J_corrected": 0.620843451019138,
+        "winner_stability": 1.0,
+    },
+    ("single",): {
+        "optimism": 0.038835126255743285,
+        "n_bootstrap": 50,
+        "best_rule": "Metric B ≥ 0.397",
+        "J_apparent": 0.4618055555555556,
+        "J_corrected": 0.4229704292998123,
+        "winner_stability": 0.58,
+    },
+    ("and", "or", "count"): {
+        "optimism": 0.0046525807268937265,
+        "n_bootstrap": 50,
+        "best_rule": "≥ 2 of 3 criteria",
+        "J_apparent": 0.6254960317460316,
+        "J_corrected": 0.620843451019138,
+        "winner_stability": 1.0,
+    },
+}
+
+
+@pytest.mark.parametrize("kinds", list(GOLDEN_BOOT))
+def test_bootstrap_reproduces_the_recorded_numbers(kinds):
+    df = two_signal_frame()
+    cps = cb.cutpoints_for_rule(df, [A, B, C], TARGET, "youden")
+    assert [cp.label for cp in cps] == [
+        "Metric A ≥ 0.933", "Metric B ≥ 0.397", "Metric C ≤ -0.498",
+    ]
+    out = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=50, seed=20260801,
+                                 kinds=kinds)
+    want = GOLDEN_BOOT[kinds]
+    assert out["best_rule"] == want["best_rule"]
+    assert out["n_bootstrap"] == want["n_bootstrap"]
+    for key in ("optimism", "J_apparent", "J_corrected", "winner_stability"):
+        assert out[key] == pytest.approx(want[key], rel=0, abs=1e-12)
+
+
+def test_bootstrap_matches_the_menu_on_a_frame_with_missing_outcomes():
+    """n is len(df): rows with no outcome are resampled, then dropped by the score."""
+    rng = np.random.default_rng(21)
+    n = 300
+    y = rng.binomial(1, 0.35, n).astype(bool)
+    df = pd.DataFrame({
+        "a": rng.normal(size=n) + y * 1.1,
+        "b": rng.normal(size=n) + y * 0.9,
+        TARGET: pd.array(y, dtype="boolean"),
+    })
+    df.loc[rng.random(n) < 0.2, "a"] = np.nan
+    df.loc[rng.random(n) < 0.1, TARGET] = pd.NA
+    cps = cb.cutpoints_for_rule(df.dropna(subset=[TARGET]), [A, B], TARGET, "youden")
+
+    out = cb.bootstrap_best_rule(df, cps, TARGET, n_boot=30, seed=5)
+    menu = cb.full_rule_menu(df, cps, TARGET)
+    apparent = menu.loc[menu["youden_J"].idxmax()]
+    assert out["best_rule"] == apparent["rule_label"]
+    assert out["J_apparent"] == pytest.approx(float(apparent["youden_J"]))
