@@ -9,6 +9,57 @@ The report is regenerated from the notebook; nothing in
 
 ---
 
+## 2026-08-04 — modelling notebook cell cleanup: two model names moved, nothing else
+
+**One text change, no number moved.** The modelling notebook's code cells now
+hold only inputs, function calls and comments — the helper function and the two
+dict comprehensions that used to sit in the §04.5 cell live in
+`modelling_phase/marker_panel.py`, and the §01 cell's `if`/`else` on the
+imputation method lives in `cleaning_phase/dataset_handoff.py`.
+
+Moving that code exposed a bug in it. The panel matched a model artifact
+filename to the variant that produced it by stripping `_model` and the target
+prefix with `str.replace`:
+
+```python
+name.replace("_model", "").replace(f"{target}_", "")
+```
+
+`str.replace` strips **every** occurrence, not just the trailing one, so the
+artifact stem `high_grade_experimental_model_1_model` collapsed to
+`experimental_1` and the variant id `experimental_model_1` collapsed to the
+same thing. The two sides met only because both were mangled identically — a
+model id carrying `_model` anywhere else would have mismatched silently and
+dropped its row from the comparison table.
+
+`panel_key` now delegates to `inferential._artifact_model_id`, which strips
+`_model` only as a suffix. The keys are what `_model_label` prints, so two rows
+in the panel's model comparison table are renamed:
+
+| File | Column | Before | After |
+|---|---|---|---|
+| `panel/tables/10_model_vs_single.csv` | `model` | `experimental_1` / `experimental_2` | `experimental_model_1` / `experimental_model_2` |
+| `panel/tables/13_model_reading_view.csv` | `Model` | `Experimental 1` / `Experimental 2` | `Experimental model 1` / `Experimental model 2` |
+| `report/report.html` | model comparison table | the same two labels | the same two labels |
+
+This makes the table agree with the figure captions, which already read
+*Experimental model 1* because they are built from the variant id directly.
+
+**Everything else is byte-identical.** Verified against a pre-change copy of
+`output/`: all 13 panel CSVs, every EDA and inferential table, and all 75 SVGs
+match once matplotlib's `<dc:date>` stamp and its per-process random element ids
+are normalised away — every plotted coordinate and every text label is
+unchanged, including the 7,739 numbers in the EDA association heatmap. In
+`report.html`, exactly two non-image text nodes differ, and they are the two
+renamed cells.
+
+Also fixed in passing: `load_modelling_handoff` now reports the cohort size and
+imputation method itself, which would have made `meningioma-thresholder.ipynb`
+print those lines twice — with a `§04` section reference that is wrong for that
+notebook. Its call site opts out with `verbose=False`.
+
+---
+
 ## 2026-08-04 — §04.5 marker panel: same numbers, 14 seconds instead of 102 minutes
 
 **No number moved.** The seed (`20260801`), both bootstrap budgets (500 on the
