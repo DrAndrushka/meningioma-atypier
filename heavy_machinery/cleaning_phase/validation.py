@@ -54,6 +54,22 @@ def load_schema_validation(
     return pa.DataFrameSchema.from_json(path)
 
 
+def validate_unimputed_handoff(
+    df: pd.DataFrame,
+    output_root: str | Path = "output",
+    ) -> pa.DataFrameSchema:
+    """Pandera-validate the unimputed EDA cohort and return the schema.
+
+    The schema is returned rather than discarded because the same object
+    validates every MICE draw in the modelling notebook's §04, immediately
+    before fitting.
+    """
+    schema_validation = load_schema_validation(Path(output_root) / "cleaning" / "schema_validation.json")
+    schema_validation(df, lazy=True)
+    print("✅ Pandera validated unimputed handoff (EDA cohort)")
+    return schema_validation
+
+
 def validate_imputed_frames(
     schema_validation: pa.DataFrameSchema,
     imputed_frames: list[pd.DataFrame],
