@@ -946,6 +946,75 @@ def _write_table(tables: dict, root: Path, stem: str, frame: pd.DataFrame) -> No
     )
 
 
+def panel_key(name: str, target: str) -> str:
+    """Artifact filenames and variant ids, reduced to the same key.
+
+    ``high_grade_experimental_model_1_model.json`` becomes
+    ``experimental_model_1``, so the variant id ``experimental_model_1`` has
+    to lose the same affixes or the two never meet. The key is also the model
+    name :func:`_model_label` prints in the report.
+
+    Delegates to :func:`inferential._artifact_model_id` rather than doing its
+    own string surgery. The notebook's version used ``str.replace``, which
+    strips ``_model`` wherever it appears rather than only as a suffix; the
+    two sides agreed only because both were mangled the same way, and an id
+    containing ``_model`` in the middle would have silently mismatched.
+    """
+    from inferential import _artifact_model_id
+
+    return _artifact_model_id(name, target)
+
+
+def load_panel_artifacts(output_root: Path | str, target: str) -> dict[str, dict]:
+    """Every fitted model artifact under ``output/inferential/model_artifacts/``.
+
+    Empty when the inferential stage has not run — a panel without models
+    still answers aim 1, so this is a missing section, not an error.
+    """
+    from model_calculator import load_model_artifact
+
+    art_dir = Path(output_root) / "inferential" / "model_artifacts"
+    if not art_dir.exists():
+        return {}
+    return {
+        panel_key(path.stem, target): load_model_artifact(path)
+        for path in sorted(art_dir.glob("*_model.json"))
+    }
+
+
+def model_links_from_variants(variants: Sequence, target: str) -> dict[str, str]:
+    """The paper each published predictor set came from, keyed like the artifacts.
+
+    So the model comparison table links out to what it is being compared
+    against. Our own experimental variants carry an empty link and get no
+    citation — inventing one is worse than leaving the cell blank.
+    """
+    from inferential import normalize_inferential_variants
+
+    if not variants:
+        return {}
+    return {
+        panel_key(var.model_id, target): var.link
+        for var in normalize_inferential_variants(variants=list(variants),
+                                                  default_target=target)
+        if var.link
+    }
+
+
+def _panel_draws(output_root: Path | str) -> list[pd.DataFrame]:
+    """The MICE draws, or none when the cohort was filled by simple imputation.
+
+    The draws are a stability check, not an input to any published number, so
+    a cohort without them loses one table rather than the whole panel.
+    """
+    from missingness_resolution import load_imputed_frames
+
+    manifest = Path(output_root) / "missingness" / "mice" / "manifest.json"
+    if not manifest.exists():
+        return []
+    return load_imputed_frames(output_root)
+
+
 def run_marker_panel(
     df: pd.DataFrame,
     *,
@@ -953,8 +1022,9 @@ def run_marker_panel(
     accuracy_table: pd.DataFrame,
     output_root: Path | str,
     exclude: Collection[str] = (),
+    variants: Sequence = (),
     artifacts: dict[str, dict] | None = None,
-    draws: Sequence[pd.DataFrame] = (),
+    draws: Sequence[pd.DataFrame] | None = None,
     model_links: Mapping[str, str] | None = None,
     n_boot: int = DEFAULT_N_BOOT,
     draw_n_boot: int = DEFAULT_DRAW_N_BOOT,
@@ -977,9 +1047,21 @@ def run_marker_panel(
     settle a reproduction rate.
 
     Nothing here renders. ``report.py`` reads what this writes.
+
+    ``artifacts``, ``draws`` and ``model_links`` left at ``None`` are found
+    rather than passed: the fitted models under ``output_root``, the MICE
+    draws beside them, and the paper links carried by ``variants``. A caller
+    that passes an empty dict or list means empty, and gets empty.
     """
     root = Path(output_root) / "panel"
     tables: dict[str, pd.DataFrame] = {}
+
+    if artifacts is None:
+        artifacts = load_panel_artifacts(output_root, target)
+    if draws is None:
+        draws = _panel_draws(output_root)
+    if model_links is None:
+        model_links = model_links_from_variants(variants, target)
 
     markers = markers_from_diagnostic_accuracy(
         accuracy_table, target=target, exclude=exclude,
@@ -1003,7 +1085,7 @@ def run_marker_panel(
             shared, kept, target, n_boot=n_boot, seed=seed, max_size=max_size,
         )
         counts = count_score(shared, kept, target)
-        models = model_vs_single(shared, artifacts or {}, target, correction,
+        models = model_vs_single(shared, artifacts, target, correction,
                                  links=model_links)
         stability = imputation_stability(list(draws), kept, target,
                                           n_boot=draw_n_boot, seed=seed)

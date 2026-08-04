@@ -4,6 +4,8 @@ from __future__ import annotations
 import matplotlib
 matplotlib.use("Agg")
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -916,3 +918,104 @@ def test_model_reading_view_keeps_an_existing_note_beside_the_link():
     note = str(mp.model_reading_view(table).iloc[0]["Note"])
     assert "one outcome class only" in note
     assert PAPER in note
+
+
+# --------------------------------------------------------------------------
+# Self-discovery: artifacts, draws and links
+# --------------------------------------------------------------------------
+def _write_artifact(art_dir, stem: str) -> None:
+    """Smallest artifact `load_model_artifact` will accept.
+
+    ``type``/``encoding`` match what the real inferential stage writes for a
+    binary feature (see ``model_calculator.py:509-511``) — not ``kind``,
+    which is the diagnostic-accuracy-table column name, so scoring
+    (``predict_from_artifact``) can actually read this artifact rather than
+    only ``load_model_artifact`` parsing it.
+    """
+    art_dir.mkdir(parents=True, exist_ok=True)
+    (art_dir / f"{stem}.json").write_text(json.dumps({
+        "model_name": stem,
+        "target": TARGET,
+        "coefficients": {"const": -1.0, "sign_0": 0.5},
+        "features": [{"name": "sign_0", "type": "binary",
+                      "encoding": {"sign_0": {"true": 1, "false": 0}}}],
+    }), encoding="utf-8")
+
+
+def test_panel_key_maps_an_artifact_stem_and_a_variant_id_onto_one_key():
+    """An artifact filename and the variant id that produced it must agree."""
+    assert mp.panel_key("high_grade_yao_et_al_2022_model", TARGET) == "yao_et_al_2022"
+    assert mp.panel_key("yao_et_al_2022", TARGET) == "yao_et_al_2022"
+    assert mp.panel_key("high_grade_experimental_model_1_model", TARGET) == "experimental_model_1"
+    assert mp.panel_key("experimental_model_1", TARGET) == "experimental_model_1"
+
+
+def test_panel_key_strips_model_only_as_a_suffix():
+    """The regression this replaced: `.replace()` stripped every occurrence.
+
+    `experimental_model_1` used to collapse to `experimental_1`, losing part
+    of the real id. It matched anyway only because the artifact stem was
+    mangled identically — an id with `_model` anywhere else would not have
+    been so lucky.
+    """
+    assert mp.panel_key("high_grade_model_free_zone_model", TARGET) == "model_free_zone"
+    assert mp.panel_key("model_free_zone", TARGET) == "model_free_zone"
+
+
+def test_load_panel_artifacts_reads_the_model_artifact_directory(tmp_output):
+    _write_artifact(tmp_output / "inferential" / "model_artifacts",
+                    f"{TARGET}_yao_et_al_2022_model")
+    artifacts = mp.load_panel_artifacts(tmp_output, TARGET)
+    assert set(artifacts) == {"yao_et_al_2022"}
+    assert artifacts["yao_et_al_2022"]["coefficients"]["const"] == -1.0
+
+
+def test_load_panel_artifacts_is_empty_when_nothing_has_been_fitted(tmp_output):
+    """A panel run before the inferential stage is not an error."""
+    assert mp.load_panel_artifacts(tmp_output, TARGET) == {}
+
+
+def test_model_links_from_variants_keeps_papers_and_drops_our_own():
+    """Experimental variants carry an empty link and must not get a citation."""
+    variants = [
+        ("yao_et_al_2022", "Yao et al. 2022", "https://example.org/yao",
+         TARGET, ["sign_0"]),
+        ("experimental_model_1", "model 1", "", TARGET, ["sign_1"]),
+    ]
+    links = mp.model_links_from_variants(variants, TARGET)
+    assert links == {"yao_et_al_2022": "https://example.org/yao"}
+
+
+def test_run_marker_panel_finds_its_own_artifacts_and_links(tmp_output):
+    """Passing `variants` replaces the notebook's two dict comprehensions."""
+    _write_artifact(tmp_output / "inferential" / "model_artifacts",
+                    f"{TARGET}_yao_et_al_2022_model")
+    tables = mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40,
+        variants=[("yao_et_al_2022", "Yao et al. 2022",
+                   "https://example.org/yao", TARGET, ["sign_0"])],
+    )
+    models = tables["10_model_vs_single"]
+    assert set(models["model"]) == {"yao_et_al_2022"}
+    assert models["source_link"].iloc[0] == "https://example.org/yao"
+
+
+def test_run_marker_panel_still_honours_artifacts_passed_in_explicitly(tmp_output):
+    """An explicit empty dict means empty, not 'go and look'."""
+    _write_artifact(tmp_output / "inferential" / "model_artifacts",
+                    f"{TARGET}_yao_et_al_2022_model")
+    tables = mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40, artifacts={},
+    )
+    assert tables["10_model_vs_single"].empty
+
+
+def test_run_marker_panel_survives_a_cohort_with_no_mice_draws(tmp_output):
+    """Simple imputation leaves no MICE directory. That is not a crash."""
+    tables = mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40,
+    )
+    assert "11_imputation_stability" in tables
