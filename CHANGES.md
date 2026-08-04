@@ -58,6 +58,24 @@ imputation method itself, which would have made `meningioma-thresholder.ipynb`
 print those lines twice — with a `§04` section reference that is wrong for that
 notebook. Its call site opts out with `verbose=False`.
 
+**A latent trap closed while the code was open.** `load_panel_artifacts` loaded
+every `*_model.json` in `output/inferential/model_artifacts/` regardless of which
+outcome it belonged to — the notebook comprehension it replaced did the same.
+With one target that is harmless. Add a second outcome to the model lists and a
+`brain_invasion_*_model.json` would be loaded into the high-grade panel; because
+`model_vs_single` intersects every loaded model's complete-case mask into one
+shared denominator, that foreign model would quietly shrink `n_scored` for every
+published row. Artifacts are now filtered on their own `target` field. Two
+smaller ones alongside it: `panel_key` falls back to the target for the
+single-model artifact shape `{target}_model.json`, so no reading-view row can
+carry a blank `Model` cell; and `_panel_draws` guards on the `missingness/mice/`
+directory rather than the manifest inside it, so a MICE run that died between
+writing its parquets and its manifest raises instead of silently losing the
+stability table.
+
+All three are pinned by tests, as is the `Experimental model 1` label itself —
+the one string in this whole change a reader of the report actually sees.
+
 ---
 
 ## 2026-08-04 — §04.5 marker panel: same numbers, 14 seconds instead of 102 minutes
