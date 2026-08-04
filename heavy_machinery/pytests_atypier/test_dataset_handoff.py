@@ -152,3 +152,60 @@ def test_load_modelling_handoff(tmp_output, tiny_df, tiny_schema):
     assert list(df.columns) == list(tiny_df.columns)
     assert schema["age"].kind == "continuous"
     validate_schema_against_frame(df, schema)
+
+
+def _stage_simple_handoff(tmp_output, tiny_df, tiny_schema) -> None:
+    """A complete simple-imputation handoff on disk, as cleaning §16 leaves it."""
+    prepare_datasets_dir(tmp_output)
+    stage_unimputed_dataset(tiny_df, tmp_output)
+    _save_dataset_parquet(
+        tiny_df,
+        _datasets_dir(tmp_output) / SIMPLE_MODELING_DATASET_NAME,
+        context=SIMPLE_MODELING_DATASET_NAME,
+        dtype_reference=tiny_df,
+    )
+    export_schema_summary(tiny_schema, tmp_output)
+
+
+def test_load_modelling_handoff_reports_what_it_loaded(tmp_output, tiny_df, tiny_schema, capsys):
+    """The notebook used to print this itself, with an if/else on the method.
+
+    A branch in a notebook cell is a branch nobody tests. It lives here now.
+    """
+    _stage_simple_handoff(tmp_output, tiny_df, tiny_schema)
+
+    df, schema, method = load_modelling_handoff(tmp_output)
+    out = capsys.readouterr().out
+
+    assert method == "simple"
+    assert f"{len(df)} rows" in out
+    assert f"{len(schema)} schema columns" in out
+    assert "one imputed parquet" in out
+
+
+def test_load_modelling_handoff_reports_the_mice_branch(tmp_output, tiny_df, tiny_schema, capsys):
+    """MICE means the inferential stage pools draws. The reader is told which."""
+    prepare_datasets_dir(tmp_output)
+    stage_unimputed_dataset(tiny_df, tmp_output)
+    _save_dataset_parquet(
+        tiny_df,
+        _datasets_dir(tmp_output) / MICE_MODELING_DATASET_NAME,
+        context=MICE_MODELING_DATASET_NAME,
+        dtype_reference=tiny_df,
+    )
+    export_schema_summary(tiny_schema, tmp_output)
+
+    _, _, method = load_modelling_handoff(tmp_output)
+
+    assert method == "mice"
+    assert "MICE" in capsys.readouterr().out
+
+
+def test_load_modelling_handoff_can_be_quiet(tmp_output, tiny_df, tiny_schema, capsys):
+    """Callers that are not a notebook should not have to eat the printing."""
+    _stage_simple_handoff(tmp_output, tiny_df, tiny_schema)
+    capsys.readouterr()  # Clear setup output
+
+    load_modelling_handoff(tmp_output, verbose=False)
+
+    assert capsys.readouterr().out == ""
