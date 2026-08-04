@@ -426,3 +426,20 @@ def test_bootstrap_matches_the_menu_on_a_frame_with_missing_outcomes():
     apparent = menu.loc[menu["youden_J"].idxmax()]
     assert out["best_rule"] == apparent["rule_label"]
     assert out["J_apparent"] == pytest.approx(float(apparent["youden_J"]))
+
+
+def test_bootstrap_is_fast_enough_to_run_in_a_notebook():
+    """Twelve cut-points, 300 resamples. The pandas loop took about a minute."""
+    import time
+
+    rng = np.random.default_rng(3)
+    n = 300
+    y = rng.binomial(1, 0.3, n).astype(bool)
+    cols = {f"m{i}": rng.normal(size=n) + y * 0.6 for i in range(12)}
+    df = pd.DataFrame({**cols, TARGET: pd.array(y, dtype="boolean")})
+    metrics = [Metric(f"m{i}", f"Metric {i}", "u", "higher") for i in range(12)]
+    cps = cb.cutpoints_for_rule(df, metrics, TARGET, "youden")
+
+    start = time.perf_counter()
+    cb.bootstrap_best_rule(df, cps, TARGET, n_boot=300, seed=1)
+    assert time.perf_counter() - start < 10.0

@@ -40,6 +40,7 @@ from sklearn.metrics import roc_auc_score
 
 from diagnostic_accuracy import binary_diagnostic_metrics
 import plot_style as ps
+import rule_matrix as rmx
 from thresholds import (
     LITERATURE_RULE,
     Metric,
@@ -389,35 +390,22 @@ def continuous_model_benchmark(
 # --------------------------------------------------------------------------
 # Optimism of "best rule off the menu"
 # --------------------------------------------------------------------------
-def bootstrap_best_rule(
+def _bootstrap_best_rule_pandas(
     df: pd.DataFrame,
     cutpoints: Sequence[CutPoint],
     target: str,
     *,
-    criterion: str = "youden_J",
-    n_boot: int = 500,
-    seed: int = 20260801,
-    max_size: int = 2,
-    kinds: Sequence[str] | None = None,
+    criterion: str,
+    n_boot: int,
+    seed: int,
+    max_size: int,
+    kinds: Sequence[str] | None,
 ) -> dict:
-    """How much of the winning rule's advantage is having been picked here?
+    """The original menu-rebuilding loop, for criteria the matrix cannot score.
 
-    On each resample, the whole menu (singles + AND + OR + count) is rebuilt,
-    the best rule by ``criterion`` is selected, and that *same* rule is then
-    scored on the original cohort. The average gap is the optimism of the
-    selection itself — the part of the winner's performance that will not
-    survive being applied to new patients.
-
-    ``kinds`` restricts the menu the winner is chosen from, and it is what
-    makes the head-to-head comparison fair. ``kinds=("single",)`` measures the
-    optimism of picking the best of the four single criteria, which is exactly
-    the same kind of selection the combined rule is corrected for. Comparing a
-    corrected combination against an *uncorrected* single flatters the
-    combination by the whole of the single's own selection optimism.
-
-    Note this is a different correction from the per-metric one in
-    :mod:`thresholds`: that one pays for choosing a cut-point on a fixed
-    metric, this one pays for choosing which metric (or rule) to report.
+    :mod:`rule_matrix` knows one column. Anything else — an accuracy, a PPV —
+    needs the whole table on every resample. Kept rather than deleted so that
+    asking for a different criterion still answers.
     """
     rng = np.random.default_rng(seed)
     n = len(df)
@@ -465,10 +453,100 @@ def bootstrap_best_rule(
         "best_rule": best_label,
         "J_apparent": j_apparent,
         "J_corrected": j_apparent - optimism if gaps else np.nan,
+        "winner_stability": (
+            float(np.mean([w == best_label for w in winners])) if winners else np.nan
+        ),
+    }
+
+
+def bootstrap_best_rule(
+    df: pd.DataFrame,
+    cutpoints: Sequence[CutPoint],
+    target: str,
+    *,
+    criterion: str = "youden_J",
+    n_boot: int = 500,
+    seed: int = 20260801,
+    max_size: int = 2,
+    kinds: Sequence[str] | None = None,
+) -> dict:
+    """How much of the winning rule's advantage is having been picked here?
+
+    On each resample, the whole menu (singles + AND + OR + count) is rebuilt,
+    the best rule by ``criterion`` is selected, and that *same* rule is then
+    scored on the original cohort. The average gap is the optimism of the
+    selection itself — the part of the winner's performance that will not
+    survive being applied to new patients.
+
+    ``kinds`` restricts the menu the winner is chosen from, and it is what
+    makes the head-to-head comparison fair. ``kinds=("single",)`` measures the
+    optimism of picking the best of the four single criteria, which is exactly
+    the same kind of selection the combined rule is corrected for. Comparing a
+    corrected combination against an *uncorrected* single flatters the
+    combination by the whole of the single's own selection optimism.
+
+    Note this is a different correction from the per-metric one in
+    :mod:`thresholds`: that one pays for choosing a cut-point on a fixed
+    metric, this one pays for choosing which metric (or rule) to report.
+
+    The menu is scored by :mod:`rule_matrix` rather than rebuilt as a table:
+    the loop reads only ``youden_J``, and paying for a Wilson interval and a χ²
+    on six hundred rules per resample was costing about a hundred minutes a
+    run. Any other ``criterion`` still goes the long way round, because only
+    the Youden J has a matrix form here.
+    """
+    if criterion != "youden_J":
+        return _bootstrap_best_rule_pandas(
+            df, cutpoints, target, criterion=criterion, n_boot=n_boot,
+            seed=seed, max_size=max_size, kinds=kinds,
+        )
+
+    rng = np.random.default_rng(seed)
+    n = len(df)
+    matrix = rmx.rule_matrix(df, cutpoints, target, max_size=max_size)
+    wanted = (np.ones(len(matrix.labels), dtype=bool) if kinds is None
+              else np.isin(matrix.kinds, list(kinds)))
+
+    apparent = rmx.youden_j(matrix, max_size=max_size)
+    side = np.where(wanted, apparent, np.nan)
+    if not wanted.any() or np.isnan(side).all():
+        return {"optimism": np.nan, "n_bootstrap": 0,
+                "best_rule": "", "J_apparent": np.nan, "J_corrected": np.nan,
+                "winner_stability": np.nan}
+
+    best_idx = int(np.nanargmax(side))
+    best_label = matrix.labels[best_idx]
+    j_apparent = float(side[best_idx])
+
+    gaps: list[float] = []
+    winners: list[int] = []
+    for _ in range(int(n_boot)):
+        # Draw first, test second: the guard must not swallow a draw, or every
+        # later resample shifts and the numbers move.
+        take = rng.integers(0, n, n)
+        if np.count_nonzero(matrix.positive[take]) < 5:
+            continue
+        boot = np.where(wanted, rmx.youden_j(matrix, take, max_size=max_size), np.nan)
+        if np.isnan(boot).all():
+            continue
+        i_b = int(np.nanargmax(boot))
+        on_original = apparent[i_b]
+        if not np.isfinite(on_original):
+            continue
+        gaps.append(float(boot[i_b]) - float(on_original))
+        winners.append(i_b)
+
+    optimism = float(np.mean(gaps)) if gaps else np.nan
+    return {
+        "optimism": optimism,
+        "n_bootstrap": len(gaps),
+        "best_rule": best_label,
+        "J_apparent": j_apparent,
+        "J_corrected": j_apparent - optimism if gaps else np.nan,
         # How often the same rule wins. Below ~0.5 the "best combination" is a
         # coin toss between near-equivalent rules, not a finding.
         "winner_stability": (
-            float(np.mean([w == best_label for w in winners])) if winners else np.nan
+            float(np.mean([w == best_idx for w in winners])) if winners else np.nan
         ),
     }
 
