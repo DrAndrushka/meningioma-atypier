@@ -83,6 +83,7 @@ meningioma-atypier/
     │   ├── inferential.py
     │   ├── model_validation.py
     │   ├── model_calculator.py
+    │   ├── marker_panel.py         # 🔬 §04.5 marker panel — the two study aims
     │   ├── performance_plots.py    # 📈 ROC / calibration / decision curve / comparison
     │   ├── plot_style.py           # 🎨 One shared figure toolkit for the whole pipeline
     │   └── report.py
@@ -90,6 +91,7 @@ meningioma-atypier/
     │   ├── thresholds.py           # Metric, ROC table, five selection rules, bootstrap
     │   ├── risk_curves.py          # Spline risk curves — the "šķēre" analysis
     │   ├── combinations.py         # AND / OR / count rules + benchmarks
+    │   ├── rule_matrix.py          # ⚡ The same rule menu as boolean arrays — for the bootstrap
     │   ├── stability.py            # All three re-derived across the MICE draws
     │   ├── artifacts.py            # output/thresholds/ writer + manifest
     │   ├── study.py                # methods facts: read from cleaning, or asked of you
@@ -266,6 +268,8 @@ A steepest-rise point is only reported as a threshold when it passes two tests: 
 
 **3. Do several cut-points together beat one?** (`combinations.py`) — cut-points are **frozen first**, then only the way of joining them varies: AND, OR, and a count score ("how many of the *k* criteria are met"). Missing flags follow Kleene logic, so `False AND missing` resolves to `False`. Three benchmarks must be cleared before an improvement is claimed: the best single cut-point, a **logistic model on the uncut continuous metrics**, and the **selection optimism** of picking the winner off a menu — reported with a `winner_stability` figure, since a "best combination" that wins under half the resamples is a coin toss rather than a finding.
 
+That optimism costs a menu rebuild per resample, and the menu is large — 25 markers make 650 candidate rules. `rule_matrix.py` scores it from two boolean arrays (`present`, `observed`) instead of a pandas table, because the loop reads one column, `youden_J`, and the Wilson intervals and χ² around it were computed and discarded. Same order, same Kleene logic, same numbers to the last bit; `full_rule_menu` still builds the full table for the report. Both sides of the correction share one resample loop — they always used the same seed, so they were drawing identical resamples twice. §04.5 went from 102 minutes to 14 seconds this way, with all thirteen output CSVs byte-for-byte unchanged.
+
 `threshold_report.py` assembles `output/thresholds/threshold_report.html` from those artifacts — no refitting, so the document and the CSVs can never disagree. It is deliberately short and written for a radiologist rather than a statistician: **seven questions**, each with a two-sentence method note, one figure, one table and one answer templated from the numbers. Detail figures sit behind folds; **§8 is a copy-paste abstract block**. **§9 is the methods section** — `study.py` reads the WHO edition, the inclusion flow and every derived measurement's source back out of `output/cleaning/`, so they cannot drift from what the code did, and lists the four acquisition facts that are not in any file (histology blinding, DWI b-values, ADC ROI, volumetry) as open questions until `STUDY_FACTS` in the notebook answers them. Regenerate any time with `python heavy_machinery/threshold_phase/threshold_report.py --output-root output`.
 
 All three are re-derived on each of the *m* MICE draws (`stability.py`). Two uncertainties then sit side by side: the bootstrap covers sampling noise, the across-draw spread covers the missing data. ⚠️ The across-draw spread is **between-imputation variance only, not Rubin pooling** — a cut-point chosen by maximising J has neither a normal sampling distribution nor a within-imputation variance to combine, so it is a stability check and must never be quoted as a confidence interval.
@@ -432,6 +436,7 @@ cd heavy_machinery && python -m pytest   # from library folder
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
 - **Multivariable section:** a **model-comparison figure** at the top of each target (all variants ranked on the same cohort), then nested 📚 Literature-based models and 🧪 Experimental model dropdowns; per variant, a forest plot, VIF diagnostics, and a 📈 **Model performance** dropdown holding its ROC, calibration, and decision curve
+- **Marker panel section** (§04.5) — which MRI signs argue hardest for high grade, and whether a combination beats any single one. In *Against the multivariable models*, each published predictor set links out to the paper it came from; our own experimental variants show an empty cell rather than an invented citation
 - **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
 - **Interpretation dropdowns** per EDA target and per inferential model variant
@@ -477,6 +482,7 @@ After running modelling §06, Streamlit JSON artifacts live under `output/infere
 
 | Commit | What landed |
 |--------|-------------|
+| `fe01d1b` · `1006fd5` | **§04.5 marker panel: 102 minutes → 14 seconds**, with all thirteen output CSVs byte-for-byte unchanged. The selection-optimism bootstrap rebuilt a 650-rule pandas table per resample — Wilson intervals, χ² and an odds ratio per rule — and read one column of it. New `threshold_phase/rule_matrix.py` scores that column from boolean arrays instead, and both sides of the correction now share one resample loop (they always used the same seed, so they were drawing identical resamples twice). Characterization tests pin the pre-change numbers to twelve decimals. Also: each published model in the panel's comparison table now links to its paper. |
 | `4184448` | **Model performance figures** — every model variant now gets a ROC curve, a calibration plot (does a predicted 30% mean 30%?), and a decision curve (is acting on it better than treating everyone or no one?), plus one **model-comparison** figure per outcome ranking all variants on the same cohort. All of it appears in the HTML report under 📈 *Model performance*; previously these numbers existed only inside the Streamlit calculator. New module: `modelling_phase/performance_plots.py`. |
 | `4184448` | **Forest plots reworked** — colour now shows direction (raises vs lowers the odds) instead of a pass/fail significance split; rows sort strongest-first so variants are comparable; rescaled predictors say *per 1 SD* so their odds ratio is not misread as per-unit; the heading carries patients, events, and the sample-size check. |
 | `4e237c9` · `4184448` | **DDA + EDA figures rebuilt for publication** — percentage bars carry their counts and confidence intervals; distributions show every patient alongside the histogram; overlapping translucent histograms replaced with side-by-side distributions that cannot hide one another; trend lines are flexible rather than forced straight; EDA figures print their own test result; empty months are no longer dropped from timelines; category names read as English. Shared toolkit lives in `plot_style.py`. |
