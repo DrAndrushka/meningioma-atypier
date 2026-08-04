@@ -28,7 +28,7 @@ import combinations as cb
 import plot_style as ps
 from cleaning import format_table_for_csv
 from diagnostic_accuracy import binary_diagnostic_metrics
-from model_calculator import predict_from_artifact
+from model_calculator import load_model_artifact, predict_from_artifact
 from thresholds import format_pct_ci
 
 _Z95 = 1.959963984540054
@@ -959,10 +959,16 @@ def panel_key(name: str, target: str) -> str:
     strips ``_model`` wherever it appears rather than only as a suffix; the
     two sides agreed only because both were mangled the same way, and an id
     containing ``_model`` in the middle would have silently mismatched.
+
+    ``_artifact_model_id`` deliberately returns ``""`` for the single-model
+    artifact shape ``{target}_model.json`` — there is no model id to strip
+    off, only the target. Falling back to ``target`` here means that shape
+    still gets a real key instead of an empty one, so a reading-view row
+    built from it carries a ``Model`` cell rather than a blank.
     """
     from inferential import _artifact_model_id
 
-    return _artifact_model_id(name, target)
+    return _artifact_model_id(name, target) or target
 
 
 def load_panel_artifacts(output_root: Path | str, target: str) -> dict[str, dict]:
@@ -970,16 +976,26 @@ def load_panel_artifacts(output_root: Path | str, target: str) -> dict[str, dict
 
     Empty when the inferential stage has not run — a panel without models
     still answers aim 1, so this is a missing section, not an error.
-    """
-    from model_calculator import load_model_artifact
 
+    Filtered on each artifact's own ``target`` field, not just its filename.
+    The glob below matches every ``*_model.json`` in the directory regardless
+    of target; without this filter, a second outcome added to the notebook's
+    model lists would write e.g. ``brain_invasion_xyz_model.json`` next to
+    these, and it would be loaded here, keyed by filename, and scored against
+    the wrong target. Worse, :func:`model_vs_single` intersects every loaded
+    model's complete-case mask into one shared denominator, so a foreign
+    model would quietly shrink ``n_scored`` for every row in the table.
+    """
     art_dir = Path(output_root) / "inferential" / "model_artifacts"
     if not art_dir.exists():
         return {}
-    return {
-        panel_key(path.stem, target): load_model_artifact(path)
-        for path in sorted(art_dir.glob("*_model.json"))
-    }
+    out: dict[str, dict] = {}
+    for path in sorted(art_dir.glob("*_model.json")):
+        artifact = load_model_artifact(path)
+        if str(artifact.get("target")) != str(target):
+            continue
+        out[panel_key(path.stem, target)] = artifact
+    return out
 
 
 def model_links_from_variants(variants: Sequence, target: str) -> dict[str, str]:
@@ -1006,11 +1022,22 @@ def _panel_draws(output_root: Path | str) -> list[pd.DataFrame]:
 
     The draws are a stability check, not an input to any published number, so
     a cohort without them loses one table rather than the whole panel.
+
+    Guards on the ``missingness/mice/`` directory existing, not on the
+    manifest inside it. A simple-imputation cohort has no such directory at
+    all, so it still returns ``[]`` here — no error, one missing table. But a
+    MICE run that crashed after writing its parquets and before its manifest
+    leaves the directory present and broken, and that distinction matters: it
+    used to be swallowed by checking for the manifest directly, which turned
+    a loud, useful ``FileNotFoundError`` from :func:`load_imputed_frames` into
+    a silently empty stability table. Checking the directory instead lets
+    that error surface, because a half-written run is a real failure worth
+    raising, not a cohort shape worth handling quietly.
     """
     from missingness_resolution import load_imputed_frames
 
-    manifest = Path(output_root) / "missingness" / "mice" / "manifest.json"
-    if not manifest.exists():
+    mice_dir = Path(output_root) / "missingness" / "mice"
+    if not mice_dir.exists():
         return []
     return load_imputed_frames(output_root)
 

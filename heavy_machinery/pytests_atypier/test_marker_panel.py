@@ -923,7 +923,7 @@ def test_model_reading_view_keeps_an_existing_note_beside_the_link():
 # --------------------------------------------------------------------------
 # Self-discovery: artifacts, draws and links
 # --------------------------------------------------------------------------
-def _write_artifact(art_dir, stem: str) -> None:
+def _write_artifact(art_dir, stem: str, *, target: str = TARGET) -> None:
     """Smallest artifact `load_model_artifact` will accept.
 
     ``type``/``encoding`` match what the real inferential stage writes for a
@@ -931,11 +931,15 @@ def _write_artifact(art_dir, stem: str) -> None:
     which is the diagnostic-accuracy-table column name, so scoring
     (``predict_from_artifact``) can actually read this artifact rather than
     only ``load_model_artifact`` parsing it.
+
+    ``target`` defaults to the module ``TARGET`` but can be overridden to
+    write an artifact belonging to a different outcome, for testing that
+    ``load_panel_artifacts`` filters on it.
     """
     art_dir.mkdir(parents=True, exist_ok=True)
     (art_dir / f"{stem}.json").write_text(json.dumps({
         "model_name": stem,
-        "target": TARGET,
+        "target": target,
         "coefficients": {"const": -1.0, "sign_0": 0.5},
         "features": [{"name": "sign_0", "type": "binary",
                       "encoding": {"sign_0": {"true": 1, "false": 0}}}],
@@ -962,6 +966,18 @@ def test_panel_key_strips_model_only_as_a_suffix():
     assert mp.panel_key("model_free_zone", TARGET) == "model_free_zone"
 
 
+def test_panel_key_falls_back_to_the_target_for_a_single_model_artifact():
+    """``{target}_model.json`` has no model id — only the target — to strip out.
+
+    ``_artifact_model_id`` returns ``""`` for that shape, which would give a
+    reading-view row a blank ``Model`` cell. ``panel_key`` has to fall back to
+    the target so the artifact stem and the variant id (also just the target,
+    for a single-model cohort) still agree on one key.
+    """
+    assert mp.panel_key(f"{TARGET}_model", TARGET) == TARGET
+    assert mp.panel_key(TARGET, TARGET) == TARGET
+
+
 def test_load_panel_artifacts_reads_the_model_artifact_directory(tmp_output):
     _write_artifact(tmp_output / "inferential" / "model_artifacts",
                     f"{TARGET}_yao_et_al_2022_model")
@@ -975,6 +991,24 @@ def test_load_panel_artifacts_is_empty_when_nothing_has_been_fitted(tmp_output):
     assert mp.load_panel_artifacts(tmp_output, TARGET) == {}
 
 
+def test_load_panel_artifacts_skips_a_model_fitted_for_another_outcome(tmp_output):
+    """A foreign model must not enter this target's panel.
+
+    ``model_vs_single`` intersects every loaded model's complete-case mask
+    into ONE shared denominator, so a ``brain_invasion`` artifact sitting in
+    the same ``model_artifacts/`` directory would silently shrink
+    ``n_scored`` for every row this panel publishes — even though it has
+    nothing to do with ``high_grade``. Only the artifact whose own
+    ``target`` field matches should come back.
+    """
+    art_dir = tmp_output / "inferential" / "model_artifacts"
+    _write_artifact(art_dir, f"{TARGET}_yao_et_al_2022_model", target=TARGET)
+    _write_artifact(art_dir, "brain_invasion_other_model", target="brain_invasion")
+
+    artifacts = mp.load_panel_artifacts(tmp_output, TARGET)
+    assert set(artifacts) == {"yao_et_al_2022"}
+
+
 def test_model_links_from_variants_keeps_papers_and_drops_our_own():
     """Experimental variants carry an empty link and must not get a citation."""
     variants = [
@@ -984,6 +1018,27 @@ def test_model_links_from_variants_keeps_papers_and_drops_our_own():
     ]
     links = mp.model_links_from_variants(variants, TARGET)
     assert links == {"yao_et_al_2022": "https://example.org/yao"}
+
+
+def test_panel_draws_is_empty_when_there_is_no_mice_directory_at_all(tmp_output):
+    """Simple imputation never writes ``missingness/mice/``. That is one
+    missing table, not an error — the cohort just was not run through MICE.
+    """
+    assert mp._panel_draws(tmp_output) == []
+
+
+def test_panel_draws_raises_on_a_mice_directory_without_a_manifest(tmp_output):
+    """A half-written MICE run must fail loudly, not vanish into an empty table.
+
+    Guarding on the directory rather than the manifest inside it means a run
+    that crashed after writing its parquet files (or crashed before writing
+    anything) but left the directory behind surfaces
+    ``load_imputed_frames``'s own ``FileNotFoundError`` instead of being
+    read as "no MICE was done here" and quietly losing the stability check.
+    """
+    (tmp_output / "missingness" / "mice").mkdir(parents=True)
+    with pytest.raises(FileNotFoundError):
+        mp._panel_draws(tmp_output)
 
 
 def test_run_marker_panel_finds_its_own_artifacts_and_links(tmp_output):
@@ -1012,10 +1067,42 @@ def test_run_marker_panel_still_honours_artifacts_passed_in_explicitly(tmp_outpu
     assert tables["10_model_vs_single"].empty
 
 
+def test_run_marker_panel_labels_an_experimental_variant_for_the_report(tmp_output):
+    """The whole visible payoff of this branch: the model comparison table
+    reads ``Experimental model 1``, not ``Experimental 1``.
+
+    The key that ties the artifact to the variant (``experimental_model_1``)
+    is a machine id and stays that way in ``10_model_vs_single``. The reading
+    view is where it becomes the words a reader — or the research report —
+    actually sees, so that is the assertion that matters here.
+    """
+    _write_artifact(tmp_output / "inferential" / "model_artifacts",
+                    f"{TARGET}_experimental_model_1_model")
+    tables = mp.run_marker_panel(
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
+        output_root=tmp_output, n_boot=40,
+        variants=[("experimental_model_1", "Experimental model 1", "",
+                   TARGET, ["sign_0"])],
+    )
+    assert "experimental_model_1" in set(tables["10_model_vs_single"]["model"])
+    assert "Experimental model 1" in set(tables["13_model_reading_view"]["Model"])
+
+
 def test_run_marker_panel_survives_a_cohort_with_no_mice_draws(tmp_output):
-    """Simple imputation leaves no MICE directory. That is not a crash."""
+    """Simple imputation leaves no MICE directory. That is not a crash — and
+    the stability table says exactly why it is empty rather than just
+    happening to have zero rows for some other reason.
+
+    ``imputation_stability([], ...)`` returns one row — item ``"Draws"``,
+    value ``0`` — not an empty frame, so the meaningful check is on that row,
+    not on frame emptiness.
+    """
     tables = mp.run_marker_panel(
         count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
         output_root=tmp_output, n_boot=40,
     )
-    assert "11_imputation_stability" in tables
+    stability = tables["11_imputation_stability"]
+    assert len(stability) == 1
+    row = stability.iloc[0]
+    assert row["item"] == "Draws"
+    assert row["value"] == 0
