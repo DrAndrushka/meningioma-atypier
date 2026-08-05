@@ -131,13 +131,27 @@ def validate_schema_against_frame(
 
 def load_modelling_handoff(
     output_root: Path | str = "output",
+    *,
+    verbose: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, ColSpec], str]:
-    """Load unimputed cohort, committed schema, and imputation method for modelling."""
+    """Load unimputed cohort, committed schema, and imputation method for modelling.
+
+    ``verbose`` reports the row/column counts and which imputation method the
+    inferential stage will therefore use — MICE pools several imputed draws,
+    simple reads one parquet. The modelling notebook used to branch on this
+    itself; a branch in a notebook cell is a branch nobody tests.
+    """
     output_root = Path(output_root)
     imputation_method = detect_imputation_method(output_root)
     df = load_unimputed_dataset(output_root)
     schema = load_schema_from_handoff(output_root)
     validate_schema_against_frame(df, schema)
+    if verbose:
+        print(f"Loaded unimputed cohort: {len(df)} rows, {len(schema)} schema columns")
+        if imputation_method == "mice":
+            print("Imputation method: MICE — inferential stage (§04) pools multiple imputed draws.")
+        else:
+            print("Imputation method: simple — inferential stage (§04) uses one imputed parquet.")
     return df, schema, imputation_method
 
 
