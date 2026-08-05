@@ -156,9 +156,19 @@ flowchart LR
 | Report | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
 | 🌐 | `app.py` | Interactive risk calculator — default `*_experimental_model_1_model.json` |
 
+### 📓 What belongs in a notebook cell
+
+The notebooks are the control panel, not the machine room. A Python code cell holds only three kinds of line:
+
+1. **Inputs you choose** — column lists, target lists, `NON_IMAGING`, `REPORT_TITLE`. Anything a different study would set differently.
+2. **Function calls** into `heavy_machinery/`.
+3. **Comments** — explanations, and commented-out alternatives kept as a scratchpad.
+
+No `def`, no `if`/`else`, no loops, no comprehensions. If a cell needs one, the logic belongs in a module, where it can be tested and where a reviewer will actually see it. This is not tidiness for its own sake: a `def` inside a cell is a function no test ever runs, and the `panel_key` bug lived in exactly such a cell for months — it stripped `_model` wherever it appeared instead of only at the end, and worked only because both sides of the comparison were mangled identically. Moving it into `marker_panel.py` is what exposed it.
+
 ### 📚 Multiple multivariable models
 
-In `meningioma-modelling.ipynb` (§03), configure three separate lists:
+In `meningioma-modelling.ipynb` (§02), configure three separate lists:
 
 | Cell | Variable | Purpose |
 |------|----------|---------|
@@ -168,7 +178,7 @@ In `meningioma-modelling.ipynb` (§03), configure three separate lists:
 
 Each variant is `(id, title, link, target, [predictors])` or an equivalent dict. Put custom models in `EXPERIMENTAL_MODEL_VARIANTS` — the report groups by list, not by id prefix.
 
-A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("analysis").print_copy_pasteable_columns(df)` in §03 to copy column names into your lists.
+A resolve cell merges literature + experimental lists, filters to columns present in `df`, and derives `INFERENTIAL_TARGETS`. Run `load("analysis").print_copy_pasteable_columns(df)` in §02 to copy column names into your lists.
 
 Each variant gets its own:
 
@@ -425,7 +435,7 @@ cd heavy_machinery && python -m pytest   # from library folder
 
 `modelling_phase/report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
-- **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §07)
+- **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §05)
 - **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
 - **Coerced value audit** dropdown in Cleaning when `output/cleaning/schema_coercion.csv` is present
 - **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
