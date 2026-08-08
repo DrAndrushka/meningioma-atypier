@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 
 from dataset_handoff import (
@@ -208,3 +209,12 @@ def test_load_modelling_handoff_can_be_quiet(tmp_output, tiny_df, tiny_schema, c
     load_modelling_handoff(tmp_output, verbose=False)
 
     assert capsys.readouterr().out == ""
+
+
+def test_midline_flag_means_midline():
+    df = pd.read_parquet("output/datasets/unimputed_df.parquet")
+    derived = (df["side"] == "midline")
+    both = df["midline"].notna() & df["side"].notna()
+    assert (df.loc[both, "midline"].astype(bool) == derived[both]).all()
+    # cohort fact: 35 midline vs 317 lateralised of 352
+    assert int(df["midline"].sum()) == 35
