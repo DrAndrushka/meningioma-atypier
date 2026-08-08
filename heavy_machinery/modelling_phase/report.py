@@ -552,6 +552,32 @@ def info_box(msg: str) -> str:
     return f'<div class="info-box">ℹ️ {_esc(msg)}</div>'
 
 
+# Plausibility floors for measured tumour size (spec 5.6): values below these
+# are almost certainly unit or transcription errors, not real surgical lesions.
+_PLAUSIBILITY_FLOORS: dict[str, tuple[float, str, str]] = {
+    "max_diameter_cm": (0.5, "cm", "maximum diameter"),
+    "tumor_volume": (0.5, "cm³", "tumour volume"),
+}
+
+
+def data_quality_warnings(dda_continuous: pd.DataFrame | None) -> list[str]:
+    """Messages for continuous minima below hard plausibility floors."""
+    if dda_continuous is None or dda_continuous.empty:
+        return []
+    msgs: list[str] = []
+    idx = dda_continuous.set_index("column")
+    for col, (floor, unit, label) in _PLAUSIBILITY_FLOORS.items():
+        if col not in idx.index:
+            continue
+        mn = pd.to_numeric(pd.Series([idx.loc[col, "min"]]), errors="coerce").iloc[0]
+        if pd.notna(mn) and mn < floor:
+            msgs.append(
+                f"Data-quality note: smallest recorded {label} is {mn:g} {unit} "
+                f"— implausibly small; verify the source records before "
+                f"publication.")
+    return msgs
+
+
 def table_to_html(df: pd.DataFrame, *, row_class_fn=None,
                   max_rows: int | None = None,
                   index: bool = False,
@@ -1608,6 +1634,9 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
                 else tbl
             )
             uni.append(table_to_html(display_tbl, row_class_fn=row_fn))
+            if tbl is art.dda_continuous:
+                for msg in data_quality_warnings(art.dda_continuous):
+                    uni.append(warning_box(msg))
 
     if art.dda_figures:
         uni.append(details_block(

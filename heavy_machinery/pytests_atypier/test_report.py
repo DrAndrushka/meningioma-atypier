@@ -1040,3 +1040,21 @@ def test_split_fdr_family_backcompat_without_column():
     view = pd.DataFrame({"predictor": ["vol"], "p": [0.01]})
     main, exploratory, n_tests = report.split_fdr_family(view)
     assert len(main) == 1 and exploratory.empty and n_tests == 1
+
+
+def test_data_quality_flags_implausible_minima():
+    import report
+    dda = pd.DataFrame({
+        "column": ["max_diameter_cm", "tumor_volume", "age"],
+        "min": [0.2, 0.3, 18.0],
+    })
+    msgs = report.data_quality_warnings(dda)
+    assert len(msgs) == 2
+    assert any("0.2" in m and "diameter" in m.lower() for m in msgs)
+    assert any("0.3" in m and "volume" in m.lower() for m in msgs)
+
+
+def test_data_quality_silent_when_plausible():
+    import report
+    dda = pd.DataFrame({"column": ["max_diameter_cm"], "min": [1.4]})
+    assert report.data_quality_warnings(dda) == []
