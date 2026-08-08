@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 import schema_infer as si
 from schema_infer import ColSpec, export_schema_summary, infer_schema, load_schema_from_handoff, print_schema_template, schema_summary

@@ -41,6 +41,7 @@ import evidence  # noqa: E402  (needs the sys.path bootstrap above)
 import study  # noqa: E402
 from report import (  # noqa: E402
     _esc,
+    _lead,
     _figure_img_html,
     _wrap_html,
     details_block,
@@ -52,6 +53,9 @@ from report import (  # noqa: E402
 
 DEFAULT_TITLE = "Thresholds for high-grade meningioma on pre-operative MRI"
 GRADE_ORDER = list(evidence.GRADES)
+
+# Byte-identical to the original rather than a second copy of it.
+_truthy = evidence._truthy
 
 # Only what a section actually renders. A table that no sentence and no column
 # depends on is not loaded — the report is the short version of the run, not a
@@ -77,6 +81,7 @@ TABLE_FILES = {
     "combination_verdict": "17_combination_verdict.csv",
     "zero_share": "34_zero_inflation.csv",
     "nonzero_curves": "36_risk_curves_nonzero_only.csv",
+    "zero_comparison": "37_zero_inflation_comparison.csv",
     "multiplicity_reading": "39_nonlinearity_multiplicity_reading_view.csv",
     "calibration": "40_calibration.csv",
     "net_benefit_summary": "44_net_benefit_summary.csv",
@@ -98,6 +103,7 @@ FIGURE_FILES = {
 FIGURE_PREFIXES = {
     "distributions": "02_distribution_",
     "risk_curves": "06_risk_curve_",
+    "nonzero_risk_curves": "36_risk_curve_nonzero_",
     "thresholds": "09_thresholds_",
 }
 
@@ -263,16 +269,6 @@ def _first(table: pd.DataFrame, column: str, default: Any = None) -> Any:
     return table[column].iloc[0]
 
 
-def _truthy(value: Any) -> bool:
-    """CSV round-tripping turns booleans into 'True'/'False' strings."""
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "yes", "1"}
-    try:
-        return bool(value) and not pd.isna(value)
-    except (TypeError, ValueError):
-        return bool(value)
-
-
 def _cell(value: Any) -> str:
     """An empty CSV cell round-trips as NaN, and str(nan) is "nan" — which is how
     "limited by nan" once reached a poster."""
@@ -302,10 +298,6 @@ def _table(df: pd.DataFrame, **kwargs: Any) -> str:
     return table_to_html(df, **kwargs)
 
 
-def _lead(text: str) -> str:
-    return f'<p class="lead">{text}</p>'
-
-
 def _answer(text: str) -> str:
     return f'<div class="answer"><p>{text}</p></div>'
 
@@ -320,9 +312,25 @@ def _figure(path: Path | None, note: str = "") -> str:
     return f'<div class="figure-card">{img}</div>{note_html}'
 
 
-def _figure_row(paths: Sequence[Path]) -> str:
-    cards = [f'<div class="figure-card">{_figure_img_html(p)}</div>'
-             for p in paths if p.exists() and _figure_img_html(p)]
+def _figure_row(paths: Sequence[Path],
+                captions: Sequence[str] | None = None) -> str:
+    """Figures side by side, each with its own caption underneath.
+
+    A caption belongs below its own panel, not in a shared block: a reader
+    lifting one figure out has to be able to take its caption with it.
+    """
+    labels = list(captions or [])
+    cards = []
+    for i, p in enumerate(paths):
+        if not p.exists():
+            continue
+        img = _figure_img_html(p)
+        if not img:
+            continue
+        caption = labels[i] if i < len(labels) else ""
+        # `.figure-card .caption` is already styled by the shared report CSS.
+        caption_html = f'<p class="caption">{caption}</p>' if caption else ""
+        cards.append(f'<div class="figure-card">{img}{caption_html}</div>')
     if not cards:
         return '<p class="muted"><em>(figures unavailable)</em></p>'
     return f'<div class="figure-grid">{"".join(cards)}</div>'
@@ -703,6 +711,19 @@ def render_risk_curves(data: ThresholdReportData, facts: CohortFacts) -> str:
                          f"disappears when only patients with some edema are used — so that "
                          f"knee is mostly edema present versus absent, not a magnitude.")
 
+    # The same curves with the zeros dropped, kept next to the caveat that
+    # sends the reader looking for them.
+    nonzero_figs = data.figure_groups.get("nonzero_risk_curves", [])
+    comparison = data.table("zero_comparison")
+    if "Metric" in comparison.columns:
+        comparison = comparison[["Metric"] + [c for c in comparison.columns
+                                              if c != "Metric"]]
+    nonzero_block = ""
+    if nonzero_figs or not comparison.empty:
+        nonzero_block = details_block(
+            "The edema curves with the zeros removed — patients who have some",
+            _figure_row(nonzero_figs) + _table(comparison))
+
     return f"""
 {_lead("Risk of grade 2–3 is fitted as a bendy line against each measurement (a restricted "
        "cubic spline — a smooth curve allowed to change slope). A likelihood-ratio test "
@@ -720,6 +741,8 @@ def render_risk_curves(data: ThresholdReportData, facts: CohortFacts) -> str:
 
 {details_block("Each curve on its own, with the slope drawn underneath",
                _figure_row(data.figure_groups.get("risk_curves", [])))}
+
+{nonzero_block}
 """
 
 
@@ -923,7 +946,11 @@ def render_stability(data: ThresholdReportData, facts: CohortFacts) -> str:
 
 {details_block("Cut-points per imputed dataset, and where each threshold landed",
                _table(data.table("stability_reading"))
-               + _figure(data.figure("knee_stability")))}
+               + _figure(data.figure("knee_stability"),
+                         "Shaded band: where the middle half of the imputed datasets put "
+                         "the steepest rise. Dots: every dataset that found one. A wide "
+                         "band means the location moves with the guessed values; an empty "
+                         "panel means no dataset found a bend to place."))}
 """
 
 
@@ -958,20 +985,81 @@ def render_evidence(data: ThresholdReportData, facts: CohortFacts) -> str:
 # ---------------------------------------------------------------------------
 # 7 — are the predicted percentages usable
 # ---------------------------------------------------------------------------
+def _usefulness_figures(
+    data: ThresholdReportData, facts: CohortFacts,
+) -> tuple[list[Path], list[str]]:
+    """The two section-7 panels with the captions a journal would expect.
+
+    Everything the old panel drew on itself — what the shading meant, which
+    line was which, the cohort rate — is said here instead, because a caption
+    survives typesetting and an annotation baked into an axes does not.
+    """
+    rate = ("" if not np.isfinite(facts.prevalence)
+            else f" Cohort high-grade rate {facts.prevalence:.0%}"
+                 f" (n = {facts.shared_n}).")
+    captions = {
+        "calibration": (
+            "Figure X. Calibration of predicted risk against observed "
+            "high-grade rate. Points are equal-count bins with 95% confidence "
+            "intervals; the diagonal is perfect calibration, and points below "
+            "it mean the model promised more risk than the patients delivered."
+        ),
+        "net_benefit": (
+            "Figure X. Decision curve analysis comparing net benefit of the "
+            "five-measurement model against alternative classification "
+            "strategies. Net benefit is plotted against threshold probability "
+            "— the predicted risk above which a clinician would act. Coloured "
+            "curves are the strategies compared, named in the legend; the grey "
+            "dashed line treats every patient as high grade and the grey "
+            "dotted line treats none. A strategy is worth using over the range "
+            "where its curve lies above both grey lines." + rate +
+            " Net benefit for every strategy tested, including the count-score "
+            "thresholds not plotted here, is given in the tables below."
+        ),
+    }
+    paths, labels = [], []
+    for key in ("calibration", "net_benefit"):
+        path = data.figure(key)
+        if path is not None:
+            paths.append(path)
+            labels.append(captions[key])
+    return paths, labels
+
+
 def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
     cal = data.table("calibration")
     nb = data.table("net_benefit_summary")
+
+    # Runs made before the notebook stopped exporting them still carry the
+    # modelling phase's own models. They sit on a different denominator and
+    # answer a different question, so they are dropped rather than compared.
+    if not cal.empty and "source" in cal.columns:
+        cal = cal[~cal["source"].astype(str)
+                  .str.contains("modelling phase", case=False, na=False)]
 
     cal_html, cal_text = "", ""
     if not cal.empty and "model" in cal.columns:
         uncut = cal[cal["model"].astype(str).str.contains("Uncut", case=False, na=False)]
         row = uncut.iloc[0] if not uncut.empty else cal.iloc[0]
+        # Every column the calibration table carries, apparent beside corrected:
+        # the gap between the two pairs is the optimism, and hiding it hides the
+        # only thing that separates a validated number from a self-scored one.
+        def _col(name: str) -> list:
+            return list(cal[name]) if name in cal.columns else [None] * len(cal)
+
         cal_html = _table(pd.DataFrame({
             "Model": cal["model"],
-            "Patients": cal["n_used"],
-            "Slope": [_num(x) for x in cal["slope_corrected"]],
-            "Intercept": [_signed(x, 3) for x in cal["intercept_corrected"]],
-            "Brier": [_num(x, 3) for x in cal["brier_corrected"]],
+            "Patients": _col("n_used"),
+            "Events": _col("events"),
+            "Predictors": _col("n_predictors"),
+            "Slope apparent": [_num(x) for x in _col("slope_apparent")],
+            "Slope corrected": [_num(x) for x in _col("slope_corrected")],
+            "Intercept apparent": [_signed(x, 3) for x in _col("intercept_apparent")],
+            "Intercept corrected": [_signed(x, 3) for x in _col("intercept_corrected")],
+            "Brier apparent": [_num(x, 3) for x in _col("brier_apparent")],
+            "Brier corrected": [_num(x, 3) for x in _col("brier_corrected")],
+            "Resamples": _col("n_bootstrap"),
+            "Source": _col("source"),
         }))
         cal_text = (f"Predicted percentages are close to honest: calibration slope "
                     f"{_num(row['slope_corrected'])} after correction (1.00 is perfect; "
@@ -1009,8 +1097,7 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
        "whether acting on the number does more good than harm at the risk levels a "
        "clinician would actually act on (net benefit).")}
 
-{_figure_row([p for p in (data.figure("calibration"), data.figure("net_benefit"))
-              if p is not None])}
+{_figure_row(*_usefulness_figures(data, facts))}
 
 {cal_html}
 {nb_html}
@@ -1045,6 +1132,40 @@ def _literature_agreement(data: ThresholdReportData) -> list[str]:
         out.append(f"{r['metric']} {_num(cut, 2)} ({_esc(cite)}) in our "
                    f"{_num(lo, 2)}–{_num(hi, 2)}")
     return out
+
+
+def _model_row(frame: pd.DataFrame, column: str, prefix: str) -> pd.Series | None:
+    """The Cut/Uncut row of a calibration or net-benefit table, or ``None``."""
+    if frame.empty or column not in frame.columns:
+        return None
+    hit = frame[frame[column].astype(str).str.startswith(prefix)]
+    return hit.iloc[0] if not hit.empty else None
+
+
+def _cut_vs_uncut(data: ThresholdReportData) -> str:
+    """The all-cut model beside the uncut one — what the conclusion turns on.
+
+    Silent unless both rows exist (a run predating the cut model has only one),
+    because half a comparison in an abstract is worse than none.
+    """
+    cal, nb = data.table("calibration"), data.table("net_benefit_summary")
+    cut, uncut = _model_row(cal, "model", "Cut"), _model_row(cal, "model", "Uncut")
+    if cut is None or uncut is None:
+        return ""
+    text = (f"Cutting all {_int(cut['n_predictors'])} at their thresholds and fitting them "
+            f"together calibrated no worse than leaving them uncut (corrected slope "
+            f"{_num(cut['slope_corrected'])} vs {_num(uncut['slope_corrected'])}, "
+            f"Brier {_num(cut['brier_corrected'], 3)} vs {_num(uncut['brier_corrected'], 3)}). ")
+    cut_nb = _model_row(nb, "strategy", "Cut")
+    uncut_nb = _model_row(nb, "strategy", "Uncut")
+    if cut_nb is not None and uncut_nb is not None:
+        text += (f"On decision-curve analysis the cut model beat treat-all and treat-none "
+                 f"over {_num(cut_nb['pct_of_range_beating_references'], 0)}% of threshold "
+                 f"probabilities against "
+                 f"{_num(uncut_nb['pct_of_range_beating_references'], 0)}% uncut, and was the "
+                 f"best available strategy over "
+                 f"{_num(cut_nb['pct_of_range_best_available'], 0)}% of the range. ")
+    return text
 
 
 def render_manuscript(data: ThresholdReportData, facts: CohortFacts) -> str:
@@ -1091,6 +1212,8 @@ def render_manuscript(data: ThresholdReportData, facts: CohortFacts) -> str:
                        f"probabilities ({_pct(top['beats_references_from'])}–"
                        f"{_pct(top['beats_references_to'])}). ")
 
+    compare = _cut_vs_uncut(data)
+
     return f"""
 {_lead("Written to be selected and pasted. Every number is templated from this run, so "
        "re-running the notebook rewrites this block rather than leaving it stale.")}
@@ -1111,7 +1234,8 @@ criteria fixed before the verdicts were read: non-linearity, knee interiority, d
 from the 50%-risk crossing, robustness to fitting scale, and reproducibility across
 {facts.m_draws} multiply-imputed datasets. Combination rules were compared on one
 denominator ({facts.shared_n} patients with all {v.n_metrics} measurements); calibration and net
-benefit were assessed for the uncut model.</p>
+benefit were assessed for the uncut model and for its all-cut counterpart, the same
+measurements entered as yes/no flags at their own cut-points.</p>
 
 <p><b>Results.</b> {v.count_phrase(verb=True)} non-linear risk, but graded unevenly:
 {v.grade_sentences(compact=True)}. {agreement_text}Best single criterion:
@@ -1119,14 +1243,16 @@ optimism-corrected Youden J {_num(_first(verdict, 'best_single_J_corrected'))}; 
 combination {_num(_first(verdict, 'best_rule_J_corrected'))} — a gain of
 {_num(_first(verdict, 'gain_vs_best_single'))} that held in only
 {_pct(_first(verdict, 'winner_stability'))} of resampled cohorts. The same {v.n_metrics}
-measurements uncut reached AUC {_num(_first(verdict, 'continuous_AUC_corrected'))}{slope}, beating every
-dichotomised rule. {ladder}{nb_text}</p>
+measurements uncut reached AUC {_num(_first(verdict, 'continuous_AUC_corrected'))}{slope},
+beating every AND/OR rule built from them. {ladder}{compare or nb_text}</p>
 
 <p><b>Conclusion.</b> These measurements separate meningioma grades but do not support the
 threshold language usually applied to them: the claims are graded rather than categorical,
-and the edema ones rest on presence versus absence more than on magnitude. Combining
-cut-points bought no stable improvement, and dichotomising cost more than combining gained.
-The defensible outputs are the risk curves and a count of criteria met.</p>
+and the edema ones rest on presence versus absence more than on magnitude. What cost
+accuracy was combining cut-points by rule, which bought no stable improvement; cutting every
+measurement and modelling the flags together did not, matching the uncut model on
+calibration and net benefit. The defensible outputs are the risk curves, a count of criteria
+met, and the {v.n_metrics}-flag model that count approximates.</p>
 
 <p><b>Limitations.</b> Retrospective single-centre surgical series: at
 {_pct(facts.prevalence)} high grade the predictive values do not transfer, though

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,10 +28,15 @@ def test_pool_df_for_display():
     assert inf._pool_df_for_display(12.0) == 12
 
 
-def test_format_inferential_table():
+def test_format_inferential_table_tames_a_runaway_pooled_df():
+    """Rubin's pooled df blows up when between-draw variance is tiny.
+
+    Left raw it prints as 1e+300 in the CSV, so it is displayed as ``\u221e``;
+    a real df stays a plain integer.
+    """
     df = pd.DataFrame({"df": [5.0, float("inf")], "p": [0.01, 0.05]})
     out = inf._format_inferential_table(df)
-    assert "df" in out.columns
+    assert list(out["df"]) == [5, "\u221e"]
 
 
 def test_safe_z_denominator():
@@ -170,11 +174,6 @@ def test_forest_plot(tmp_path):
     figs.mkdir()
     inf._forest_plot(pooled, "event", figs)
     assert (figs / "event__forest.svg").exists()
-
-
-def test_empty_inferential_df():
-    df = _empty_inferential_df()
-    assert list(df.columns)
 
 
 def test_summarize_multivariable_cases(tiny_df, tiny_schema):

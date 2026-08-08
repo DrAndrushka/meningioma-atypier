@@ -45,17 +45,6 @@ def build_complete_case_frame(
     return out, design_cols
 
 
-def _predict_logistic(
-    X: pd.DataFrame,
-    design_cols: list[str],
-    coefficients: dict[str, float],
-) -> np.ndarray:
-    mat = sm.add_constant(X[design_cols].astype(float), has_constant="add")
-    coef_vec = np.array([coefficients[c] for c in mat.columns], dtype=float)
-    logit = mat.values @ coef_vec
-    return 1.0 / (1.0 + np.exp(-logit))
-
-
 def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     eps = 1e-6
     p = np.clip(np.asarray(y_pred, dtype=float), eps, 1 - eps)

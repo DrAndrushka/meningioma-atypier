@@ -36,7 +36,7 @@ import statsmodels.api as sm
 from scipy.stats import chi2
 
 import plot_style as ps
-from thresholds import HIGHER, LOWER, Metric, metric_arrays, metric_auc
+from thresholds import HIGHER, Metric, metric_arrays, metric_auc
 
 # Harrell, *Regression Modeling Strategies*, Table 2.3 — knot quantiles that put
 # the knots where the data are, not where the axis is.

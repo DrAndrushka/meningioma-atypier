@@ -331,18 +331,6 @@ def build_roc_validation_figure(
     return roc_figure(validation, title="Discrimination", width=width)
 
 
-def build_calibration_validation_figure(
-    validation: dict[str, Any],
-    *,
-    compact: bool = False,
-) -> plt.Figure | None:
-    """Observed vs predicted risk — the calculator's own honesty check."""
-    from performance_plots import calibration_figure
-
-    width = _COMPACT_CHART_FIGSIZE[0] if compact else _DEFAULT_ROC_FIGSIZE[0]
-    return calibration_figure(validation, title="Calibration", width=width)
-
-
 def render_auc_validation_charts(validation: dict[str, Any]) -> None:
     """Show validation charts in two equal columns with a narrow spacer between."""
     import streamlit as st

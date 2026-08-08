@@ -9,6 +9,78 @@ The report is regenerated from the notebook; nothing in
 
 ---
 
+## 2026-08-08 — publication pass on the report tables and figures
+
+**Presentation only until the last item; no estimator changed and no number was
+recomputed.** Both notebooks need a re-run for any of it to reach the HTML.
+
+### One labeller, one precision
+
+`plot_style.prettify_label` now formats the cut-point in a threshold flag itself
+instead of echoing the column name, at three significant figures — the precision
+the threshold phase already prints on its own axes. `report._diagnostic_predictor_label`
+routes through it rather than capitalising each underscore-separated token, which
+is why the diagnostic-accuracy table alone printed `Adc Value Le0.72` while the
+marker panel printed `ADC value ≤ 0.72` from the same column. `_DIAGNOSTIC_LABELS`
+dropped from 18 entries to 7: eleven were re-spelling names the shared labeller
+already gets right, and that duplication is what let the two drift.
+
+One label was wrong, not just ugly. `sinus_invasion` was mapped to "Skull
+invasion"; it is the dural venous sinus, graded 0/1/2 in the source sheet. Note
+that `venous_sinus_invasion` is derived from it (`!= "no_invasion"`) and is the
+same finding collapsed to yes/no — the crosstab is exact — so the two must not be
+quoted as separate signs.
+
+### Categorical predictors are no longer converted behind your back
+
+`diagnostic_accuracy.py` used to invent binary contrasts from nominal columns
+(`sex` → `sex_male`, `tumor_location` → `tumor_location_non_skull_base`,
+`tumor_margin` → `tumor_margin_irregular`) and score them. Those series existed
+only inside that function, so the marker panel — which filters markers to columns
+present in the frame — dropped all three **silently**. The screen now reports the
+nominal column once, with the note *"Skipped: categorical — add a binary
+derivation in the cleaning notebook to include it"*. Adding the derivation makes
+the column real, and every section picks it up with no special-casing.
+
+### Tables
+
+`Catches` removed from the marker table. The `strength` badge column removed from
+the EDA sweep, along with the same verdict spelled out in the interpretation
+bullets: the strong/moderate/weak cutoffs were conventional anchors presented as
+a finding. Marker table restyled for submission — `Table 4.` title, `n/N (%)`
+replacing a bare count, LR+ at two decimals (at one, mass effect `1.04–1.21` and
+dural tail `0.99–1.21` both print as `1.0–1.2`, and the footnote asks the reader
+to judge significance by whether the interval crosses 1), sorted by LR+
+descending, and a footnote block carrying the sort rule, the definitions and
+every abbreviation. The diagnostic-accuracy table got the same treatment plus a
+cohort-prevalence note tied to the PPV/NPV caveat, and its AUC column is now
+labelled `AUC (binary)` — the multivariable section reports a true ROC-AUC under
+the same three letters.
+
+### Figures
+
+All figures move from the SciencePlots serif face to **Arial/Helvetica**.
+
+The LR+ forest plot gained a value column, readable log ticks (it had a single
+`10⁰` tick), a shaded band behind the markers whose interval crosses 1, and two
+annotations. The decision curve was rebuilt Vickers-style: the caller now names
+which strategies to draw via `decision_curve_figure(strategies=...)`, because
+eight near-parallel lines are unreadable at journal size; the panel carries no
+title, no shading and no inline annotation, and `_figure_row` gained caption
+support so that material sits below the image where a typesetter expects it.
+
+### Removed
+
+Three functions referenced nowhere (`preview_multivariable_cases`,
+`build_calibration_validation_figure`, `_predict_logistic`), the strength-badge
+helpers left dead by the table change, twelve unused imports, and two byte-identical
+helper copies in `threshold_report.py` now aliased to their originals. Nine tests
+whose assertions could not fail (`assert fig.axes`, `assert not log.empty`), and
+one rewritten to check the runaway pooled-df formatting it was clearly written for
+and never asserted. 628 pass.
+
+---
+
 ## 2026-08-04 — modelling notebook cell cleanup: two model names moved, nothing else
 
 **One text change, no number moved.** The modelling notebook's code cells now

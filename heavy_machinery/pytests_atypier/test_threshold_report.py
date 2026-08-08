@@ -151,6 +151,10 @@ def _defaults() -> dict[str, pd.DataFrame]:
             {"metric": "Volume", "column": "vol", "n": 211, "events": 76,
              "nonlinearity_p": 0.180, "knee_found": False},
         ]),
+        "37_zero_inflation_comparison.csv": pd.DataFrame([
+            {"Metric": "Volume", "All patients": "knee at 15.1",
+             "Patients with some": "no knee", "n": 211},
+        ]),
         "39_nonlinearity_multiplicity_reading_view.csv": pd.DataFrame([
             {"Metric": "ADC", "Non-linearity p": "= 0.009", "Holm-adjusted p": "= 0.018",
              "Holm": "survives"},

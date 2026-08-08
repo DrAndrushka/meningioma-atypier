@@ -151,7 +151,7 @@ flowchart LR
 | Diagnostic accuracy | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
 | Inferential | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot (log OR, coloured by direction), Streamlit JSON — **one block per model variant** |
 | Performance figures | `modelling_phase/performance_plots.py` | ROC, calibration, and decision curve per variant, plus one **model-comparison** figure ranking every variant on the same cohort |
-| Plotting | `modelling_phase/plot_style.py` | **One figure toolkit** for the whole pipeline: SciencePlots `science`+`nature`+`no-latex`, colour-blind-safe palette, print-column sizing, confidence intervals for percentages, reproducible point scatter, and clinician-readable labels for every axis and category |
+| Plotting | `modelling_phase/plot_style.py` | **One figure toolkit** for the whole pipeline: SciencePlots `science`+`nature`+`no-latex` overridden to Arial/Helvetica (radiology house font), colour-blind-safe palette, print-column sizing, confidence intervals for percentages, reproducible point scatter, and clinician-readable labels for every axis and category |
 | Validation | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope, plus the calibration and decision-curve data behind the figures → merged into calculator JSON |
 | Report | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
 | 🌐 | `app.py` | Interactive risk calculator — default `*_experimental_model_1_model.json` |
@@ -160,7 +160,7 @@ flowchart LR
 
 The notebooks are the control panel, not the machine room. A Python code cell holds only three kinds of line:
 
-1. **Inputs you choose** — column lists, target lists, `NON_IMAGING`, `REPORT_TITLE`. Anything a different study would set differently.
+1. **Inputs you choose** — column lists, target lists, `MARKERS_TO_EXCLUDE`, `REPORT_TITLE`. Anything a different study would set differently.
 2. **Function calls** into `heavy_machinery/`.
 3. **Comments** — explanations, and commented-out alternatives kept as a scratchpad.
 
@@ -214,9 +214,11 @@ Separate from multivariable modelling. For each binary MRI sign vs binary outcom
 - **Sensitivity** = TP / (TP + FN)
 - **Specificity** = TN / (TN + FP)
 - **PPV / NPV** with **Wilson 95% CIs**
-- **AUC** = (sensitivity + specificity) / 2 — a quick univariate summary aligned with radiology association tables (e.g. Upreti et al., *Neuroradiology* 2024), not full ROC-AUC
+- **AUC (binary)** = (sensitivity + specificity) / 2 — balanced accuracy for a yes/no sign, aligned with radiology association tables (e.g. Upreti et al., *Neuroradiology* 2024). It is **not** a ROC-AUC; the multivariable section reports a true ROC-AUC for fitted models, so the two carry different column labels wherever they appear
 
-The HTML report renders this as a collapsible **"Like in that research"** table per target.
+**Categorical predictors are skipped, not converted.** A nominal column has no single "present" level to score, so it is listed with the note *"Skipped: categorical — add a binary derivation in the cleaning notebook to include it"*. The screen used to invent contrasts of its own (`sex` → `sex_male`), which put rows in this table for columns that existed nowhere else in the pipeline — the marker panel then dropped them silently. A contrast has to be a real derivation, and then every section sees it.
+
+The HTML report renders this as a collapsible **"Like in that research"** table per target, laid out as *Table X.* with its own footnote block: sort rule, cohort prevalence with the PPV/NPV caveat, and every abbreviation spelled out, so the table stands alone if lifted into a manuscript.
 
 ### 🧩 Missing data (`cleaning_phase/missingness_resolution.py`)
 
@@ -441,7 +443,8 @@ cd heavy_machinery && python -m pytest   # from library folder
 - **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
 - **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has SVGs (grouped by the `(x, y)` pair key)
 - **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
-- **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`), colour-blind-safe palette, single SVG export path, and clinician-friendly labels for both axes and category names (no raw `snake_case` anywhere on a figure)
+- **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`) with the serif face overridden to **Arial/Helvetica**, colour-blind-safe palette, single SVG export path, and clinician-friendly labels for both axes and category names (no raw `snake_case` anywhere on a figure)
+- **`prettify_label` is the one labeller.** Every section — figure axes, the marker panel, the diagnostic-accuracy table — routes column names through it, so a threshold flag reads as `ADC value ≤ 0.72` everywhere and its cut-point prints at three significant figures, the same precision the threshold phase uses on its own axes. A second labeller is how `Adc Value Le0.72` and `ADC value ≤ 0.72` once appeared in the same report
 - **Figures that explain themselves** — sample size, group counts, and (in EDA) the test result sit above each plot, so a figure lifted into a slide deck still carries its numbers
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`

@@ -166,9 +166,14 @@ def prettify_label(name: str) -> str:
         r"(?P<base>.+?)_(?P<op>ge|gt|le|lt|eq)_?(?P<num>\d+(?:\.\d+)?)", raw,
     )
     if threshold:
+        # Three significant figures, the same as the threshold phase prints on
+        # its own axes and in its own prose. Formatting the number here rather
+        # than echoing the column name is what stops the same cut-point from
+        # reading differently in two sections of the same manuscript.
         return (
             f"{prettify_label(threshold.group('base'))} "
-            f"{_COMPARATORS[threshold.group('op')]} {threshold.group('num')}"
+            f"{_COMPARATORS[threshold.group('op')]} "
+            f"{float(threshold.group('num')):.3g}"
         )
 
     # Binned derivations ("age_bins_10") are groups of their base variable; the
@@ -890,6 +895,13 @@ def _apply_export_overrides() -> None:
         "legend.frameon": True,
         "legend.framealpha": 0.95,
         "axes.axisbelow": True,
+        # Radiology house font. SciencePlots' `nature` style sets a Times-like
+        # serif; journals in this field want Arial/Helvetica, and every figure
+        # in a submission has to match, so it is set here rather than per
+        # figure. Mathtext follows, or exponents would stay serif.
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "mathtext.fontset": "dejavusans",
     })
 
 

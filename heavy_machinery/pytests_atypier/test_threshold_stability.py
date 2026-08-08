@@ -8,6 +8,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Rectangle
 import pandas as pd
 import pytest
 
@@ -195,6 +196,35 @@ def test_knee_stability_figure_builds_even_with_no_knees(frames):
     draws["knee_found"] = False
     fig = st.knee_stability_figure(draws, METRICS)
     assert fig.get_axes()
+    # Nothing was drawn, so there is nothing to explain and no legend to show.
+    assert not fig.legends
+    plt.close(fig)
+
+
+def test_knee_stability_figure_bands_the_middle_half_of_the_draws(frames):
+    """The spread across draws needs a shaded region, not just bare dots."""
+    draws = st.draw_risk_curves(frames, METRICS, TARGET)
+    draws["knee_found"] = True
+    draws["steepest_x"] = np.linspace(5.0, 15.0, len(draws))
+    fig = st.knee_stability_figure(draws, METRICS)
+
+    spans = [p for ax in fig.get_axes() for p in ax.patches
+             if isinstance(p, Rectangle) and p.get_alpha() == 0.12]
+    assert len(spans) == len(METRICS)
+    assert {t.get_text() for t in fig.legends[0].get_texts()} == {
+        "Middle half of draws", "One imputed dataset", "Median across draws"}
+    plt.close(fig)
+
+
+def test_knee_stability_figure_omits_the_band_when_every_draw_agrees(frames):
+    """A zero-width span would paint a band over draws that never disagreed."""
+    draws = st.draw_risk_curves(frames, METRICS, TARGET)
+    draws["knee_found"] = True
+    draws["steepest_x"] = 7.0
+    fig = st.knee_stability_figure(draws, METRICS)
+
+    assert not [p for ax in fig.get_axes() for p in ax.patches
+                if isinstance(p, Rectangle) and p.get_alpha() == 0.12]
     plt.close(fig)
 
 

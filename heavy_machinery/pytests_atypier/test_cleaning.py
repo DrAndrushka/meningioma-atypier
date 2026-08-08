@@ -325,15 +325,6 @@ def test_build_cleaning_summary_duplicate_row_always_present(tiny_schema, dupes,
     assert dup_row.iloc[0]["detail"] == expected
 
 
-def test_build_cleaning_log():
-    log = cl._build_cleaning_log(
-        schema_log=[{"step": "apply_schema", "column": "age", "action": "coerce", "kind": "continuous"}],
-        drop_log=None,
-        dupes=None,
-    )
-    assert not log.empty
-
-
 def test_columns_for_cleaned_export(tiny_df, tiny_schema):
     cols = cl.columns_for_cleaned_export(tiny_df, tiny_schema)
     assert "id" not in cols

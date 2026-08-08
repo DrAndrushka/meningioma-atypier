@@ -26,7 +26,7 @@ confidence interval.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -471,6 +471,10 @@ def knee_stability_figure(
 ) -> plt.Figure:
     """Where the steepest-rise point landed in each draw, and how often it existed.
 
+    Shaded band = the middle half of the draws (25th–75th percentile), so a
+    narrow band means the draws agree on where the bend is. The dots are every
+    draw that found one, including the outliers the band deliberately excludes.
+
     An empty panel is a result: in those draws the risk curve had no interior
     steepest point at all, so there was no "šķēre" to locate.
     """
@@ -493,11 +497,17 @@ def knee_stability_figure(
 
         if len(found):
             vals = found["steepest_x"].to_numpy(dtype=float)
+            lo, hi = (float(x) for x in np.percentile(vals, [25, 75]))
+            # A degenerate span is a zero-width polygon: invisible, and it would
+            # claim a band where every draw in fact landed on the same value.
+            if hi > lo:
+                ax.axvspan(lo, hi, color=ps.PALETTE["accent"], alpha=0.12,
+                           zorder=0, label="Middle half of draws")
             ax.scatter(vals, rng.uniform(-0.2, 0.2, size=vals.size), s=15,
                        color=ps.PALETTE["accent"], alpha=0.8, edgecolors="none",
-                       zorder=4)
+                       zorder=4, label="One imputed dataset")
             ax.axvline(float(np.median(vals)), color=ps.PALETTE["accent"],
-                       linewidth=1.2, zorder=3)
+                       linewidth=1.2, zorder=3, label="Median across draws")
         else:
             ax.text(0.5, 0.5, "no interior threshold\nin any draw",
                     transform=ax.transAxes, ha="center", va="center",
@@ -518,6 +528,18 @@ def knee_stability_figure(
     for ax in axes.ravel()[len(metrics):]:
         ax.set_axis_off()
 
+    # Panels differ in what they drew — an empty one has no artists at all, and a
+    # unanimous one has no band — so the legend is pooled over every panel.
+    pooled: dict[str, Any] = {}
+    for ax in axes.ravel():
+        for handle, label in zip(*ax.get_legend_handles_labels()):
+            pooled.setdefault(label, handle)
+    if pooled:
+        fig.legend(
+            list(pooled.values()), list(pooled), loc="lower center", ncol=3,
+            frameon=False, fontsize=plt.rcParams["font.size"] * 0.72,
+            bbox_to_anchor=(0.5, -0.04),
+        )
     fig.suptitle("Is the steepest-rise point reproducible across imputations?",
                  fontsize=plt.rcParams["font.size"] * 1.05)
     return fig

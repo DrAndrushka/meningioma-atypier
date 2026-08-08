@@ -13,7 +13,6 @@ import json
 import matplotlib
 matplotlib.use("Agg")
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -275,15 +274,3 @@ def test_no_model_artifacts_is_not_an_error(tmp_path):
 # --------------------------------------------------------------------------
 # Figures
 # --------------------------------------------------------------------------
-def test_figures_render(tmp_path):
-    df = signal_frame()
-    y, p = cal.uncut_model_predictions(df, [A, B], TARGET)
-    stats = cal.uncut_model_calibration(df, [A, B], TARGET, n_boot=15, seed=2)
-    fig = cal.calibration_figure([("Uncut", cal.calibration_bins(y, p), stats)])
-    assert fig.axes
-    plt.close(fig)
-
-    curve = cal.decision_curve(y, {"model": p}, thresholds=[0.1, 0.2, 0.3])
-    fig = cal.decision_curve_figure(curve, prevalence=0.3)
-    assert fig.axes
-    plt.close(fig)

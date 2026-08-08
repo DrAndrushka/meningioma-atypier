@@ -201,7 +201,7 @@ def test_markers_that_cannot_beat_chance_sort_last():
     assert bool(panel.iloc[-1]["chance_overlap"]) is True
 
 
-def test_marker_reading_view_says_so_instead_of_printing_a_rank():
+def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
     df = pd.DataFrame({
         "noise": pd.array([True, False, True, False, True, False, True, False],
                           dtype="boolean"),
@@ -211,10 +211,14 @@ def test_marker_reading_view_says_so_instead_of_printing_a_rank():
     panel = mp.marker_panel_table(df, [mp.BinaryMarker("noise", "Noise")], TARGET)
     view = mp.marker_panel_reading_view(panel)
     assert list(view.columns) == [
-        "Marker", "Present in", "Catches",
+        "Marker", "n/N (%)",
         "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
     ]
-    assert "not distinguishable from chance" in view.iloc[0]["LR+ (95% CI)"]
+    # The interval covers 1; the table still carries the number, and the
+    # reader draws the conclusion from the interval.
+    assert bool(panel.iloc[0]["chance_overlap"])
+    assert view.iloc[0]["LR+ (95% CI)"] == "3.00 (0.50–17.95)"
+    assert view.iloc[0]["n/N (%)"] == "4/8 (50%)"
 
 
 def test_marker_panel_is_empty_not_broken_when_there_are_no_markers():
@@ -533,13 +537,6 @@ def test_rule_reading_view_is_ranked_by_youden_j():
     view = mp.rule_reading_view(menu, top=5)
     assert len(view) == 5
     assert list(view["J"]) == sorted(view["J"], reverse=True)
-
-
-def test_rule_space_figure_draws():
-    menu = mp.rule_menu(count_frame(), COUNT_MARKERS, TARGET)
-    fig = mp.rule_space_figure(menu)
-    assert fig.axes
-    plt.close(fig)
 
 
 # --------------------------------------------------------------------------

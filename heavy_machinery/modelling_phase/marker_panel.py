@@ -186,32 +186,61 @@ def marker_panel_table(
 
 
 def _format_lr(row: pd.Series) -> str:
-    """``2.8 (1.7-4.6)``, or a sentence when the interval covers 1."""
+    """``2.79 (1.68–4.63)`` — always the number, never a verdict.
+
+    An interval covering 1 is left to speak for itself. Printing a phrase in
+    place of the estimate substitutes our reading for the reader's, and a
+    journal table is expected to carry the number either way.
+
+    Two decimals, because one is not enough to tell the reader what the
+    footnote asks them to check: at one decimal, mass effect (1.04–1.21,
+    excludes 1) and dural tail (0.99–1.21, crosses it) both print as
+    ``1.1 (1.0–1.2)``.
+    """
     if pd.isna(row.get("lr_pos")):
         return "—"
-    if bool(row.get("chance_overlap")):
-        return "not distinguishable from chance"
-    text = f"{row['lr_pos']:.1f} ({row['lr_pos_lo']:.1f}–{row['lr_pos_hi']:.1f})"
+    text = f"{row['lr_pos']:.2f} ({row['lr_pos_lo']:.2f}–{row['lr_pos_hi']:.2f})"
     return text + "*" if bool(row.get("continuity_corrected")) else text
 
 
+def _format_present(row: pd.Series) -> str:
+    """``59/309 (19%)`` — the epidemiological convention, prevalence scannable."""
+    present, used = int(row["present_n"]), int(row["n_used"])
+    pct = 100.0 * present / used if used else 0.0
+    return f"{present}/{used} ({pct:.0f}%)"
+
+
 def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
-    """The aim-1 table in the columns a clinician reads."""
+    """The aim-1 table in the columns a clinician reads.
+
+    Ordered by LR+ descending — a single stated sort rule, rather than the
+    panel's own "informative first, then the rest", so the table's footnote
+    can describe the order in one line.
+    """
     if panel is None or panel.empty:
         return pd.DataFrame(columns=[
-            "Marker", "Present in", "Catches",
+            "Marker", "n/N (%)",
             "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
         ])
+    ranked = panel.sort_values("lr_pos", ascending=False, na_position="last",
+                               kind="mergesort")
     return pd.DataFrame({
-        "Marker": panel["label"],
-        "Present in": [f"{int(r['present_n'])}/{int(r['n_used'])}"
-                       for _, r in panel.iterrows()],
-        "Catches": [f"{int(r['catches'])} of {int(r['n_high_grade'])}"
-                    for _, r in panel.iterrows()],
-        "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in panel.iterrows()],
-        "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in panel.iterrows()],
-        "LR+ (95% CI)": [_format_lr(r) for _, r in panel.iterrows()],
-    })
+        "Marker": ranked["label"],
+        "n/N (%)": [_format_present(r) for _, r in ranked.iterrows()],
+        "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in ranked.iterrows()],
+        "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in ranked.iterrows()],
+        "LR+ (95% CI)": [_format_lr(r) for _, r in ranked.iterrows()],
+    }).reset_index(drop=True)
+
+
+_FOREST_BAND_COLOR = "#F1F1F1"
+_FOREST_TICKS = (0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 50.0)
+
+
+def _forest_ticks(lo: float, hi: float) -> list[float]:
+    """Round multipliers a reader can name, inside the plotted range."""
+    inside = [t for t in _FOREST_TICKS if lo <= t <= hi]
+    return inside if inside else [1.0]
 
 
 def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
@@ -219,9 +248,13 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
 
     Log scale because a likelihood ratio is a multiplier: 0.5 and 2 are the
     same distance from "says nothing", and a linear axis hides that. Markers
-    whose interval crosses the line at 1 are drawn in the neutral colour, so
-    the ones carrying no information are visible as a group rather than as a
-    ranking.
+    whose interval crosses the line at 1 are drawn in the neutral colour and
+    on a shaded band, so the ones carrying no information read as a block
+    rather than as the bottom of a ranking.
+
+    The values repeat in a right-hand column the way a journal forest plot
+    prints them: the dots carry the ranking, the column carries the number,
+    and the reader never has to leave the figure to quote one.
     """
     usable = panel[panel["lr_pos"].notna()] if len(panel) else panel
     if usable is None or usable.empty:
@@ -232,29 +265,106 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
         return fig
 
     ordered = usable.iloc[::-1]
-    y = np.arange(len(ordered), dtype=float)
+    n = len(ordered)
+    y = np.arange(n, dtype=float)
     values = ordered["lr_pos"].to_numpy(dtype=float)
+    lows = ordered["lr_pos_lo"].to_numpy(dtype=float)
+    highs = ordered["lr_pos_hi"].to_numpy(dtype=float)
     xerr = ps.errorbar_lengths(values, ordered["lr_pos_lo"], ordered["lr_pos_hi"])
-    colors = [
-        ps.PALETTE["neutral"] if bool(flag) else ps.PALETTE["high_grade"]
-        for flag in ordered["chance_overlap"]
-    ]
+    crosses = ordered["chance_overlap"].to_numpy(dtype=bool)
+    informative = ps.PALETTE["high_grade"]
+    muted = ps.PALETTE["neutral"]
 
-    height = max(2.0, 0.32 * len(ordered) + 1.0)
-    fig, ax = plt.subplots(figsize=(ps.FIG_WIDTH_MEDIUM, height))
-    ax.axvline(1.0, color=ps.PALETTE["neutral"], linewidth=0.9, linestyle="-.", zorder=1)
-    for i, color in enumerate(colors):
+    base_size = plt.rcParams["font.size"]
+    height = max(2.6, 0.34 * n + 1.5)
+    fig, (ax, tax) = plt.subplots(
+        1, 2, sharey=True,
+        gridspec_kw={"width_ratios": [3.0, 1.15], "wspace": 0.03},
+        figsize=(ps.FIG_WIDTH_DOUBLE, height),
+    )
+
+    # One band per uninformative row; neighbours merge into a single block.
+    # Only inside the plot frame — a band under the value column would float
+    # unframed, and the muted number colour already groups those rows.
+    for i in np.flatnonzero(crosses):
+        ax.axhspan(i - 0.5, i + 0.5, color=_FOREST_BAND_COLOR,
+                   linewidth=0, zorder=0)
+
+    ax.set_axisbelow(True)
+    ax.xaxis.grid(True, color="#DDDDDD", linewidth=0.5)
+    for i in range(n):
+        color = muted if crosses[i] else informative
         ax.errorbar(values[i], y[i], xerr=xerr[:, i: i + 1], fmt="o",
                     color=color, ecolor=color, elinewidth=1.1, capsize=2.5,
                     markersize=4, zorder=3)
+
     ax.set_xscale("log")
+    span_lo, span_hi = float(np.min(lows)) * 0.82, float(np.max(highs)) * 1.30
+    ax.set_xlim(span_lo, span_hi)
+    ticks = _forest_ticks(span_lo, span_hi)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([f"{t:g}×" for t in ticks])
+    ax.xaxis.set_minor_locator(plt.NullLocator())
+    ax.set_ylim(-0.7, n - 0.5 + 1.9)
     ax.set_yticks(y)
     ax.set_yticklabels(ordered["label"].astype(str))
     ax.set_xlabel("Positive likelihood ratio (log scale)")
+
+    # Headroom strip: what the line at 1 means, and how to read the top row.
+    label_y = n - 0.5 + 0.55
+    # Drawn in data coordinates so it stops short of its own label.
+    ax.plot([1.0, 1.0], [-0.7, label_y - 0.12], color="#444444",
+            linewidth=0.9, linestyle="-.", zorder=2, clip_on=False)
+    ax.text(1.0, label_y, "1× = the finding\nchanges nothing",
+            ha="center", va="bottom", fontsize=base_size * 0.74,
+            color="#444444", linespacing=1.25)
+    if not crosses[-1]:
+        ax.annotate(
+            f"{values[-1]:.1f}× more likely\nwhen this sign is present",
+            xy=(values[-1], y[-1]), xytext=(values[-1], label_y),
+            ha="center", va="bottom", fontsize=base_size * 0.74,
+            color=informative, linespacing=1.25,
+            arrowprops={"arrowstyle": "-", "color": informative,
+                        "linewidth": 0.6, "shrinkB": 4.0},
+        )
+        top_label = ax.get_yticklabels()[-1]
+        top_label.set_fontweight("bold")
+        top_label.set_color(informative)
+
+    tax.set_xlim(0.0, 1.0)
+    tax.set_axis_off()
+    tax.text(0.0, n - 0.5 + 0.12, "LR+ (95% CI)", ha="left", va="bottom",
+             fontsize=base_size * 0.78, color="#444444")
+    for i in range(n):
+        tax.text(0.0, y[i], f"{values[i]:.2f} ({lows[i]:.2f}–{highs[i]:.2f})",
+                 ha="left", va="center", fontsize=base_size * 0.78,
+                 color=muted if crosses[i] else "#222222",
+                 fontweight="normal" if crosses[i] or i < n - 1 else "bold")
+
+    handles = [
+        plt.Line2D([], [], color=informative, marker="o", markersize=4,
+                   linewidth=1.1, label="Interval excludes 1 — argues for high grade"),
+        plt.Line2D([], [], color=muted, marker="o", markersize=4,
+                   linewidth=1.1, label="Interval crosses 1 — says nothing on its own"),
+    ]
+    # Anchored a fixed 0.42 inch under the axes, so the gap does not grow with
+    # the number of markers the way an axes-fraction offset would.
+    axes_height = height - 1.35
+    ax.legend(handles=handles, ncol=2, loc="upper left",
+              bbox_to_anchor=(0.0, -0.42 / axes_height),
+              frameon=False, handletextpad=0.5, columnspacing=1.6,
+              borderaxespad=0.0, fontsize=base_size * 0.76)
+
     ps.set_titles(
         ax, "How much a positive finding argues for high grade",
-        "A ratio of 1 says nothing; grey intervals cross it",
+        "Positive likelihood ratio with 95% CI — how many times more often the "
+        "sign appears in a high-grade tumour than in a benign one",
     )
+    # Hand-set margins: the value column needs a fixed narrow gutter, which
+    # tight_layout refuses to honour once wspace is set. Marker labels and the
+    # legend sit outside these margins and are recovered by ``bbox_inches``.
+    fig.subplots_adjust(left=0.26, right=0.995,
+                        top=1.0 - 0.52 / height, bottom=0.55 / height)
     return fig
 
 
@@ -1140,7 +1250,8 @@ def run_marker_panel(
         menu, counts = empty, empty
 
     fig_dir = root / FIGURES_DIRNAME
-    ps.save_figure(lr_forest_figure(panel), fig_dir / "lr_forest.svg")
+    ps.save_figure(lr_forest_figure(panel), fig_dir / "lr_forest.svg",
+                   tight_layout=False)
     prevalence = (
         float(shared[target].astype("boolean").mean()) if len(shared) else None
     )

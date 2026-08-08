@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.stats import chi2_contingency, fisher_exact
+from scipy.stats import chi2_contingency
 from statsmodels.stats.proportion import proportion_confint
 
 from cleaning import format_table_for_csv as _format_table_for_csv
@@ -20,22 +20,15 @@ from eda import _chi2_row, _encode_binary_target, _infer_target_kind, benjamini_
 from schema_infer import ColSpec
 
 _SKIP_NOTE = "Skipped: requires predefined cutoff"
+# A categorical column has no single "present" level to score. This screen
+# used to invent one (sex -> sex_male) and evaluate that, which put a row in
+# the table for a column that does not exist anywhere else in the pipeline.
+# The contrast now has to be a real derivation, so every section sees it.
+_NOMINAL_SKIP_NOTE = (
+    "Skipped: categorical — add a binary derivation in the cleaning "
+    "notebook to include it"
+)
 
-# Clinically meaningful binary contrasts derived from nominal predictors.
-_DERIVED_CONTRASTS: dict[str, tuple[str, Callable[[pd.Series], pd.Series]]] = {
-    "tumor_location_non_skull_base": (
-        "tumor_location",
-        lambda s: s == "non_skull_base",
-    ),
-    "tumor_margin_irregular": (
-        "tumor_margin",
-        lambda s: s == "irregular",
-    ),
-    "sex_male": (
-        "sex",
-        lambda s: s == "male",
-    ),
-}
 
 _PRESENT_VALUES = {True, 1, 1.0, "True", "true", "1", "yes", "Yes", "Y", "y"}
 
@@ -237,17 +230,6 @@ def _skipped_row(target: str, predictor: str, kind: str, note: str = _SKIP_NOTE)
     return row
 
 
-def _derived_series(df: pd.DataFrame, derived_name: str) -> pd.Series | None:
-    if derived_name in df.columns:
-        return df[derived_name]
-    if derived_name not in _DERIVED_CONTRASTS:
-        return None
-    source, fn = _DERIVED_CONTRASTS[derived_name]
-    if source not in df.columns:
-        return None
-    return fn(df[source])
-
-
 def _evaluation_plan(
     df: pd.DataFrame,
     schema: dict[str, ColSpec],
@@ -265,20 +247,6 @@ def _evaluation_plan(
 
         if kind == "binary":
             plan.append((pred, pred, kind, None))
-            continue
-
-        if kind == "nominal":
-            derived = [
-                name for name, (source, _) in _DERIVED_CONTRASTS.items()
-                if source == pred
-            ]
-            if derived:
-                for name in derived:
-                    series = _derived_series(df, name)
-                    if series is not None:
-                        plan.append((name, pred, "derived_binary", series))
-            else:
-                plan.append((pred, pred, kind, None))
             continue
 
         plan.append((pred, pred, kind, None))
@@ -300,7 +268,8 @@ def screen_diagnostic_accuracy(
     Compute univariate diagnostic accuracy for each (binary target × predictor).
 
     Ordinal / continuous / count predictors are retained with a skip note.
-    Nominal predictors emit predefined derived binary contrasts when available.
+    Nominal predictors are retained with a note pointing at the derivation
+    they need; this screen no longer invents contrasts of its own.
     """
     output_root = Path(output_root)
     tabs_dir = _ensure_dirs(output_root)
@@ -335,7 +304,7 @@ def screen_diagnostic_accuracy(
                 rows.append(_skipped_row(target, label, kind))
                 continue
             if kind == "nominal":
-                rows.append(_skipped_row(target, label, kind))
+                rows.append(_skipped_row(target, label, kind, note=_NOMINAL_SKIP_NOTE))
                 continue
             if kind == "unknown":
                 rows.append(_skipped_row(target, label, kind, note="Skipped: unknown predictor kind"))

@@ -8,7 +8,6 @@ import pytest
 
 from model_calculator import calculator_meta_to_streamlit_artifact
 from model_validation import bootstrap_internal_validation, enrich_streamlit_artifact
-from schema_infer import ColSpec
 
 
 @pytest.fixture

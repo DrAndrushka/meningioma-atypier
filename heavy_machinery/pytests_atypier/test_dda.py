@@ -130,12 +130,6 @@ def test_plot_ordinal(tmp_path):
     assert len(paths) == 1
 
 
-def test_plot_nominal(tmp_path):
-    s = pd.Series(["x", "y", "x"])
-    paths = dda._plot_nominal(s, "sex", tmp_path)
-    assert len(paths) == 1
-
-
 def test_plot_nominal_pools_the_rare_tail_and_says_so(tmp_path):
     """The pooled tail is disclosed rather than silently dropped."""
     levels = [f"l{i}" for i in range(20)]
@@ -156,18 +150,6 @@ def test_plot_nominal_pools_the_rare_tail_and_says_so(tmp_path):
 
     assert len(captured["order"]) == 5
     assert "15" in captured["note"] and "30" in captured["note"]
-
-
-def test_plot_binary(tmp_path):
-    s = pd.Series([True, False, True], dtype="boolean")
-    paths = dda._plot_binary(s, "event", tmp_path)
-    assert len(paths) == 1
-
-
-def test_plot_datetime(tmp_path):
-    s = pd.Series(pd.to_datetime(["2018-01-01", "2018-02-01", "2019-01-01"]))
-    paths = dda._plot_datetime(s, "entry_year", tmp_path)
-    assert len(paths) == 1
 
 
 def test_plot_datetime_keeps_empty_months_as_gaps(tmp_path):

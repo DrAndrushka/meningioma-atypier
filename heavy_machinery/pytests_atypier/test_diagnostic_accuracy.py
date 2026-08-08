@@ -92,19 +92,6 @@ def test_binary_diagnostic_metrics_dropna():
     assert m["n_used"] == 5
 
 
-def test_derived_nominal_contrast():
-    df = _tiny_binary_df()
-    from diagnostic_accuracy import _derived_series
-
-    series = _derived_series(df, "tumor_location_non_skull_base")
-    m = binary_diagnostic_metrics(
-        df, "high_grade", "tumor_location_non_skull_base",
-        positive_class=True, predictor_series=series,
-    )
-    assert m["n_used"] == 6
-    assert m["note"] == ""
-
-
 def test_screen_diagnostic_accuracy_writes_csv(tmp_output):
     df = _tiny_binary_df()
     schema = _tiny_schema()
@@ -121,11 +108,13 @@ def test_screen_diagnostic_accuracy_writes_csv(tmp_output):
     assert len(necrosis) == 1
     age = out[out["predictor"] == "age"].iloc[0]
     assert age["note"] == "Skipped: requires predefined cutoff"
-    derived = out[out["predictor"] == "tumor_location_non_skull_base"]
-    assert len(derived) == 1
-    assert derived.iloc[0]["note"] == ""
-    sex_male = out[out["predictor"] == "sex_male"]
-    assert len(sex_male) == 1
+    # A categorical column is reported as skipped, not silently expanded into
+    # an invented contrast that exists nowhere else in the pipeline.
+    assert out[out["predictor"] == "tumor_location_non_skull_base"].empty
+    assert out[out["predictor"] == "sex_male"].empty
+    for pred in ("tumor_location", "sex"):
+        row = out[out["predictor"] == pred].iloc[0]
+        assert row["note"].startswith("Skipped: categorical")
 
 
 def test_screen_skips_non_binary_target(tmp_output):

@@ -49,7 +49,9 @@ def load_schema_validation(
     if not path.exists():
         raise FileNotFoundError(
             f"Schema validation JSON not found: {path}. "
-            "Run meningioma-cleaning.ipynb §14 first."
+            "Run meningioma-cleaning.ipynb §09 · Schema validation — and check "
+            "it printed ✅, because a failed validation writes no file and does "
+            "not stop the notebook."
         )
     return pa.DataFrameSchema.from_json(path)
 

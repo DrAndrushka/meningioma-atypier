@@ -1047,30 +1047,6 @@ def run_inferential(
     return combined
 
 
-def preview_multivariable_cases(
-    schema: dict[str, ColSpec],
-    *,
-    targets: Sequence[str],
-    predictors: Sequence[str] | None = None,
-    variants: Sequence[InferentialModelVariant | dict | tuple | list] | None = None,
-    positive_class: dict | None = None,
-    vif_threshold: float = 5.0,
-    output_root: Path | str = "output",
-) -> pd.DataFrame:
-    """EPV / complete-case preview table — loads modelling cohort from ``output/datasets/``."""
-    from missingness_resolution import load_modeling_frames
-
-    return summarize_multivariable_cases(
-        load_modeling_frames(output_root)[0],
-        schema,
-        targets=targets,
-        predictors=predictors,
-        variants=variants,
-        positive_class=positive_class,
-        vif_threshold=vif_threshold,
-    )
-
-
 def run_inferential_stage(
     schema: dict[str, ColSpec],
     *,

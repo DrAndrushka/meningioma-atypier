@@ -207,9 +207,22 @@ def uncut_model_calibration(
     # report's prose and the net-benefit legend, where "four-measurement" would
     # quietly outlive the run that made it true.
     label = f"Uncut {len(cols)}-measurement model"
+    return _fitted_calibration(X, y, label, len(cols), n_boot=n_boot, seed=seed)
+
+
+def _fitted_calibration(
+    X: np.ndarray,
+    y: np.ndarray,
+    label: str,
+    n_predictors: int,
+    *,
+    n_boot: int = 500,
+    seed: int = 20260801,
+) -> dict:
+    """The optimism loop itself, shared by the uncut and the cut model."""
     blank = {
         "model": label, "n_used": int(y.size),
-        "events": int(y.sum()) if y.size else 0, "n_predictors": len(cols),
+        "events": int(y.sum()) if y.size else 0, "n_predictors": n_predictors,
         "slope_apparent": np.nan, "slope_corrected": np.nan,
         "intercept_apparent": np.nan, "intercept_corrected": np.nan,
         "brier_apparent": np.nan, "brier_corrected": np.nan,
@@ -263,6 +276,52 @@ def uncut_model_calibration(
         "n_bootstrap": len(gaps_slope),
     })
     return blank
+
+
+# --------------------------------------------------------------------------
+# The cut counterpart: the same measurements, dichotomised at their cut-points
+# --------------------------------------------------------------------------
+def cut_design(
+    df: pd.DataFrame, cutpoints: Sequence, target: str,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
+    """``(X, y, columns)`` for the model fitted on the yes/no flags."""
+    cols = [cp.col for cp in cutpoints]
+    frame = pd.DataFrame({cp.col: cp.flag(df).astype("boolean") for cp in cutpoints},
+                         index=df.index)
+    frame[target] = df[target].astype("boolean")
+    frame = frame.dropna()
+
+    y = frame[target].astype(int).to_numpy()
+    X = sm.add_constant(frame[cols].astype(float).to_numpy(), has_constant="add")
+    return X, y, cols
+
+
+def cut_model_predictions(
+    df: pd.DataFrame, cutpoints: Sequence, target: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(y, predicted risk)`` from the cut model fitted on these patients."""
+    X, y, _ = cut_design(df, cutpoints, target)
+    if y.size == 0 or len(np.unique(y)) < 2:
+        return np.array([]), np.array([])
+    try:
+        fit = sm.GLM(y, X, family=sm.families.Binomial()).fit()
+    except Exception:
+        return np.array([]), np.array([])
+    return y, np.asarray(fit.predict(X), dtype=float)
+
+
+def cut_model_calibration(
+    df: pd.DataFrame,
+    cutpoints: Sequence,
+    target: str,
+    *,
+    n_boot: int = 500,
+    seed: int = 20260801,
+) -> dict:
+    """Calibration of the all-cut model, comparable row-for-row with the uncut one."""
+    X, y, cols = cut_design(df, cutpoints, target)
+    label = f"Cut {len(cols)}-measurement model"
+    return _fitted_calibration(X, y, label, len(cols), n_boot=n_boot, seed=seed)
 
 
 MODEL_ARTIFACT_GLOB = "*_model.json"
@@ -514,43 +573,73 @@ def calibration_figure(
                  fontsize=plt.rcParams["font.size"] * 1.05)
     return fig
 
+def _dc_style_cycle() -> list[tuple[str, str]]:
+    """Colour + dash pattern per curve, so identity survives greyscale print.
+
+    Journals still print in black and white on request, and reviewers read
+    PDFs at 100%. Every curve therefore differs in two ways at once.
+    """
+    palette = ps.categorical_palette(4)
+    return [
+        (palette[0], "-"),
+        (palette[1], (0, (5, 1.5))),
+        (palette[2], (0, (1.5, 1.2))),
+        (palette[3], (0, (4, 1.2, 1, 1.2))),
+    ]
+
 
 def decision_curve_figure(
     curve: pd.DataFrame,
     *,
     prevalence: float | None = None,
     y_floor: float | None = None,
+    strategies: Sequence[str] | None = None,
 ) -> plt.Figure:
-    """Net benefit against threshold probability, all strategies on one axis."""
-    fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM, aspect=0.62))
+    """Net benefit against threshold probability, Vickers-style.
 
-    names = [n for n in curve["strategy"].unique() if n not in (TREAT_ALL, TREAT_NONE)]
-    colours = dict(zip(names, ps.categorical_palette(max(len(names), 1))))
+    ``strategies`` names the non-reference curves to draw, in the order they
+    should appear in the legend; ``None`` draws every strategy in the frame.
+    A decision curve carrying eight near-parallel lines is unreadable at
+    journal size, so the caller picks the clinically meaningful handful and
+    the full comparison stays in the net-benefit tables.
+
+    The panel carries no title, no shading and no inline annotation: those
+    belong to the caption, which is where a typesetter expects to find them.
+    ``prevalence`` is still accepted so callers need not change, but the
+    cohort rate is now stated in the caption rather than drawn on the panel.
+    """
+    del prevalence  # reported in the caption, not on the axes
+    base_size = plt.rcParams["font.size"]
+    fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM, aspect=0.72))
+
+    present = list(curve["strategy"].unique())
+    if strategies is None:
+        names = [n for n in present if n not in (TREAT_ALL, TREAT_NONE)]
+    else:
+        names = [n for n in strategies if n in present]
+
+    for name, (colour, dashes) in zip(names, _dc_style_cycle()):
+        sub = curve[curve["strategy"] == name].sort_values("threshold")
+        ax.plot(sub["threshold"], sub["net_benefit"], color=colour,
+                linestyle=dashes, linewidth=1.4, zorder=4,
+                label=ps._wrap_label(str(name), 30))
 
     for name in (TREAT_ALL, TREAT_NONE):
         sub = curve[curve["strategy"] == name].sort_values("threshold")
         if sub.empty:
             continue
-        ax.plot(sub["threshold"], sub["net_benefit"],
-                color=ps.PALETTE["neutral"], linewidth=1.0,
-                linestyle="--" if name == TREAT_ALL else ":", zorder=2, label=name)
-
-    for name in names:
-        sub = curve[curve["strategy"] == name].sort_values("threshold")
-        ax.plot(sub["threshold"], sub["net_benefit"], color=colours[name],
-                linewidth=1.5, zorder=3, label=ps._wrap_label(str(name), 34))
-
-    if prevalence is not None and np.isfinite(prevalence):
-        ax.axvline(prevalence, color=ps.PALETTE["neutral"], linewidth=0.8,
-                   linestyle="-.", zorder=1,
-                   label=f"Cohort rate ({prevalence * 100:.0f}%)")
+        ax.plot(sub["threshold"], sub["net_benefit"], color="#4D4D4D",
+                linewidth=1.0, linestyle="--" if name == TREAT_ALL else ":",
+                zorder=3, label="Treat all" if name == TREAT_ALL else "Treat none")
 
     finite = curve["net_benefit"].replace([np.inf, -np.inf], np.nan).dropna()
     floor = y_floor if y_floor is not None else -0.05
-    ax.set_ylim(floor, float(finite.max()) * 1.1 if len(finite) else 0.3)
-    ax.set_xlabel("Threshold probability — the risk above which you would act")
-    ax.set_ylabel("Net benefit (true positives per patient)")
-    ps.place_legend(ax, outside=True, scale=0.6)
-    ps.set_titles(ax, "Decision curve — what is each strategy worth?",
-                  "Higher is better; below both dashed lines is worse than no test")
+    ax.set_xlim(float(curve["threshold"].min()), float(curve["threshold"].max()))
+    ax.set_ylim(floor, float(finite.max()) * 1.12 if len(finite) else 0.3)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+    ax.set_xlabel("Threshold probability")
+    ax.set_ylabel("Net benefit")
+    ax.legend(loc="upper right", frameon=True, framealpha=1.0,
+              edgecolor="#CCCCCC", fontsize=base_size * 0.86,
+              handlelength=2.4, borderpad=0.5, labelspacing=0.4)
     return fig

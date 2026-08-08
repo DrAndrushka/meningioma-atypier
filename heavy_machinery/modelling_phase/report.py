@@ -503,53 +503,6 @@ def _coerce_float(x: Any) -> float | None:
         return None
 
 
-# Strength tier wording -------------------------------------------------------
-
-_STRENGTH_WORDING = {
-    "strong":   ("🟢", "strong",   "Large statistical signal; worth serious attention, but still needs clinical context."),
-    "moderate": ("🟡", "moderate", "Visible statistical signal; worth attention and hypothesis generation."),
-    "weak":     ("🔴", "weak",     "Small statistical signal; probably not enough alone to guide clinical decisions."),
-    "none":     ("⚪", "none",     "No useful statistical pattern detected."),
-}
-
-
-def effect_badge(effect: Any, kind: str = "corr",
-                 thr: EffectThresholds = EffectThresholds()) -> str:
-    """Return inline HTML badge for an effect magnitude.
-
-    Parameters
-    ----------
-    effect : numeric
-        Spearman rho / rank-biserial r / Cramer's V / odds ratio.
-    kind : {"corr", "or"}
-        ``"corr"`` thresholds use ``|effect|`` directly; ``"or"`` thresholds
-        use ``|log(OR)|`` so risk and protective directions share one scale.
-    """
-    tier = _strength_tier(effect, kind, thr)
-    emoji, label, _ = _STRENGTH_WORDING[tier]
-    return f'<span class="badge effect-{tier}">{emoji} {label}</span>'
-
-
-def _strength_tier(effect: Any, kind: str, thr: EffectThresholds) -> str:
-    e = _coerce_float(effect)
-    if e is None:
-        return "none"
-    if kind == "or":
-        if e <= 0:
-            return "none"
-        mag = abs(math.log(e))
-        if mag >= thr.or_strong:   return "strong"
-        if mag >= thr.or_moderate: return "moderate"
-        if mag >= thr.or_weak:     return "weak"
-        return "none"
-    # corr-like
-    mag = abs(e)
-    if mag >= thr.corr_strong:   return "strong"
-    if mag >= thr.corr_moderate: return "moderate"
-    if mag >= thr.corr_weak:     return "weak"
-    return "none"
-
-
 def classify_significance(p: Any, p_fdr: Any, *,
                           fdr_alpha: float = 0.05,
                           nominal_alpha: float = 0.05) -> str:
@@ -1888,10 +1841,6 @@ _EDA_GLOSSARY_GROUPS = [
         ("effect",
          "The numeric effect size for that row (one of the labels above). Separate "
          "from p: a big sample can make a tiny effect 'significant.'"),
-        ("strength",
-         "Badge classifying |effect| as strong / moderate / weak / none. 🚦 "
-         "Quick visual on whether the signal is clinically worth a closer look, "
-         "not just statistically detectable."),
     ]),
     ("P-values and significance", [
         ("p",
@@ -2252,16 +2201,11 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         sub = sub.sort_values(["_p_num", "_eff_abs"],
                               ascending=[True, False], na_position="last")
 
-        # Strength badge + significance row class
         def _row_class(r):
-            tier = _strength_tier(r.get("effect"), "corr", cfg.effect)
-            sig = classify_significance(
+            return classify_significance(
                 r.get("p"), r.get("p_fdr"),
                 fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha)
-            return sig  # row tint via significance only; strength via badge column
 
-        sub["strength"] = sub["effect"].apply(
-            lambda v: effect_badge(v, "corr", cfg.effect))
         sub["significance"] = sub.apply(
             lambda r: {"sig-fdr": "🟢 FDR-sig",
                        "sig-nominal": "🟡 nominal",
@@ -2289,7 +2233,7 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         target_body.append(f"<p>{line}</p>")
 
         display_cols = ["predictor", "kind", "test", "effect_label", "effect",
-                        "auc_univariate", "p", "p_fdr", "significance", "strength", "n_used"]
+                        "auc_univariate", "p", "p_fdr", "significance", "n_used"]
         display_cols = [c for c in display_cols if c in sub.columns]
         interp_df = sub.copy()
         if "auc_univariate" in sub.columns:
@@ -2302,11 +2246,7 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         # diagnostic accuracy and interpretation stay visible on open.
         target_body.append(details_block(
             f"🧬 The Full Sweep — every predictor, ranked ({len(sub)})",
-            table_to_html(
-                sub[display_cols], row_class_fn=_row_class,
-                # 'strength' is a pre-built <span> badge — don't HTML-escape it.
-                safe_html_cols=("strength",),
-            ),
+            table_to_html(sub[display_cols], row_class_fn=_row_class),
         ))
         target_body.append(_render_diagnostic_accuracy(target, art, cfg))
         target_body.append(_render_eda_interpretation(target, interp_df, cfg))
@@ -2669,18 +2609,46 @@ def _panel_aim_one(art: Artifacts) -> str:
             "high-grade tumours."
         )
     return (
-        "<h3>Which sign argues hardest for high grade</h3>"
-        + lead
-        + "<p>Ranked by <strong>positive likelihood ratio</strong> — how many "
-          "times more often the sign appears in a high-grade tumour than in a "
-          "benign one. <strong>Catches</strong> is there because the most "
-          "specific sign in any cohort is usually the one nobody ever sees: a "
-          "marker that is almost never present is almost perfectly specific "
-          "and almost never useful. A ratio whose interval covers 1 says "
-          "nothing, and is labelled rather than ranked.</p>"
+        lead
+        + "<h3>Table 4. Diagnostic performance of individual MRI signs for "
+          "WHO grade 2–3 meningioma</h3>"
         + _table(view)
+        + _panel_table_footnotes(art)
         + _panel_figure(art, "lr_forest")
     )
+
+
+def _panel_table_footnotes(art: Artifacts) -> str:
+    """The table's own footnote block — it has to stand on its own.
+
+    Radiology journals expect a table to be readable lifted out of the paper,
+    so every abbreviation is defined here even though the running text defines
+    them too, and the sort rule is stated rather than inferred.
+    """
+    panel = art.panel_marker
+    corrected = (panel is not None and not panel.empty
+                 and "continuity_corrected" in panel.columns
+                 and bool(panel["continuity_corrected"].any()))
+    lines = [
+        "Signs are sorted by LR+ in descending order. "
+        "LR+ with 95% CI crossing 1.0 indicates no significant discriminative "
+        "value.",
+        "n/N (%) = scans with the sign present / scans assessed for it "
+        "(percentage). LR+ = positive likelihood ratio, the number of times "
+        "more often a sign appears in a WHO grade 2–3 tumour than in a grade 1 "
+        "one.",
+    ]
+    if corrected:
+        lines.append(
+            "* estimate calculated with a continuity correction because one "
+            "cell of the 2×2 table was empty.")
+    lines.append(
+        "ADC = apparent diffusion coefficient; CI = confidence interval; "
+        "DWI = diffusion-weighted imaging; LR+ = positive likelihood ratio; "
+        "Sens = sensitivity; Spec = specificity.")
+    return ("<p class='muted'><small>"
+            + "<br>".join(lines)
+            + "</small></p>")
 
 
 _COUNT_LEAD_TEMPLATES = {
@@ -2966,32 +2934,33 @@ def _render_inferential_interpretation(target: str, tbl: pd.DataFrame,
         "💡 Interpretation", "<ul>" + "".join(lines) + "</ul>")
 
 
+# Only the names the shared labeller cannot derive — a different word from the
+# column name, or a clinical phrasing. Anything it gets right on its own
+# (``cortical_destruction``, ``dwi_hyperintensity``, every ``_ge``/``_le``
+# threshold flag) is deliberately absent, so there is one place to fix a label.
 _DIAGNOSTIC_LABELS: dict[str, str] = {
-    "perifocal_edema": "Peritumoral Edema",
-    "sinus_invasion": "Skull Invasion",
-    "tumor_location_non_skull_base": "Non-skull-base Location",
-    "tumor_margin_irregular": "Irregular Tumor Margin",
-    "sex_male": "Male Sex",
-    "cortical_destruction": "Cortical Destruction",
-    "heterogeneous_enhancement": "Heterogeneous Enhancement",
-    "cystic_component": "Cystic Component",
-    "mass_effect": "Mass Effect",
-    "dural_tail": "Dural Tail",
-    "capsular_enhancement": "Capsular Enhancement",
-    "brain_invasion": "Brain Invasion",
-    "t1_hypointensity": "T1 Hypointensity",
-    "t2_hyperintensity": "T2 Hyperintensity",
-    "dwi_hyperintensity": "DWI Hyperintensity",
-    "transfalcine_extension": "Transfalcine Extension",
-    "hist_necrosis": "Histologic Necrosis",
-    "progesterone_pos": "Progesterone Positive",
+    "perifocal_edema": "Peritumoral edema",
+    # Dural venous sinus, graded 0/1/2 in the source sheet ("Sīnuss": does not
+    # grow in / grows in / grows in and through). Not the skull.
+    "sinus_invasion": "Venous sinus invasion (graded)",
+    "tumor_location_non_skull_base": "Non-skull-base location",
+    "tumor_margin_irregular": "Irregular tumor margin",
+    "sex_male": "Male sex",
+    "hist_necrosis": "Histologic necrosis",
+    "progesterone_pos": "Progesterone positive",
 }
 
 
 def _diagnostic_predictor_label(name: str) -> str:
+    """Overrides first, then the labeller every other section already uses.
+
+    The old fallback capitalised each underscore-separated token, which is why
+    this table alone printed ``Adc Value Le0.72`` while the marker panel and
+    every figure axis printed ``ADC value ≤ 0.72`` from the same column.
+    """
     if name in _DIAGNOSTIC_LABELS:
         return _DIAGNOSTIC_LABELS[name]
-    return " ".join(part.capitalize() for part in str(name).split("_"))
+    return prettify_label(name)
 
 
 def _format_pct_ci(point: Any, lo: Any, hi: Any) -> str:
@@ -3048,11 +3017,16 @@ def _build_diagnostic_display_df(sub: pd.DataFrame, cfg: ReportConfig) -> pd.Dat
                 r.get("NPV"), r.get("NPV_lo"), r.get("NPV_hi")),
             "Accuracy": _format_pct_ci(
                 r.get("accuracy"), r.get("accuracy_lo"), r.get("accuracy_hi")),
-            "AUC": _format_diagnostic_auc(r.get("AUC")),
+            # Not a ROC-AUC. Balanced accuracy for a yes/no sign, and the
+            # multivariable section reports a real ROC-AUC under the same
+            # three letters, so the header has to say which one this is.
+            "AUC (binary)": _format_diagnostic_auc(r.get("AUC")),
             "_sig": sig,
             "_p": r.get("p"),
             "_p_fdr": r.get("p_fdr"),
-            "note": r.get("note", ""),
+            # Underscored: every row here passed the empty-note filter above, so
+            # the column printed nothing but still cost the table a column.
+            "_note": r.get("note", ""),
         })
     return pd.DataFrame(rows)
 
@@ -3076,6 +3050,67 @@ def _diagnostic_table_html(disp: pd.DataFrame, cfg: ReportConfig) -> str:
         '<table class="report diagnostic-accuracy">',
         1,
     )
+
+
+def _diagnostic_prevalence(sub: pd.DataFrame) -> tuple[float, int, int] | None:
+    """Outcome rate, read off the row with the largest denominator.
+
+    Each row is scored on its own complete cases, so there is no single cohort
+    n in this table. The most completely measured sign is the closest thing to
+    the whole cohort, and it is quoted with its own n rather than as a bare
+    percentage nobody can check.
+    """
+    needed = {"TP", "FN", "n_used"}
+    if sub is None or sub.empty or not needed.issubset(sub.columns):
+        return None
+    rows = sub[sub["note"].fillna("").eq("")] if "note" in sub.columns else sub
+    rows = rows.dropna(subset=["TP", "FN", "n_used"])
+    if rows.empty:
+        return None
+    row = rows.loc[rows["n_used"].idxmax()]
+    events, n = int(row["TP"]) + int(row["FN"]), int(row["n_used"])
+    return (events / n, events, n) if n else None
+
+
+def _diagnostic_table_footnotes(sub: pd.DataFrame, cfg: ReportConfig) -> str:
+    """The table's own footnote block: methods, prevalence, abbreviations.
+
+    Short numbered notes rather than the paragraph this used to carry — a
+    journal table is scanned, and a reader checking what an asterisk means
+    should not have to read a methods sentence to find it.
+    """
+    lines = [
+        "Univariate diagnostic performance of each sign (present vs absent) "
+        "against the outcome, laid out as in Upreti et al. Table 3. Wilson "
+        "95% CIs in brackets. Each sign is scored on its own complete cases, "
+        "so denominators differ between rows.",
+    ]
+    prev = _diagnostic_prevalence(sub)
+    if prev is not None:
+        rate, events, n = prev
+        lines.append(
+            f"Cohort prevalence of WHO grade 2–3 is {rate:.0%} "
+            f"({events}/{n}). PPV and NPV depend on it: at this prevalence a "
+            "positive sign is more often a false alarm than a true one, and "
+            "neither value transfers to a cohort with a different case mix. "
+            "Sensitivity and specificity do not have that dependence."
+        )
+    lines.append(
+        f"* FDR p &lt; {cfg.fdr_alpha:g}. Row shading: green = FDR-significant, "
+        "yellow = nominally significant only."
+    )
+    lines.append(
+        "AUC (binary) = (sensitivity + specificity) / 2, the balanced accuracy "
+        "of a yes/no sign. It is not a ROC-AUC; the multivariable section "
+        "reports a true ROC-AUC for fitted models."
+    )
+    lines.append(
+        "ADC = apparent diffusion coefficient; AUC = area under the curve; "
+        "CI = confidence interval; DWI = diffusion-weighted imaging; "
+        "FDR = false discovery rate; NPV = negative predictive value; "
+        "PPV = positive predictive value; T1/T2 = T1- and T2-weighted imaging."
+    )
+    return "<p class='muted'><small>" + "<br>".join(lines) + "</small></p>"
 
 
 def _render_diagnostic_accuracy(target: str, art: Artifacts,
@@ -3102,24 +3137,10 @@ def _render_diagnostic_accuracy(target: str, art: Artifacts,
     skipped = sub[sub["note"].fillna("").ne("")]
 
     parts = [
-        "<p>Univariate diagnostic-test performance of each binary imaging feature "
-        "(present vs absent) against the target outcome, formatted like "
-        "Upreti et al. Table 3. Wilson 95% confidence intervals are shown in "
-        "brackets. Rows are colour-coded by significance "
-        "(<span class='badge' style='background:var(--green-bg)'>green</span> "
-        "= FDR-significant, "
-        "<span class='badge' style='background:var(--yellow-bg)'>yellow</span> "
-        "= nominally significant only). "
-        "An asterisk (*) marks FDR-significant features.</p>",
+        "<h3><strong>Table X.</strong> Univariate diagnostic performance of "
+        "individual MRI signs for WHO grade 2–3 meningioma</h3>",
         _diagnostic_table_html(disp, cfg),
-        (
-            "<p class='muted'><small>"
-            "* imaging feature with FDR p &lt; "
-            f"{cfg.fdr_alpha:g}. "
-            "PPV = positive predictive value; NPV = negative predictive value; "
-            "CI = confidence interval; AUC = (sensitivity + specificity) / 2 "
-            "for a binary predictor.</small></p>"
-        ),
+        _diagnostic_table_footnotes(sub, cfg),
     ]
     if not skipped.empty and "predictor" in skipped.columns:
         skip_lines = "".join(
@@ -3174,8 +3195,6 @@ def _render_eda_interpretation(target: str, sub: pd.DataFrame,
         sig = classify_significance(
             r.get("p"), r.get("p_fdr"),
             fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha)
-        tier = _strength_tier(r.get("effect"), "corr", cfg.effect)
-        _, strength_word, strength_hint = _STRENGTH_WORDING[tier]
         p_fdr_str = _esc(human_p(r.get("p_fdr")))
         p_str = _esc(human_p(r.get("p")))
         phrase = _eda_direction_phrase(r, target)
@@ -3198,8 +3217,7 @@ def _render_eda_interpretation(target: str, sub: pd.DataFrame,
 
         lines.append(
             f"<li>{bullet} {phrase} "
-            f"({eff_label} = {eff}, {sig_note}; <em>{strength_word}</em> effect). "
-            f"{strength_hint}</li>")
+            f"({eff_label} = {eff}, {sig_note}).</li>")
 
     if not lines:
         return ""

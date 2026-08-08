@@ -6,14 +6,13 @@ Workflow: ``infer_schema`` → ``print_schema_template`` → notebook overrides 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
 import ast
 import re
 import unicodedata
 
-import numpy as np
 import pandas as pd
 
 

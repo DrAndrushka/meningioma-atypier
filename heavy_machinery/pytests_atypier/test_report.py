@@ -12,7 +12,6 @@ import pytest
 import report as rp
 from report import (
     Artifacts,
-    EffectThresholds,
     MissingThresholds,
     ReportConfig,
     build_report,
@@ -20,7 +19,6 @@ from report import (
     classify_or_direction,
     classify_significance,
     details_block,
-    effect_badge,
     human_p,
     human_pool_df,
     info_box,
@@ -98,15 +96,6 @@ def test_coerce_p():
 def test_coerce_float():
     assert rp._coerce_float("1.5") == 1.5
     assert rp._coerce_float("bad") is None
-
-
-def test_strength_tier():
-    assert rp._strength_tier(0.5, "corr", EffectThresholds()) == "strong"
-
-
-def test_effect_badge():
-    html = effect_badge(0.5, kind="corr")
-    assert "badge" in html
 
 
 def test_classify_significance():
@@ -489,7 +478,7 @@ def test_render_diagnostic_accuracy(report_cfg, report_art):
     })
     html = render_eda(report_cfg, report_art)
     assert "Like in that research: univariate diagnostic accuracy" in html
-    assert "Peritumoral Edema" in html
+    assert "Peritumoral edema" in html
     assert "66.7% [30.0" in html
     assert "sig-fdr" in html
     assert "Sensitivity (95% CI)" in html
