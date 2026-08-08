@@ -94,6 +94,17 @@ def test_decision_curve_figure_includes_both_references():
     plt.close(fig)
 
 
+def test_outcome_rate_renders_one_decimal_with_no_false_precision():
+    val = _validation()
+    val["decision_curve"]["prevalence"] = 105 / 352  # 0.29829...
+    fig = pp.decision_curve_figure(val)
+    assert fig is not None
+    subtitle = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "29.8%" in subtitle
+    assert "30%" not in subtitle
+    plt.close(fig)
+
+
 def test_figures_are_none_when_the_artifact_lacks_data():
     assert pp.roc_figure({}) is None
     assert pp.calibration_figure({}) is None

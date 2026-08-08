@@ -559,7 +559,7 @@ def _plot_binary_target_rates(
     if np.isfinite(baseline):
         ax.axhline(
             baseline, color=PALETTE["neutral"], linestyle="--", linewidth=1.0,
-            zorder=1, label=f"Cohort rate ({baseline:.0f}%)",
+            zorder=1, label=f"Cohort rate ({baseline:.1f}%)",
         )
     ax.errorbar(
         x, pct, yerr=errorbar_lengths(pct, lo_a, hi_a),
@@ -571,7 +571,7 @@ def _plot_binary_target_rates(
     ax.set_xlim(-pad, n_lv - 1 + pad)
     ymax = float(np.nanmax(hi_a)) if hi_a.size else 0.0
     ax.set_ylim(0, min(105.0, max(ymax + 22.0, 30.0)))
-    _annotate_above(ax, x, hi_a, [f"{p:.0f}%" for p in pct])
+    _annotate_above(ax, x, hi_a, [f"{p:.1f}%" for p in pct])
     ax.set_xticks(x)
     ax.set_xticklabels(level_tick_labels(levels, ns, column=predictor))
     ax.set_xlabel(prettify_label(predictor))

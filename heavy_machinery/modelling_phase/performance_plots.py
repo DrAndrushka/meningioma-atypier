@@ -240,7 +240,7 @@ def decision_curve_figure(
 
     prevalence = dca.get("prevalence")
     extra = (
-        f"outcome rate {float(prevalence):.0%}" if prevalence is not None else None
+        f"outcome rate {float(prevalence):.1%}" if prevalence is not None else None
     )
     parts = [_sample_note(validation)] + ([extra] if extra else [])
     set_titles(ax, title or "Clinical usefulness", " · ".join(parts))

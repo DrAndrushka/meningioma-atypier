@@ -999,7 +999,7 @@ def _usefulness_figures(
     survives typesetting and an annotation baked into an axes does not.
     """
     rate = ("" if not np.isfinite(facts.prevalence)
-            else f" Cohort high-grade rate {facts.prevalence:.0%}"
+            else f" Cohort high-grade rate {facts.prevalence:.1%}"
                  f" (n = {facts.shared_n}).")
     captions = {
         "calibration": (

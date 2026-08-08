@@ -818,7 +818,7 @@ def risk_curve_figure(
 
     ax_risk.axhline(curve.prevalence, color=ps.PALETTE["neutral"], linewidth=0.8,
                     linestyle="-.", zorder=1,
-                    label=f"Cohort rate ({curve.prevalence * 100:.0f}%)")
+                    label=f"Cohort rate ({curve.prevalence * 100:.1f}% of n={curve.n})")
 
     for level, color in zip(risk_levels, (ps.PALETTE["good"], ps.PALETTE["accent"])):
         cross = curve.crossings.get(float(level), np.nan)

@@ -732,7 +732,7 @@ def proportion_bars(
         for p_i, val, top, k_i, n_i in zip(pos, heights, pct_hi, k, n):
             if not np.isfinite(val):
                 continue
-            text = f"{val:.0f}% ({int(k_i)}/{int(n_i)})"
+            text = f"{val:.1f}% ({int(k_i)}/{int(n_i)})"
             edge = top if np.isfinite(top) else val
             if vertical:
                 ax.annotate(

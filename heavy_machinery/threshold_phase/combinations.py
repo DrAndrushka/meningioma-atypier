@@ -788,9 +788,10 @@ def count_score_figure(
         color=ps.PALETTE["high_grade"], width=0.62, annotate=True,
     )
     if prevalence is not None and np.isfinite(prevalence):
+        n_scored = int(counts.attrs.get("n_scored", usable["n"].sum()))
         ax.axhline(prevalence * 100, color=ps.PALETTE["neutral"], linewidth=0.9,
                    linestyle="-.", zorder=2,
-                   label=f"Cohort rate ({prevalence * 100:.0f}%)")
+                   label=f"Cohort rate ({prevalence * 100:.1f}% of n={n_scored})")
         ps.place_legend(ax, loc="upper left", scale=0.7)
 
     ax.set_xticks(usable["n_criteria_met"].to_numpy(dtype=float))

@@ -913,7 +913,7 @@ def test_the_headline_sentence_follows_the_measured_direction(panel_output):
 
     cfg = ReportConfig(output_root=panel_output, title="T")
     html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "Risk falls from 33%" in html
+    assert "Risk falls from 33.0%" in html
     assert "Risk rises" not in html
 
 
@@ -922,8 +922,8 @@ def test_the_headline_sentence_quotes_the_denominators_behind_it(panel_output):
     each endpoint's patient count makes a thin endpoint visible on the page."""
     cfg = ReportConfig(output_root=panel_output, title="T")
     html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "Risk rises from 11% among the 100 patients" in html
-    assert "33% among the 90 with 1" in html
+    assert "Risk rises from 11.0% among the 100 patients" in html
+    assert "33.0% among the 90 with 1" in html
 
 
 def test_the_panel_tables_never_show_raw_machine_column_names(panel_output):

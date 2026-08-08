@@ -2576,7 +2576,7 @@ def _signed(value: Any, digits: int = 3) -> str:
 
 def _pct(value: Any) -> str:
     v = _coerce_float(value)
-    return "—" if v is None else f"{v * 100:.0f}%"
+    return "—" if v is None else f"{v * 100:.1f}%"
 
 
 def _int(value: Any) -> str:
@@ -2733,7 +2733,7 @@ def _panel_table_footnotes(art: Artifacts) -> str:
     if prev is not None:
         rate, events, n = prev
         lines.append(
-            f"Cohort prevalence of WHO grade 2–3 is {rate:.0%} ({events}/{n}). "
+            f"Cohort prevalence of WHO grade 2–3 is {rate:.1%} ({events}/{n}). "
             "LR+, sensitivity and specificity do not depend on it; predictive "
             "values would, and are reported in the univariate accuracy table "
             "rather than here."
@@ -3197,7 +3197,7 @@ def _diagnostic_table_footnotes(sub: pd.DataFrame, cfg: ReportConfig) -> str:
     if prev is not None:
         rate, events, n = prev
         lines.append(
-            f"Cohort prevalence of WHO grade 2–3 is {rate:.0%} "
+            f"Cohort prevalence of WHO grade 2–3 is {rate:.1%} "
             f"({events}/{n}). PPV and NPV depend on it: at this prevalence a "
             "positive sign is more often a false alarm than a true one, and "
             "neither value transfers to a cohort with a different case mix. "
