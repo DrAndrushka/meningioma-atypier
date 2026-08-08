@@ -357,10 +357,49 @@ def test_report_degrades_without_calibration_or_net_benefit(tmp_path):
     assert "re-run the notebook" in html
 
 
-def test_usefulness_carries_noncomparability_footnote(tmp_path):
+def test_usefulness_equal_counts_shows_directly_comparable(tmp_path):
+    """When Uncut and Cut have same n_used, footnote says they are directly comparable."""
     _write_artifacts(tmp_path)
     html = _html(tmp_path)
+    assert "directly comparable" in html
+    assert "not directly comparable" not in html
+
+
+def test_usefulness_different_counts_shows_noncomparability_with_values(tmp_path):
+    """When Uncut and Cut have different n_used, footnote shows both counts."""
+    # Create calibration table with different patient counts
+    cal = pd.DataFrame([
+        {"model": "Uncut four-measurement model", "n_used": 304, "events": 93,
+         "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.911,
+         "intercept_apparent": 0.0, "intercept_corrected": -0.0002,
+         "brier_apparent": 0.189, "brier_corrected": 0.195, "n_bootstrap": 500,
+         "source": "threshold phase (fitted here)"},
+        {"model": "Cut four-measurement model", "n_used": 280, "events": 86,
+         "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.920,
+         "intercept_apparent": 0.0, "intercept_corrected": -0.001,
+         "brier_apparent": 0.181, "brier_corrected": 0.188, "n_bootstrap": 500,
+         "source": "threshold phase (fitted here)"},
+    ])
+    _write_artifacts(tmp_path, tables=_with(calibration=cal))
+    html = _html(tmp_path)
     assert "not directly comparable" in html
+    assert "Uncut: n=304" in html
+    assert "Cut: n=280" in html
+
+
+def test_usefulness_only_uncut_omits_footnote(tmp_path):
+    """When only Uncut model exists (no Cut), no footnote appears."""
+    cal = pd.DataFrame([
+        {"model": "Uncut four-measurement model", "n_used": 304, "events": 93,
+         "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.911,
+         "intercept_apparent": 0.0, "intercept_corrected": -0.0002,
+         "brier_apparent": 0.189, "brier_corrected": 0.195, "n_bootstrap": 500,
+         "source": "threshold phase (fitted here)"},
+    ])
+    _write_artifacts(tmp_path, tables=_with(calibration=cal))
+    html = _html(tmp_path)
+    assert "directly comparable" not in html
+    assert "not directly comparable" not in html
 
 
 # --------------------------------------------------------------------------

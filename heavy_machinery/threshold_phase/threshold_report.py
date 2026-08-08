@@ -1068,13 +1068,28 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
         cal_text = (f"Predicted percentages are close to honest: calibration slope "
                     f"{_num(row['slope_corrected'])} after correction (1.00 is perfect; "
                     f"below 1 means the high and low predictions are pushed too far apart). ")
-        # Add non-comparability footnote if both Uncut and Cut models are present
-        cut = cal[cal["model"].astype(str).str.contains("Cut", case=False, na=False)]
+        # Add footnote if both Uncut and Cut models are present (non-overlapping match)
+        cut = cal[cal["model"].astype(str).str.contains(r"(?i)^cut\s", na=False, regex=True)]
         if not uncut.empty and not cut.empty:
-            cal_note = ("<p class=\"footnote\">The uncut and cut model rows are fitted on "
-                        "different patient counts (each model keeps the patients complete "
-                        "for its own inputs), so their metrics are not directly comparable "
-                        "row-to-row; read each against its own n.</p>")
+            # Read n_used from both rows and compare
+            uncut_n = uncut.iloc[0].get("n_used") if "n_used" in cal.columns else None
+            cut_n = cut.iloc[0].get("n_used") if "n_used" in cal.columns else None
+            if pd.notna(uncut_n) and pd.notna(cut_n):
+                uncut_n, cut_n = int(uncut_n), int(cut_n)
+                if uncut_n == cut_n:
+                    cal_note = (f"<p class=\"footnote\">Both the uncut and the cut model are scored "
+                                f"on the same N patients with all measurements available, so their rows "
+                                f"are directly comparable.</p>")
+                else:
+                    cal_note = (f"<p class=\"footnote\">The uncut and cut model rows are fitted on "
+                                f"different patient counts (Uncut: n={uncut_n}; Cut: n={cut_n}), so their "
+                                f"metrics are not directly comparable row-to-row; read each against its own n.</p>")
+            else:
+                # Fallback if n_used is missing
+                cal_note = ("<p class=\"footnote\">The uncut and cut model rows are fitted on "
+                            "different patient counts (each model keeps the patients complete "
+                            "for its own inputs), so their metrics are not directly comparable "
+                            "row-to-row; read each against its own n.</p>")
 
     nb_html, nb_text = "", ""
     if not nb.empty and "strategy" in nb.columns:
