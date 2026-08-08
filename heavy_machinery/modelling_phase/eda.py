@@ -1082,6 +1082,7 @@ def screen_associations(
     *,
     targets: Sequence[str],
     predictors: Sequence[str] | None = None,
+    fdr_family: Sequence[str] | None = None,
     positive_class: dict | None = None,
     fdr_alpha: float = 0.05,
     output_root: Path | str = "output",
@@ -1096,6 +1097,11 @@ def screen_associations(
     targets       : outcome column names (binary, continuous, ordinal, or nominal).
     predictors    : optional whitelist; if None, every kept non-target column
                     with a testable kind is used.
+    fdr_family    : predictors whose tests form the multiplicity family.
+                    BH correction runs over these only; predictors outside
+                    the family keep their raw p, get ``p_fdr = NaN`` and
+                    ``in_fdr_family = False`` (exploratory, uncorrected).
+                    ``None`` (default) puts every predictor in the family.
     positive_class: for **binary** targets only — {target: value_that_is_positive}.
     fdr_alpha     : threshold for the fdr_significant flag.
 
@@ -1174,16 +1180,18 @@ def screen_associations(
     if out.empty:
         out = pd.DataFrame(columns=[
             "target", "target_kind", "predictor", "kind", "test", "stat", "p", "p_fdr",
-            "fdr_significant", "effect", "effect_label", "n_used", "positive_class",
-            "auc_univariate",
+            "fdr_significant", "in_fdr_family", "effect", "effect_label", "n_used",
+            "positive_class", "auc_univariate",
         ])
         _format_table_for_csv(out).to_csv(tabs_dir / "associations.csv", index=False)
         return out
 
-    # FDR per target
+    # FDR per target, restricted to the declared multiplicity family
+    family = set(fdr_family) if fdr_family is not None else set(out["predictor"])
+    out["in_fdr_family"] = out["predictor"].isin(family)
     out["p_fdr"] = np.nan
     for t in out["target"].unique():
-        mask = out["target"] == t
+        mask = (out["target"] == t) & out["in_fdr_family"]
         out.loc[mask, "p_fdr"] = benjamini_hochberg(out.loc[mask, "p"]).values
     out["fdr_significant"] = out["p_fdr"] < fdr_alpha
 
@@ -1191,7 +1199,7 @@ def screen_associations(
         out["auc_univariate"] = np.nan
 
     cols = ["target", "target_kind", "predictor", "kind", "test", "stat", "p", "p_fdr",
-            "fdr_significant", "effect", "effect_label",
+            "fdr_significant", "in_fdr_family", "effect", "effect_label",
             "n_used", "auc_univariate", "positive_class"]
     out["_eff_abs"] = out["effect"].abs()
     out = (out[cols + ["_eff_abs"]]

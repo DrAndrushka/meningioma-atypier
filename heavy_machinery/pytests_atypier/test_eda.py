@@ -153,3 +153,56 @@ def test_pair_figures_carry_the_fdr_adjusted_q_value(tmp_path):
 
     assert captured
     assert all("p_fdr" in result for result in captured)
+
+
+def _fdr_family_fixture():
+    rng = np.random.default_rng(7)
+    n = 80
+    y = pd.Series(rng.integers(0, 2, n).astype(bool), name="high_grade")
+    df = pd.DataFrame({
+        "high_grade": y,
+        "vol": rng.normal(10, 3, n) + y * 2.0,
+        "vol_ge10": pd.array(rng.integers(0, 2, n).astype(bool)),
+        "adc": rng.normal(1.0, 0.2, n) - y * 0.1,
+    })
+    schema = {
+        "high_grade": ColSpec(name="high_grade", kind="binary"),
+        "vol": ColSpec(name="vol", kind="continuous"),
+        "vol_ge10": ColSpec(name="vol_ge10", kind="binary"),
+        "adc": ColSpec(name="adc", kind="continuous"),
+    }
+    return df, schema
+
+
+def test_fdr_family_limits_correction_to_family(tmp_path):
+    df, schema = _fdr_family_fixture()
+    out = eda.screen_associations(
+        df, schema,
+        targets=["high_grade"],
+        predictors=["vol", "vol_ge10", "adc"],
+        fdr_family=["vol", "adc"],
+        output_root=tmp_path,
+    )
+    fam = out[out["in_fdr_family"]]
+    extra = out[~out["in_fdr_family"]]
+    assert sorted(fam["predictor"]) == ["adc", "vol"]
+    assert list(extra["predictor"]) == ["vol_ge10"]
+    # excluded row: raw p kept, no corrected p, never flagged significant
+    assert extra["p"].notna().all()
+    assert extra["p_fdr"].isna().all()
+    assert not extra["fdr_significant"].any()
+    # family rows: BH computed over exactly the 2 family tests
+    expected = eda.benjamini_hochberg(fam["p"])
+    assert np.allclose(fam["p_fdr"].values, expected.values)
+
+
+def test_fdr_family_none_keeps_everything_in_family(tmp_path):
+    df, schema = _fdr_family_fixture()
+    out = eda.screen_associations(
+        df, schema,
+        targets=["high_grade"],
+        predictors=["vol", "vol_ge10", "adc"],
+        output_root=tmp_path,
+    )
+    assert out["in_fdr_family"].all()
+    assert out["p_fdr"].notna().all()

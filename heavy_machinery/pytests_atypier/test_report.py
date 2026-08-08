@@ -1019,3 +1019,24 @@ def test_model_note_escapes_markup_around_the_url():
 def test_model_note_survives_a_view_without_the_column():
     view = pd.DataFrame([{"Model": "m"}])
     assert list(rp._linked_model_notes(view).columns) == ["Model"]
+
+
+def test_split_fdr_family_partitions_rows():
+    import report
+    view = pd.DataFrame({
+        "predictor": ["vol", "vol_ge10"],
+        "p": [0.01, 0.02],
+        "in_fdr_family": [True, False],
+    })
+    main, exploratory, n_tests = report.split_fdr_family(view)
+    assert list(main["predictor"]) == ["vol"]
+    assert list(exploratory["predictor"]) == ["vol_ge10"]
+    assert n_tests == 1
+    assert "in_fdr_family" not in main.columns
+
+
+def test_split_fdr_family_backcompat_without_column():
+    import report
+    view = pd.DataFrame({"predictor": ["vol"], "p": [0.01]})
+    main, exploratory, n_tests = report.split_fdr_family(view)
+    assert len(main) == 1 and exploratory.empty and n_tests == 1

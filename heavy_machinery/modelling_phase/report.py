@@ -2156,6 +2156,33 @@ def _render_eda_heatmap_overview(
     return "".join(parts)
 
 
+def split_fdr_family(view: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Partition an associations view into the BH-corrected family and the
+    exploratory (redundant-variant) rows.
+
+    ``view`` is expected to carry a boolean ``in_fdr_family`` column (see
+    ``eda.screen_associations``); rows outside the family — dichotomisations
+    of continuous predictors and binary recodes of nominal parents already
+    tested in their raw form — render separately as an uncorrected,
+    collapsed block (spec 5.2).
+
+    Returns ``(main, exploratory, n_tests)`` where ``main``/``exploratory``
+    have the ``in_fdr_family`` column dropped and ``n_tests`` is the number
+    of predictors that entered the BH correction. When ``in_fdr_family`` is
+    absent (e.g. a stale ``associations.csv`` written before this column
+    existed) every row is treated as in-family, matching the pipeline's
+    former behaviour.
+    """
+    if "in_fdr_family" in view.columns:
+        fam_mask = view["in_fdr_family"].fillna(True).astype(bool)
+        exploratory = view[~fam_mask].drop(columns=["in_fdr_family"])
+        main = view[fam_mask].drop(columns=["in_fdr_family"])
+        n_tests = int(fam_mask.sum())
+    else:
+        main, exploratory, n_tests = view, view.iloc[0:0], len(view)
+    return main, exploratory, n_tests
+
+
 def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     """🔍 EDA story — per-target, color-coded, with badges."""
     body: list[str] = []
@@ -2243,12 +2270,24 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             )
         sub["p"] = sub["p"].apply(human_p)
         sub["p_fdr"] = sub["p_fdr"].apply(human_p)
+
+        main_sub, exploratory_sub, n_tests = split_fdr_family(sub)
+
         # The full ranked screen is long — keep it folded so the summary,
         # diagnostic accuracy and interpretation stay visible on open.
         target_body.append(details_block(
-            f"🧬 The Full Sweep — every predictor, ranked ({len(sub)})",
-            table_to_html(sub[display_cols], row_class_fn=_row_class),
+            f"🧬 The Full Sweep — every predictor, ranked ({len(main_sub)})",
+            table_to_html(main_sub[display_cols], row_class_fn=_row_class),
         ))
+        target_body.append(info_box(
+            f"FDR family: {n_tests} non-redundant predictors entered the "
+            f"Benjamini–Hochberg correction. Redundant variants "
+            f"(dichotomisations and binary recodes of predictors already "
+            f"tested) are exploratory and uncorrected."))
+        if not exploratory_sub.empty:
+            target_body.append(details_block(
+                "Exploratory variants — uncorrected, not in the FDR family",
+                table_to_html(exploratory_sub[display_cols], row_class_fn=_row_class)))
         target_body.append(_render_diagnostic_accuracy(target, art, cfg))
         target_body.append(_render_eda_interpretation(target, interp_df, cfg))
 
