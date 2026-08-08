@@ -139,6 +139,13 @@ table.report td.nowrap, table.report td.num { white-space: nowrap; }
 .manuscript p:last-child { margin-bottom: 0; }
 """
 
+_EVIDENCE_KEY = (
+    "<p class=\"footnote\">Vocabulary: <em>pass</em>/<em>fail</em> — the "
+    "criterion is met / not met; <em>survives</em> — still significant after "
+    "the named multiple-testing correction; <em>fragile</em> — all three "
+    "necessary criteria pass but neither robustness criterion does, or exactly "
+    "one necessary criterion other than curvature fails.</p>")
+
 
 # ---------------------------------------------------------------------------
 # Config and inputs
@@ -976,6 +983,8 @@ def render_evidence(data: ThresholdReportData, facts: CohortFacts) -> str:
        "reappears across the imputed datasets.")}
 
 {summary_table}
+
+{_EVIDENCE_KEY}
 
 {_answer(f"{v.grade_phrase()} of {v.n_metrics} measurements: "
          f"{v.grade_sentences()}." if v.graded else

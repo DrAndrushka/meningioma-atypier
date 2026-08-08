@@ -261,10 +261,11 @@ def _html(root) -> str:
 
 
 def _prose(html: str) -> str:
-    """The document with figures, styles and tables stripped — what a reader reads."""
+    """The document with figures, styles, tables, and footnotes stripped — what a reader reads."""
     body = re.sub(r"<svg.*?</svg>", "", html, flags=re.S)
     body = re.sub(r"<style.*?</style>", "", body, flags=re.S)
     body = re.sub(r"<table.*?</table>", "", body, flags=re.S)
+    body = re.sub(r'<p class="?footnote"?.*?</p>', "", body, flags=re.S)
     return re.sub(r"<[^>]+>", " ", body)
 
 
@@ -406,6 +407,12 @@ def test_share_of_range_defined_in_footnote(tmp_path):
     _write_artifacts(tmp_path)
     html = _html(tmp_path)
     assert "beats both treating everyone and treating no one" in html
+
+
+def test_evidence_vocabulary_footnote_present(tmp_path):
+    _write_artifacts(tmp_path)
+    html = _html(tmp_path)
+    assert "necessary criteria pass" in html
 
 
 # --------------------------------------------------------------------------
