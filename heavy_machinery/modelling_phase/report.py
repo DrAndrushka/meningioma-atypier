@@ -1887,10 +1887,11 @@ _EDA_GLOSSARY_GROUPS = [
          "Overall correct calls (present/absent vs outcome) as a %. 📊 Easy to "
          "read but misleading when the outcome is rare — check sensitivity and "
          "specificity too."),
-        ("AUC",
-         "In this table: (sensitivity + specificity) / 2 for a binary imaging "
-         "feature. 📐 Simple univariate separation score (not full ROC). Matches "
-         "the Upreti et al. Table 3 style."),
+        ("AUC (binary)",
+         "(sensitivity + specificity) / 2 for a yes/no variable — balanced "
+         "accuracy. 📐 Not a ROC-AUC: the multivariable section reports a true "
+         "ROC-AUC under headings that say <em>Model AUC</em>. Matches the "
+         "Upreti et al. Table 3 style."),
         ("Wilson 95% CI",
          "Confidence interval for each % in brackets. 📏 Narrow = precise; wide "
          "= few events or small sample — interpret cautiously."),
@@ -2610,12 +2611,54 @@ def _panel_aim_one(art: Artifacts) -> str:
         )
     return (
         lead
-        + "<h3>Table 4. Diagnostic performance of individual MRI signs for "
-          "WHO grade 2–3 meningioma</h3>"
+        + "<h3><strong>Table 4.</strong> Diagnostic performance of individual "
+          "imaging and clinical variables for WHO grade 2–3 meningioma</h3>"
         + _table(view)
         + _panel_table_footnotes(art)
         + _panel_figure(art, "lr_forest")
+        + _panel_forest_caption(art)
     )
+
+
+def _panel_forest_caption(art: Artifacts) -> str:
+    """The forest plot's own caption.
+
+    A figure is read on its own — lifted into a slide, a poster or a reviewer's
+    PDF viewer without the table above it — so its abbreviations are spelled
+    out here rather than borrowed from the table footnote.
+    """
+    if art.panel_marker is None or art.panel_marker.empty:
+        return ""
+    return (
+        "<p class='caption'><strong>Figure X.</strong> Positive likelihood "
+        "ratio for each variable, with 95% confidence interval, on a "
+        "logarithmic axis. A ratio of 1 means the finding leaves the "
+        "probability of WHO grade 2–3 unchanged; variables whose interval "
+        "crosses 1 are shaded and drawn in grey. Values repeat in the "
+        "right-hand column. "
+        "ADC = apparent diffusion coefficient; CI = confidence interval; "
+        "DWI = diffusion-weighted imaging; LR+ = positive likelihood ratio; "
+        "T1/T2 = T1- and T2-weighted imaging.</p>"
+    )
+
+
+def _panel_prevalence(panel) -> tuple[float, int, int] | None:
+    """Outcome rate, from the variable with the largest denominator.
+
+    Each row has its own complete cases, so there is no single cohort n in
+    this table; the most completely measured variable is the closest thing to
+    it, and it is quoted with its own n so the reader can check it.
+    """
+    if panel is None or panel.empty:
+        return None
+    if not {"n_used", "n_high_grade"}.issubset(panel.columns):
+        return None
+    rows = panel.dropna(subset=["n_used", "n_high_grade"])
+    if rows.empty:
+        return None
+    row = rows.loc[rows["n_used"].idxmax()]
+    n, events = int(row["n_used"]), int(row["n_high_grade"])
+    return (events / n, events, n) if n else None
 
 
 def _panel_table_footnotes(art: Artifacts) -> str:
@@ -2630,14 +2673,26 @@ def _panel_table_footnotes(art: Artifacts) -> str:
                  and "continuity_corrected" in panel.columns
                  and bool(panel["continuity_corrected"].any()))
     lines = [
-        "Signs are sorted by LR+ in descending order. "
+        "Variables are sorted by LR+ in descending order. "
         "LR+ with 95% CI crossing 1.0 indicates no significant discriminative "
-        "value.",
-        "n/N (%) = scans with the sign present / scans assessed for it "
-        "(percentage). LR+ = positive likelihood ratio, the number of times "
-        "more often a sign appears in a WHO grade 2–3 tumour than in a grade 1 "
-        "one.",
+        "value. No multiplicity correction is applied to this table.",
     ]
+    prev = _panel_prevalence(panel)
+    if prev is not None:
+        rate, events, n = prev
+        lines.append(
+            f"Cohort prevalence of WHO grade 2–3 is {rate:.0%} ({events}/{n}). "
+            "LR+, sensitivity and specificity do not depend on it; predictive "
+            "values would, and are reported in the univariate accuracy table "
+            "rather than here."
+        )
+    lines.append(
+        "n/N (%) = patients with the finding present / patients assessed for "
+        "it (percentage); each variable is scored on its own complete cases, "
+        "so denominators differ between rows. LR+ = positive likelihood ratio, "
+        "the number of times more often a finding is present in a WHO grade "
+        "2–3 tumour than in a grade 1 one."
+    )
     if corrected:
         lines.append(
             "* estimate calculated with a continuity correction because one "
@@ -2645,7 +2700,8 @@ def _panel_table_footnotes(art: Artifacts) -> str:
     lines.append(
         "ADC = apparent diffusion coefficient; CI = confidence interval; "
         "DWI = diffusion-weighted imaging; LR+ = positive likelihood ratio; "
-        "Sens = sensitivity; Spec = specificity.")
+        "Sens = sensitivity; Spec = specificity; T1/T2 = T1- and T2-weighted "
+        "imaging.")
     return ("<p class='muted'><small>"
             + "<br>".join(lines)
             + "</small></p>")

@@ -219,13 +219,13 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
     """
     if panel is None or panel.empty:
         return pd.DataFrame(columns=[
-            "Marker", "n/N (%)",
+            "Variable", "n/N (%)",
             "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
         ])
     ranked = panel.sort_values("lr_pos", ascending=False, na_position="last",
                                kind="mergesort")
     return pd.DataFrame({
-        "Marker": ranked["label"],
+        "Variable": ranked["label"],
         "n/N (%)": [_format_present(r) for _, r in ranked.iterrows()],
         "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in ranked.iterrows()],
         "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in ranked.iterrows()],
@@ -320,7 +320,7 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
             color="#444444", linespacing=1.25)
     if not crosses[-1]:
         ax.annotate(
-            f"{values[-1]:.1f}× more likely\nwhen this sign is present",
+            f"{values[-1]:.1f}× more likely\nwhen this finding is present",
             xy=(values[-1], y[-1]), xytext=(values[-1], label_y),
             ha="center", va="bottom", fontsize=base_size * 0.74,
             color=informative, linespacing=1.25,
@@ -343,7 +343,7 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
 
     handles = [
         plt.Line2D([], [], color=informative, marker="o", markersize=4,
-                   linewidth=1.1, label="Interval excludes 1 — argues for high grade"),
+                   linewidth=1.1, label="Interval excludes 1 — argues for grade 2–3"),
         plt.Line2D([], [], color=muted, marker="o", markersize=4,
                    linewidth=1.1, label="Interval crosses 1 — says nothing on its own"),
     ]
@@ -356,9 +356,9 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
               borderaxespad=0.0, fontsize=base_size * 0.76)
 
     ps.set_titles(
-        ax, "How much a positive finding argues for high grade",
+        ax, "How much a positive finding argues for WHO grade 2–3",
         "Positive likelihood ratio with 95% CI — how many times more often the "
-        "sign appears in a high-grade tumour than in a benign one",
+        "finding is present in a grade 2–3 tumour than in a grade 1 one",
     )
     # Hand-set margins: the value column needs a fixed narrow gutter, which
     # tight_layout refuses to honour once wspace is set. Marker labels and the

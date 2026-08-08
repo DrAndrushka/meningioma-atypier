@@ -211,7 +211,7 @@ def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
     panel = mp.marker_panel_table(df, [mp.BinaryMarker("noise", "Noise")], TARGET)
     view = mp.marker_panel_reading_view(panel)
     assert list(view.columns) == [
-        "Marker", "n/N (%)",
+        "Variable", "n/N (%)",
         "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
     ]
     # The interval covers 1; the table still carries the number, and the
