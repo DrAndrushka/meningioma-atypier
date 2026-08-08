@@ -1091,7 +1091,7 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
                             "for its own inputs), so their metrics are not directly comparable "
                             "row-to-row; read each against its own n.</p>")
 
-    nb_html, nb_text = "", ""
+    nb_html, nb_text, nb_note = "", "", ""
     if not nb.empty and "strategy" in nb.columns:
         nb_html = _table(pd.DataFrame({
             "Strategy": nb["strategy"],
@@ -1102,6 +1102,9 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
             "Share of range": [f"{_num(x, 0)}%" for x in
                                nb["pct_of_range_beating_references"]],
         }))
+        nb_note = ("<p class=\"footnote\">Share of range: the fraction of the "
+                   "tested decision-threshold spectrum over which the strategy "
+                   "beats both treating everyone and treating no one.</p>")
         contenders = nb[~nb["is_reference"].map(_truthy)].copy()
         contenders["pct_of_range_beating_references"] = pd.to_numeric(
             contenders["pct_of_range_beating_references"], errors="coerce")
@@ -1128,6 +1131,7 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
 {cal_html}
 {cal_note}
 {nb_html}
+{nb_note}
 
 {_answer((cal_text + nb_text) or "Calibration and net benefit are missing — re-run the notebook.")}
 """

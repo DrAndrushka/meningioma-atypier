@@ -402,6 +402,12 @@ def test_usefulness_only_uncut_omits_footnote(tmp_path):
     assert "not directly comparable" not in html
 
 
+def test_share_of_range_defined_in_footnote(tmp_path):
+    _write_artifacts(tmp_path)
+    html = _html(tmp_path)
+    assert "beats both treating everyone and treating no one" in html
+
+
 # --------------------------------------------------------------------------
 # Assembly
 # --------------------------------------------------------------------------
