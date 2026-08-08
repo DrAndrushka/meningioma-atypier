@@ -39,6 +39,7 @@ for _phase in ("cleaning_phase", "modelling_phase", "threshold_phase"):
 
 import evidence  # noqa: E402  (needs the sys.path bootstrap above)
 import study  # noqa: E402
+from heavy_machinery.config import load  # noqa: E402
 from report import (  # noqa: E402
     _esc,
     _lead,
@@ -50,6 +51,8 @@ from report import (  # noqa: E402
     warning_box,
     write_html,
 )
+
+analysis = load("analysis")
 
 DEFAULT_TITLE = "Thresholds for high-grade meningioma on pre-operative MRI"
 GRADE_ORDER = list(evidence.GRADES)
@@ -617,7 +620,8 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
 {_summary_table(data)}
 <p class="lead">Seven questions, in the order they get asked. Each one: how it was done in two
 sentences, one figure, one table, one answer. Every number is read from the run that
-produced this file — nothing below is typed by hand.</p>
+produced this file — nothing below is typed by hand. Bootstrap internal validation:
+{analysis.BOOTSTRAP_RESAMPLES} resamples.</p>
 """
 
 

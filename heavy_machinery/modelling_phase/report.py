@@ -42,6 +42,10 @@ from cleaning import (
 )
 from plot_style import prettify_caption, prettify_label
 
+from heavy_machinery.config import load
+
+analysis = load("analysis")
+
 
 # ---------------------------------------------------------------------------
 # Thresholds & constants (Cohen-style defaults, configurable via dataclass)
@@ -1134,6 +1138,7 @@ def render_header(cfg: ReportConfig, art: Artifacts) -> str:
         card("Predictors screened", n_preds_screened or "—"),
         card("EDA tests", n_tests or "—"),
         card("Inferential models", n_models or "—"),
+        card("Bootstrap validation", f"{analysis.BOOTSTRAP_RESAMPLES} resamples"),
     ]
     targets_html = ", ".join(f"<span class='badge target'>🎯 {_esc(t)}</span>"
                              for t in cfg.targets) or "<em>(none specified)</em>"

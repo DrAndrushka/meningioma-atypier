@@ -47,6 +47,10 @@ import statsmodels.api as sm
 import plot_style as ps
 from thresholds import Metric
 
+from heavy_machinery.config import load
+
+analysis = load("analysis")
+
 # The range of threshold probabilities a clinician might plausibly declare for
 # "act as though this is high grade". Anchored on the cohort's own prevalence:
 # below the base rate the sensible action is to treat everyone.
@@ -190,7 +194,7 @@ def uncut_model_calibration(
     metrics: Sequence[Metric],
     target: str,
     *,
-    n_boot: int = 500,
+    n_boot: int = analysis.BOOTSTRAP_RESAMPLES,
     seed: int = 20260801,
 ) -> dict:
     """Apparent and bootstrap-corrected calibration slope and intercept.
@@ -216,7 +220,7 @@ def _fitted_calibration(
     label: str,
     n_predictors: int,
     *,
-    n_boot: int = 500,
+    n_boot: int = analysis.BOOTSTRAP_RESAMPLES,
     seed: int = 20260801,
 ) -> dict:
     """The optimism loop itself, shared by the uncut and the cut model."""
@@ -315,7 +319,7 @@ def cut_model_calibration(
     cutpoints: Sequence,
     target: str,
     *,
-    n_boot: int = 500,
+    n_boot: int = analysis.BOOTSTRAP_RESAMPLES,
     seed: int = 20260801,
 ) -> dict:
     """Calibration of the all-cut model, comparable row-for-row with the uncut one."""

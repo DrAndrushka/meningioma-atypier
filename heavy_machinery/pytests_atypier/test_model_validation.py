@@ -174,3 +174,11 @@ def test_an_overfitted_model_loses_both_slope_and_intercept(tiny_model_df):
     )
     assert out["calibration"]["slope_corrected"] < 0.8
     assert np.isfinite(out["calibration"]["intercept_corrected"])
+
+
+def test_bootstrap_default_comes_from_shared_config():
+    import inspect
+    import analysis  # heavy_machinery/config resolves bare per pytest.ini
+    for fn in (bootstrap_internal_validation, enrich_streamlit_artifact):
+        sig = inspect.signature(fn)
+        assert sig.parameters["n_bootstrap"].default == analysis.BOOTSTRAP_RESAMPLES

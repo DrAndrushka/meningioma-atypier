@@ -50,6 +50,10 @@ from thresholds import (
     select_cutoff,
 )
 
+from heavy_machinery.config import load
+
+analysis = load("analysis")
+
 AND = "AND"
 OR = "OR"
 LOGICS = (AND, OR)
@@ -323,7 +327,7 @@ def continuous_model_benchmark(
     metrics: Sequence[Metric],
     target: str,
     *,
-    n_boot: int = 500,
+    n_boot: int = analysis.BOOTSTRAP_RESAMPLES,
     seed: int = 20260801,
 ) -> dict:
     """Logistic model on the continuous metrics — the AUC a cut rule must beat.

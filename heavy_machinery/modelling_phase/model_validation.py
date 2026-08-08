@@ -17,6 +17,10 @@ from sklearn.metrics import brier_score_loss, roc_auc_score, roc_curve
 
 from schema_infer import ColSpec
 
+from heavy_machinery.config import load
+
+analysis = load("analysis")
+
 # Chart colours travel with the artifact so the Streamlit calculator matches the
 # report; both come from the pipeline's shared Okabe–Ito palette.
 _APPARENT_COLOR = "#666666"
@@ -196,7 +200,7 @@ def bootstrap_internal_validation(
     design_cols: list[str],
     coefficients: dict[str, float],
     *,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> dict[str, Any]:
     """Apparent + optimism-corrected metrics and ROC points for the development sample."""
     y_orig = model_df[target].astype(int)
@@ -375,7 +379,7 @@ def enrich_streamlit_artifact(
     model_df: pd.DataFrame,
     design_cols: list[str],
     *,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> dict[str, Any]:
     """Add validation charts, prose, shrinkage, and recalibrated coefficients."""
     target = str(artifact["target"])

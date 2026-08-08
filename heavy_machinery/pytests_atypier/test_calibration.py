@@ -271,6 +271,22 @@ def test_no_model_artifacts_is_not_an_error(tmp_path):
     assert cal.multivariable_calibration([]).empty
 
 
+def test_threshold_bootstrap_matches_shared_config():
+    import inspect
+    import analysis
+    import calibration
+    import combinations
+    fns = [
+        calibration.uncut_model_calibration,   # calibration.py:188, default at :193
+        calibration._fitted_calibration,       # calibration.py:213, default at :219
+        calibration.cut_model_calibration,     # calibration.py:313, default at :318
+        combinations.continuous_model_benchmark,  # combinations.py:321, default at :326
+    ]
+    for fn in fns:
+        sig = inspect.signature(fn)
+        assert sig.parameters["n_boot"].default == analysis.BOOTSTRAP_RESAMPLES
+
+
 # --------------------------------------------------------------------------
 # Figures
 # --------------------------------------------------------------------------
