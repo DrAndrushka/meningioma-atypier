@@ -1058,3 +1058,22 @@ def test_data_quality_silent_when_plausible():
     import report
     dda = pd.DataFrame({"column": ["max_diameter_cm"], "min": [1.4]})
     assert report.data_quality_warnings(dda) == []
+
+
+def test_data_quality_missing_min_column_degrades_gracefully():
+    import report
+    dda = pd.DataFrame({"column": ["max_diameter_cm", "tumor_volume"]})
+    # Missing "min" column should return [] without raising
+    assert report.data_quality_warnings(dda) == []
+
+
+def test_data_quality_duplicate_column_rows_take_minimum():
+    import report
+    dda = pd.DataFrame({
+        "column": ["max_diameter_cm", "max_diameter_cm", "age"],
+        "min": [0.2, 0.6, 25.0],
+    })
+    msgs = report.data_quality_warnings(dda)
+    # Should produce exactly one warning for diameter, using the minimum (0.2)
+    assert len(msgs) == 1
+    assert "0.2" in msgs[0] and "diameter" in msgs[0].lower()

@@ -564,12 +564,17 @@ def data_quality_warnings(dda_continuous: pd.DataFrame | None) -> list[str]:
     """Messages for continuous minima below hard plausibility floors."""
     if dda_continuous is None or dda_continuous.empty:
         return []
+    if not {"column", "min"} <= set(dda_continuous.columns):
+        return []
     msgs: list[str] = []
-    idx = dda_continuous.set_index("column")
+    # Handle duplicate column rows by taking the smallest min across all duplicates.
+    mins = pd.to_numeric(
+        dda_continuous.set_index("column")["min"], errors="coerce"
+    ).groupby(level=0).min()
     for col, (floor, unit, label) in _PLAUSIBILITY_FLOORS.items():
-        if col not in idx.index:
+        if col not in mins.index:
             continue
-        mn = pd.to_numeric(pd.Series([idx.loc[col, "min"]]), errors="coerce").iloc[0]
+        mn = mins.loc[col]
         if pd.notna(mn) and mn < floor:
             msgs.append(
                 f"Data-quality note: smallest recorded {label} is {mn:g} {unit} "
