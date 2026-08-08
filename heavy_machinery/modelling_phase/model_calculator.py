@@ -14,6 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from heavy_machinery.config import load
+
+analysis = load("analysis")
+
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 _REQUIRED_ARTIFACT_KEYS = (
@@ -568,7 +572,7 @@ def write_streamlit_artifacts(
     schema: dict | None = None,
     predictors: Sequence[str] | None = None,
     vif_threshold: float = 5.0,
-    n_bootstrap: int = 1000,
+    n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> list[Path]:
     """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta."""
     from model_validation import build_complete_case_frame, enrich_streamlit_artifact

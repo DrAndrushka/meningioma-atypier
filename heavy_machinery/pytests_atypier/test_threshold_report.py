@@ -358,6 +358,24 @@ def test_report_degrades_without_calibration_or_net_benefit(tmp_path):
     assert "re-run the notebook" in html
 
 
+def test_header_bootstrap_count_matches_the_calibration_table(cfg):
+    """The header must not assert a resample count nobody ran: it reads the
+    calibration table's own ``n_bootstrap`` (500 in the fixture), not the
+    manifest's ``n_bootstrap`` context (2000 in the fixture) and never the
+    library default."""
+    html = tr.build_report(cfg)
+    assert "Bootstrap internal validation: 500 resamples." in html
+    assert "Bootstrap internal validation: 2000 resamples." not in html
+
+
+def test_header_omits_bootstrap_sentence_when_the_count_is_unrecorded(tmp_path):
+    """Neither the calibration table nor the manifest carries a resample count
+    for this run — the header must drop the sentence, not print a bare dash."""
+    _write_artifacts(tmp_path, tables=_with(calibration=None), manifest=False)
+    html = _html(tmp_path)
+    assert "Bootstrap internal validation" not in html
+
+
 def test_usefulness_equal_counts_shows_directly_comparable(tmp_path):
     """When Uncut and Cut have same n_used, footnote says they are directly comparable."""
     _write_artifacts(tmp_path)

@@ -112,6 +112,7 @@ FIGURE_PREFIXES = {
 
 _EXTRA_CSS = """
 .lead { color: var(--muted); margin: 0 0 12px; max-width: 62em; }
+.footnote { font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
 .answer {
     border-left: 4px solid var(--accent); background: var(--card);
     padding: 10px 14px; margin: 14px 0 6px; border-radius: 0 6px 6px 0;
@@ -585,6 +586,31 @@ def _summary_table(data: ThresholdReportData) -> str:
     }))
 
 
+def _recorded_bootstrap_resamples(data: ThresholdReportData) -> int | None:
+    """The resample count this run actually used, not the library default.
+
+    Prefers the calibration table's own ``n_bootstrap`` column — the bootstrap
+    that drives internal validation — when every row agrees on one value.
+    Falls back to the manifest's recorded context (cut-point selection count).
+    Returns ``None`` when neither source has a usable number, so the caller
+    can omit the sentence instead of asserting a count nobody ran.
+    """
+    cal = data.table("calibration")
+    if not cal.empty and "n_bootstrap" in cal.columns:
+        counts = {int(x) for x in pd.to_numeric(cal["n_bootstrap"], errors="coerce").dropna()}
+        if len(counts) == 1:
+            return counts.pop()
+
+    context = data.manifest.get("context", {})
+    n = context.get("n_bootstrap")
+    if n is not None:
+        try:
+            return int(n)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
                   facts: CohortFacts) -> str:
     v = facts.verdicts
@@ -608,6 +634,9 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
         for label, value, sub in cards)
 
     author = (f'<p class="report-authors">{_esc(cfg.author)}</p>' if cfg.author else "")
+    n_boot = _recorded_bootstrap_resamples(data)
+    bootstrap_note = (f" Bootstrap internal validation: {n_boot} resamples."
+                       if n_boot is not None else "")
     warn = ""
     if data.warnings:
         warn = warning_box(
@@ -627,8 +656,7 @@ def render_header(cfg: ThresholdReportConfig, data: ThresholdReportData,
 {_summary_table(data)}
 <p class="lead">Seven questions, in the order they get asked. Each one: how it was done in two
 sentences, one figure, one table, one answer. Every number is read from the run that
-produced this file — nothing below is typed by hand. Bootstrap internal validation:
-{analysis.BOOTSTRAP_RESAMPLES} resamples.</p>
+produced this file — nothing below is typed by hand.{bootstrap_note}</p>
 """
 
 
@@ -1087,18 +1115,19 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
                 uncut_n, cut_n = int(uncut_n), int(cut_n)
                 if uncut_n == cut_n:
                     cal_note = (f"<p class=\"footnote\">Both the uncut and the cut model are scored "
-                                f"on the same N patients with all measurements available, so their rows "
-                                f"are directly comparable.</p>")
+                                f"on the same n={uncut_n} patients with all measurements available, "
+                                f"so their rows are directly comparable.</p>")
                 else:
                     cal_note = (f"<p class=\"footnote\">The uncut and cut model rows are fitted on "
                                 f"different patient counts (Uncut: n={uncut_n}; Cut: n={cut_n}), so their "
                                 f"metrics are not directly comparable row-to-row; read each against its own n.</p>")
             else:
-                # Fallback if n_used is missing
-                cal_note = ("<p class=\"footnote\">The uncut and cut model rows are fitted on "
-                            "different patient counts (each model keeps the patients complete "
-                            "for its own inputs), so their metrics are not directly comparable "
-                            "row-to-row; read each against its own n.</p>")
+                # Fallback if n_used is missing — no evidence either way, so say so
+                # rather than asserting the counts differ.
+                cal_note = ("<p class=\"footnote\">Whether the uncut and cut model rows are fitted "
+                            "on the same patient count could not be verified from the artifacts "
+                            "(n_used is missing), so read each row against its own numbers rather "
+                            "than comparing across rows.</p>")
 
     nb_html, nb_text, nb_note = "", "", ""
     if not nb.empty and "strategy" in nb.columns:

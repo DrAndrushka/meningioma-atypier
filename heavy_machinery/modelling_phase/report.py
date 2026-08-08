@@ -227,6 +227,9 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 /* Lead sentence introducing a subsection */
 .lead { font-size: 15px; font-weight: 500; margin: 10px 0; }
 
+/* Small print under a table or card — caveats, not the main point */
+.footnote { font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
+
 /* Figure grid */
 .figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr));
                gap: 14px; margin: 12px 0 18px; }
@@ -1169,7 +1172,7 @@ def render_header(cfg: ReportConfig, art: Artifacts) -> str:
         card("Predictors screened", n_preds_screened or "—"),
         card("EDA tests", n_tests or "—"),
         card("Inferential models", n_models or "—"),
-        card("Bootstrap validation", f"{analysis.BOOTSTRAP_RESAMPLES} resamples"),
+        card("Bootstrap model validation", f"{analysis.BOOTSTRAP_RESAMPLES} resamples"),
     ]
     targets_html = ", ".join(f"<span class='badge target'>🎯 {_esc(t)}</span>"
                              for t in cfg.targets) or "<em>(none specified)</em>"
