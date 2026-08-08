@@ -28,6 +28,7 @@ import combinations as cb
 import plot_style as ps
 from cleaning import format_table_for_csv
 from diagnostic_accuracy import binary_diagnostic_metrics
+from eda import benjamini_hochberg
 from model_calculator import load_model_artifact, predict_from_artifact
 from thresholds import format_pct_ci
 
@@ -136,7 +137,7 @@ _PANEL_COLUMNS = [
     "PPV", "PPV_lo", "PPV_hi", "NPV", "NPV_lo", "NPV_hi",
     "AUC", "OR", "OR_lo", "OR_hi",
     "lr_pos", "lr_pos_lo", "lr_pos_hi", "chance_overlap", "continuity_corrected",
-    "p", "test",
+    "p", "p_fdr", "test",
 ]
 
 
@@ -178,6 +179,11 @@ def marker_panel_table(
 
     out = pd.DataFrame(rows)
     out["chance_overlap"] = out["chance_overlap"].astype(bool)
+    # Corrected across this table's own rows, so the footnote's claim about
+    # which family the q-values belong to is true by construction rather than
+    # by a comment. Borrowing them from the EDA screen would silently break
+    # the moment a marker is excluded here but not there.
+    out["p_fdr"] = benjamini_hochberg(out["p"]) if "p" in out.columns else np.nan
     out = out.sort_values(
         ["chance_overlap", "lr_pos"], ascending=[True, False], kind="mergesort",
     ).reset_index(drop=True)
@@ -203,6 +209,14 @@ def _format_lr(row: pd.Series) -> str:
     return text + "*" if bool(row.get("continuity_corrected")) else text
 
 
+def _format_q(value) -> str:
+    """``0.003`` / ``<0.001`` — an adjusted p, never in scientific notation."""
+    if value is None or pd.isna(value):
+        return "—"
+    v = float(value)
+    return "<0.001" if v < 0.001 else f"{v:.3f}"
+
+
 def _format_present(row: pd.Series) -> str:
     """``59/309 (19%)`` — the epidemiological convention, prevalence scannable."""
     present, used = int(row["present_n"]), int(row["n_used"])
@@ -220,7 +234,7 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
     if panel is None or panel.empty:
         return pd.DataFrame(columns=[
             "Variable", "n/N (%)",
-            "Sens (95% CI)", "Spec (95% CI)", "LR+ (95% CI)",
+            "Sens (95% CI)", "Spec (95% CI)", "FDR p", "LR+ (95% CI)",
         ])
     ranked = panel.sort_values("lr_pos", ascending=False, na_position="last",
                                kind="mergesort")
@@ -229,6 +243,7 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
         "n/N (%)": [_format_present(r) for _, r in ranked.iterrows()],
         "Sens (95% CI)": [format_pct_ci(r, "sensitivity") for _, r in ranked.iterrows()],
         "Spec (95% CI)": [format_pct_ci(r, "specificity") for _, r in ranked.iterrows()],
+        "FDR p": [_format_q(r.get("p_fdr")) for _, r in ranked.iterrows()],
         "LR+ (95% CI)": [_format_lr(r) for _, r in ranked.iterrows()],
     }).reset_index(drop=True)
 

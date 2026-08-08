@@ -2672,10 +2672,18 @@ def _panel_table_footnotes(art: Artifacts) -> str:
     corrected = (panel is not None and not panel.empty
                  and "continuity_corrected" in panel.columns
                  and bool(panel["continuity_corrected"].any()))
+    n_rows = 0 if panel is None or panel.empty else len(panel)
     lines = [
         "Variables are sorted by LR+ in descending order. "
         "LR+ with 95% CI crossing 1.0 indicates no significant discriminative "
-        "value. No multiplicity correction is applied to this table.",
+        "value.",
+        "FDR p is the Benjamini–Hochberg adjusted p for the χ² test of "
+        f"association between the finding and the outcome, corrected across "
+        f"the {n_rows} variables in this table. It is a different statistic "
+        "from LR+ and can disagree with it: a variable may survive correction "
+        "while its likelihood ratio interval still crosses 1, and the reverse. "
+        "Read the interval for discriminative value and FDR p for whether "
+        f"the association survives testing {n_rows} variables at once.",
     ]
     prev = _panel_prevalence(panel)
     if prev is not None:
