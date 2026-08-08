@@ -537,6 +537,18 @@ def test_manuscript_block_carries_the_run_numbers(cfg):
         assert fragment in block.group(0), fragment
 
 
+def test_manuscript_limitations_prevalence_renders_one_decimal(tmp_path):
+    """The Limitations sentence's cohort prevalence used to render at 0 dp
+    (``30% high grade``) via the local ``_pct`` helper's default, even after the
+    Methods paragraph two sentences above it was fixed to 1 dp. Both must agree."""
+    _write_artifacts(tmp_path)
+    html = _html(tmp_path)
+    block = re.search(r'<div class="manuscript">.*?\n</div>', html, re.S)
+    assert block
+    assert "29.8% high grade" in block.group(0)
+    assert "30% high grade" not in block.group(0)
+
+
 def test_manuscript_block_stays_short(cfg):
     """It has to fit an abstract: long enough to be useful, short enough to paste."""
     block = re.search(r'<div class="manuscript">.*?\n</div>',

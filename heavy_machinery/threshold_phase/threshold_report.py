@@ -850,15 +850,15 @@ def render_combinations(data: ThresholdReportData, facts: CohortFacts) -> str:
             "Criteria met": counts["n_criteria_met"],
             "Patients": counts["n"],
             "High grade": counts.get("n_high_grade", pd.Series(dtype=float)),
-            "Risk (95% CI)": [f"{_pct(r)} ({_pct(lo)}–{_pct(hi)})" for r, lo, hi
+            "Risk (95% CI)": [f"{_pct(r, 1)} ({_pct(lo, 1)}–{_pct(hi, 1)})" for r, lo, hi
                               in zip(counts["risk"], counts["risk_lo"], counts["risk_hi"])],
         }))
         usable = counts[counts["n"] > 0]
         if len(usable) >= 2:
             ladder = (f" Counting how many of the {_int(usable['n_criteria_met'].max())} "
                       f"criteria a tumour ticks moves the "
-                      f"observed risk from {_pct(usable['risk'].iloc[0])} to "
-                      f"{_pct(usable['risk'].iloc[-1])}.")
+                      f"observed risk from {_pct(usable['risk'].iloc[0], 1)} to "
+                      f"{_pct(usable['risk'].iloc[-1], 1)}.")
 
     gain = _num(_first(verdict, "gain_vs_best_single"))
     best_rule = _esc(str(_first(verdict, "best_rule", "—")))
@@ -1190,7 +1190,7 @@ def render_manuscript(data: ThresholdReportData, facts: CohortFacts) -> str:
         usable = counts[counts["n"] > 0]
         if len(usable) >= 2:
             ladder = (f"Observed risk rose with the number of criteria met, "
-                      f"{_pct(usable['risk'].iloc[0])} to {_pct(usable['risk'].iloc[-1])} "
+                      f"{_pct(usable['risk'].iloc[0], 1)} to {_pct(usable['risk'].iloc[-1], 1)} "
                       f"across 0–{_int(usable['n_criteria_met'].max())}. ")
 
     agreement = _literature_agreement(data)
@@ -1259,7 +1259,7 @@ calibration and net benefit. The defensible outputs are the risk curves, a count
 met, and the {v.n_metrics}-flag model that count approximates.</p>
 
 <p><b>Limitations.</b> Retrospective single-centre surgical series: at
-{_pct(facts.prevalence)} high grade the predictive values do not transfer, though
+{_pct(facts.prevalence, 1)} high grade the predictive values do not transfer, though
 sensitivity and specificity do. All derived cut-points are optimistically biased and are
 reported corrected. The {facts.m_draws} imputations are a stability check, not Rubin
 pooling — a cut-point chosen by maximisation does not meet Rubin's conditions — so the
