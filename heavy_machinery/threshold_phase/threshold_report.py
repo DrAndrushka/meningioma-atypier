@@ -1041,7 +1041,7 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
         cal = cal[~cal["source"].astype(str)
                   .str.contains("modelling phase", case=False, na=False)]
 
-    cal_html, cal_text = "", ""
+    cal_html, cal_text, cal_note = "", "", ""
     if not cal.empty and "model" in cal.columns:
         uncut = cal[cal["model"].astype(str).str.contains("Uncut", case=False, na=False)]
         row = uncut.iloc[0] if not uncut.empty else cal.iloc[0]
@@ -1068,6 +1068,13 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
         cal_text = (f"Predicted percentages are close to honest: calibration slope "
                     f"{_num(row['slope_corrected'])} after correction (1.00 is perfect; "
                     f"below 1 means the high and low predictions are pushed too far apart). ")
+        # Add non-comparability footnote if both Uncut and Cut models are present
+        cut = cal[cal["model"].astype(str).str.contains("Cut", case=False, na=False)]
+        if not uncut.empty and not cut.empty:
+            cal_note = ("<p class=\"footnote\">The uncut and cut model rows are fitted on "
+                        "different patient counts (each model keeps the patients complete "
+                        "for its own inputs), so their metrics are not directly comparable "
+                        "row-to-row; read each against its own n.</p>")
 
     nb_html, nb_text = "", ""
     if not nb.empty and "strategy" in nb.columns:
@@ -1104,6 +1111,7 @@ def render_usefulness(data: ThresholdReportData, facts: CohortFacts) -> str:
 {_figure_row(*_usefulness_figures(data, facts))}
 
 {cal_html}
+{cal_note}
 {nb_html}
 
 {_answer((cal_text + nb_text) or "Calibration and net benefit are missing — re-run the notebook.")}

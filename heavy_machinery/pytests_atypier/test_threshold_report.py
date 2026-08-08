@@ -163,9 +163,15 @@ def _defaults() -> dict[str, pd.DataFrame]:
         ]),
         "40_calibration.csv": pd.DataFrame([
             {"model": "Uncut four-measurement model", "n_used": 304, "events": 93,
-             "slope_apparent": 1.0, "slope_corrected": 0.911,
+             "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.911,
              "intercept_apparent": 0.0, "intercept_corrected": -0.0002,
-             "brier_apparent": 0.189, "brier_corrected": 0.195},
+             "brier_apparent": 0.189, "brier_corrected": 0.195, "n_bootstrap": 500,
+             "source": "threshold phase (fitted here)"},
+            {"model": "Cut four-measurement model", "n_used": 304, "events": 93,
+             "n_predictors": 4, "slope_apparent": 1.0, "slope_corrected": 0.920,
+             "intercept_apparent": 0.0, "intercept_corrected": -0.001,
+             "brier_apparent": 0.181, "brier_corrected": 0.188, "n_bootstrap": 500,
+             "source": "threshold phase (fitted here)"},
         ]),
         "46_study_facts.csv": pd.DataFrame([
             {"key": "who_edition", "item": "Outcome and WHO edition",
@@ -349,6 +355,12 @@ def test_report_degrades_without_calibration_or_net_benefit(tmp_path):
     html = _html(tmp_path)
     assert "Are the predicted percentages usable?" in html
     assert "re-run the notebook" in html
+
+
+def test_usefulness_carries_noncomparability_footnote(tmp_path):
+    _write_artifacts(tmp_path)
+    html = _html(tmp_path)
+    assert "not directly comparable" in html
 
 
 # --------------------------------------------------------------------------
