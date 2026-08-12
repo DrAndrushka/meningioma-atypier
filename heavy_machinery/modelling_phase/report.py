@@ -163,6 +163,28 @@ table.report tbody tr:hover { background: #fafafa; }
 table.report th.nowrap, table.report td.nowrap {
     white-space: nowrap;
 }
+table.report tr.eda-kind-divider th {
+    background: var(--grey-bg);
+    color: var(--fg);
+    font-weight: 700;
+    text-align: left;
+    border-top: 2px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding-top: 10px;
+    padding-bottom: 8px;
+}
+table.report tr.eda-kind-divider:first-child th {
+    border-top: none;
+}
+table.report tr.eda-kind-divider:hover,
+table.report tr.eda-col-header:hover { background: transparent; }
+table.report tr.eda-col-header th {
+    background: #f9fafb;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+}
+/* Keep EDA paper stack as one continuous table (no card gaps between kinds). */
+.eda-paper-stack.table-wrap { margin: 8px 0 10px; }
 table.report.diagnostic-accuracy th:not(:first-child),
 table.report.diagnostic-accuracy td:not(:first-child) {
     text-align: right;
@@ -725,6 +747,7 @@ class Artifacts:
     dda_figures: list[Path] = field(default_factory=list)
     dda_bivariate_figures: list[Path] = field(default_factory=list)
     dda_trivariate_figures: list[Path] = field(default_factory=list)
+    dda_derived_columns: frozenset[str] = field(default_factory=frozenset)
 
     # Missingness
     missingness_summary: pd.DataFrame | None = None
@@ -735,6 +758,10 @@ class Artifacts:
     # EDA
     associations: pd.DataFrame | None = None
     diagnostic_accuracy: pd.DataFrame | None = None
+    eda_paper_tables: pd.DataFrame | None = None
+    eda_derived_columns: frozenset[str] = field(default_factory=frozenset)
+    eda_excluded_columns: frozenset[str] = field(default_factory=frozenset)
+    hidden_parent_columns: frozenset[str] = field(default_factory=frozenset)
     eda_figures: list[Path] = field(default_factory=list)
 
     # Inferential
@@ -795,6 +822,34 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     art.cleaning_log     = _maybe_read_csv(cleaning_dir / "cleaning_log.csv", art.warnings)
     art.derivation_log   = _maybe_read_csv(cleaning_dir / "derivation_log.csv", art.warnings)
     art.schema_coercion  = _maybe_read_csv(cleaning_dir / "schema_coercion.csv", art.warnings)
+    dda_derived_tbl = _maybe_read_csv(
+        cleaning_dir / "dda_derived_columns.csv", art.warnings,
+    )
+    if dda_derived_tbl is not None and "column" in dda_derived_tbl.columns:
+        art.dda_derived_columns = frozenset(
+            str(c) for c in dda_derived_tbl["column"].dropna().tolist()
+        )
+    eda_derived_tbl = _maybe_read_csv(
+        cleaning_dir / "eda_derived_columns.csv", art.warnings,
+    )
+    if eda_derived_tbl is not None and "column" in eda_derived_tbl.columns:
+        art.eda_derived_columns = frozenset(
+            str(c) for c in eda_derived_tbl["column"].dropna().tolist()
+        )
+    eda_excl_tbl = _maybe_read_csv(
+        cleaning_dir / "eda_excluded_columns.csv", art.warnings,
+    )
+    if eda_excl_tbl is not None and "column" in eda_excl_tbl.columns:
+        art.eda_excluded_columns = frozenset(
+            str(c) for c in eda_excl_tbl["column"].dropna().tolist()
+        )
+    hidden_parent_tbl = _maybe_read_csv(
+        cleaning_dir / "hidden_parent_columns.csv", art.warnings,
+    )
+    if hidden_parent_tbl is not None and "column" in hidden_parent_tbl.columns:
+        art.hidden_parent_columns = frozenset(
+            str(c) for c in hidden_parent_tbl["column"].dropna().tolist()
+        )
 
     # Schema
     if cfg.schema_path and cfg.schema_path.exists():
@@ -847,6 +902,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     art.associations = _maybe_read_csv(root / "eda" / "tables" / "associations.csv", art.warnings)
     art.diagnostic_accuracy = _maybe_read_csv(
         root / "eda" / "tables" / "diagnostic_accuracy.csv", art.warnings,
+    )
+    art.eda_paper_tables = _maybe_read_csv(
+        root / "eda" / "tables" / "eda_paper_tables.csv", art.warnings,
     )
     eda_fig = root / "eda" / "figures"
     if eda_fig.exists():
@@ -1539,6 +1597,23 @@ def _format_levels_cell(v: Any) -> str:
     return _esc(text)
 
 
+_DDA_KIND_DISPLAY = {
+    "nominal": "Nominal",
+    "ordinal": "Ordinal",
+}
+
+
+def _dda_kind_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """Capitalize Nominal/Ordinal in the kind column for report tables only."""
+    if "kind" not in df.columns:
+        return df
+    out = df.copy()
+    out["kind"] = out["kind"].map(
+        lambda k: _DDA_KIND_DISPLAY.get(str(k), k)
+    )
+    return out
+
+
 def _dda_continuous_for_report(df: pd.DataFrame) -> pd.DataFrame:
     """Display copy of continuous DDA stats (max 2 decimal places)."""
     out = format_table_for_display(df)
@@ -1562,7 +1637,6 @@ def _group_dda_bivariate_figures(
         else:
             x_key = stem
         groups.setdefault(x_key, []).append(p)
-    # Stable key order; figures within a key already sorted if input was.
     return {k: groups[k] for k in sorted(groups)}
 
 
@@ -1579,6 +1653,40 @@ def _group_dda_trivariate_figures(
             pair_key = stem
         groups.setdefault(pair_key, []).append(p)
     return {k: groups[k] for k in sorted(groups)}
+
+
+def _dda_stem_uses_hidden(stem: str, hidden: frozenset[str]) -> bool:
+    """True if a DDA figure stem references any hidden-parent column name."""
+    parts = stem.replace("__by__", "__").replace("__vs__", "__").split("__")
+    return any(part in hidden for part in parts)
+
+
+def _dda_native_derived_tables(
+    tbl: pd.DataFrame,
+    derived_cols: frozenset[str],
+) -> str:
+    """Nested Native / Derived collapsibles for one DDA datatype table."""
+    if "column" not in tbl.columns or not derived_cols:
+        return table_to_html(tbl)
+
+    is_derived = tbl["column"].astype(str).isin(derived_cols)
+    if not bool(is_derived.any()):
+        return table_to_html(tbl)
+
+    native = tbl.loc[~is_derived]
+    derived = tbl.loc[is_derived]
+    parts: list[str] = []
+    if not native.empty:
+        parts.append(details_block(
+            f"🌱 Native ({len(native)})",
+            table_to_html(native),
+        ))
+    if not derived.empty:
+        parts.append(details_block(
+            f"🧩 Derived ({len(derived)})",
+            table_to_html(derived),
+        ))
+    return "".join(parts) if parts else table_to_html(tbl)
 
 
 def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
@@ -1602,54 +1710,60 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
         'percentages with Wilson intervals and <code>k/n</code>.</p>',
     ]
 
-    if art.dda_overall is not None and not art.dda_overall.empty:
-        uni.append("<h3>📦 Dataset overview</h3>")
-        uni.append(table_to_html(art.dda_overall))
-
     sections = [
         ("📏 Continuous / count variables",
          "Summarized using median, mean, trimmed mean, spread, skewness, "
          "kurtosis, outlier-sensitive quantiles, and missingness.",
-         art.dda_continuous,
-         lambda r: classify_missing(r.get("missing_pct"), cfg.missing)),
+         art.dda_continuous),
         ("🏷️ Categorical / ordinal variables",
          "Summarized using dominant class, rarest class, class imbalance, "
          "Shannon entropy, and normalized balance.",
-         art.dda_categorical,
-         lambda r: classify_missing(r.get("missing_pct"), cfg.missing)),
+         art.dda_categorical),
         ("✅ Binary variables",
          "Same schema as categorical: dominant class, balance, missingness.",
-         art.dda_binary,
-         lambda r: classify_missing(r.get("missing_pct"), cfg.missing)),
+         art.dda_binary),
         ("🕒 Datetime variables",
          "Range, span in days, and missingness.",
-         art.dda_datetime,
-         lambda r: classify_missing(r.get("missing_pct"), cfg.missing)),
+         art.dda_datetime),
         ("🪪 ID / text variables",
          "Listed for completeness; excluded from statistical screening.",
-         art.dda_id_text,
-         None),
+         art.dda_id_text),
     ]
-    for heading, blurb, tbl, row_fn in sections:
-        uni.append(f"<h3>{heading}</h3>")
-        uni.append(f"<p>{blurb}</p>")
+    derived_cols = art.dda_derived_columns
+    hidden_parents = art.hidden_parent_columns
+    for heading, blurb, tbl in sections:
+        if tbl is not None and not tbl.empty and hidden_parents and "column" in tbl.columns:
+            tbl = tbl[~tbl["column"].astype(str).isin(hidden_parents)].copy()
         if tbl is None or tbl.empty:
-            uni.append('<p class="muted"><em>(no variables of this kind)</em></p>')
-        else:
-            display_tbl = (
-                _dda_continuous_for_report(tbl)
-                if tbl is art.dda_continuous
-                else tbl
+            inner = (
+                f"<p>{blurb}</p>"
+                '<p class="muted"><em>(no variables of this kind)</em></p>'
             )
-            uni.append(table_to_html(display_tbl, row_class_fn=row_fn))
-            if tbl is art.dda_continuous:
-                for msg in data_quality_warnings(art.dda_continuous):
-                    uni.append(warning_box(msg))
+            uni.append(details_block(heading, inner))
+            continue
+
+        display_tbl = (
+            _dda_continuous_for_report(tbl)
+            if tbl is art.dda_continuous
+            else _dda_kind_for_display(tbl)
+        )
+        n = len(display_tbl)
+        parts = [f"<p>{blurb}</p>", _dda_native_derived_tables(display_tbl, derived_cols)]
+        if tbl is art.dda_continuous:
+            for msg in data_quality_warnings(art.dda_continuous):
+                parts.append(warning_box(msg))
+        uni.append(details_block(f"{heading} ({n})", "".join(parts)))
 
     if art.dda_figures:
+        figs = art.dda_figures
+        if hidden_parents:
+            figs = [
+                p for p in figs
+                if p.stem.split("__", 1)[0] not in hidden_parents
+            ]
         uni.append(details_block(
-            f"🖼️ DDA figures ({len(art.dda_figures)})",
-            svg_grid(art.dda_figures),
+            f"🖼️ DDA figures ({len(figs)})",
+            svg_grid(figs),
         ))
 
     uni.append(glossary_block(_dda_glossary()))
@@ -1661,7 +1775,13 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
 
     # --- 2️⃣ Bivariate (nested dropdown per dict key / x column) ---
     if art.dda_bivariate_figures:
-        groups = _group_dda_bivariate_figures(art.dda_bivariate_figures)
+        biv_figs = art.dda_bivariate_figures
+        if hidden_parents:
+            biv_figs = [
+                p for p in biv_figs
+                if not _dda_stem_uses_hidden(p.stem, hidden_parents)
+            ]
+        groups = _group_dda_bivariate_figures(biv_figs)
         biv_parts = [
             '<p>One figure per pair from '
             '<code>{x_col: [partner, …]}</code>. '
@@ -1685,13 +1805,19 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
             '<code>{x_col: [partner, …]}</code> dict)</em></p>'
         )
     body.append(details_block(
-        f"2️⃣ DDA - bivariate ({len(art.dda_bivariate_figures)})",
+        f"2️⃣ DDA - bivariate ({len(biv_figs) if art.dda_bivariate_figures else 0})",
         biv_inner,
     ))
 
     # --- 3️⃣ Trivariate (nested dropdown per (x, y) pair) ---
     if art.dda_trivariate_figures:
-        groups = _group_dda_trivariate_figures(art.dda_trivariate_figures)
+        tri_figs = art.dda_trivariate_figures
+        if hidden_parents:
+            tri_figs = [
+                p for p in tri_figs
+                if not _dda_stem_uses_hidden(p.stem, hidden_parents)
+            ]
+        groups = _group_dda_trivariate_figures(tri_figs)
         tri_parts = [
             '<p>One figure per triple from '
             '<code>{(x, y): [group, …]}</code> (SciencePlots). '
@@ -1719,7 +1845,7 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
             '<code>{(x, y): [group, …]}</code> dict)</em></p>'
         )
     body.append(details_block(
-        f"3️⃣ DDA - trivariate ({len(art.dda_trivariate_figures)})",
+        f"3️⃣ DDA - trivariate ({len(tri_figs) if art.dda_trivariate_figures else 0})",
         tri_inner,
     ))
 
@@ -1737,13 +1863,6 @@ _DDA_GLOSSARY_GROUPS = [
         ("n", "Number of non-missing observations."),
         ("n_unique", "Number of distinct values."),
         ("missing_pct", "Percentage of missing values for this variable."),
-    ]),
-    ("Dataset overview", [
-        ("n_rows", "Total rows (patients) in the dataset."),
-        ("n_cols", "Total number of columns."),
-        ("n_cols_analysed", "Columns included in statistical screening."),
-        ("missing_cells_pct", "Percentage of all cells in the dataset that "
-                              "are missing."),
     ]),
     ("Continuous / count variables", [
         ("min", "Smallest observed value."),
@@ -2198,35 +2317,196 @@ def _render_eda_heatmap_overview(
     return "".join(parts)
 
 
-def split_fdr_family(view: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, int]:
-    """Partition an associations view into the BH-corrected family and the
-    exploratory (redundant-variant) rows.
+def _eda_grade_labels(target: str) -> tuple[str, str]:
+    """Column labels for outcome-negative / outcome-positive strata."""
+    if str(target) == "high_grade":
+        return "WHO Grade 1", "WHO Grade 2–3"
+    return f"Not {_esc(target)}", _esc(target)
 
-    ``view`` is expected to carry a boolean ``in_fdr_family`` column (see
-    ``eda.screen_associations``); rows outside the family — dichotomisations
-    of continuous predictors and binary recodes of nominal parents already
-    tested in their raw form — render separately as an uncorrected,
-    collapsed block (spec 5.2).
 
-    Returns ``(main, exploratory, n_tests)`` where ``main``/``exploratory``
-    have the ``in_fdr_family`` column dropped and ``n_tests`` is the number
-    of predictors that entered the BH correction. When ``in_fdr_family`` is
-    absent (e.g. a stale ``associations.csv`` written before this column
-    existed) every row is treated as in-family, matching the pipeline's
-    former behaviour.
-    """
-    if "in_fdr_family" in view.columns:
-        fam_mask = view["in_fdr_family"].fillna(True).astype(bool)
-        exploratory = view[~fam_mask].drop(columns=["in_fdr_family"])
-        main = view[fam_mask].drop(columns=["in_fdr_family"])
-        n_tests = int(fam_mask.sum())
-    else:
-        main, exploratory, n_tests = view, view.iloc[0:0], len(view)
-    return main, exploratory, n_tests
+def _eda_cell(val: Any) -> str:
+    """Display cell text; missing / NaN / 'nan' → blank."""
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(val).strip()
+    return "" if not s or s.lower() == "nan" else s
+
+
+def _eda_paper_display_table(
+    rows: pd.DataFrame,
+    *,
+    table_kind: str,
+    target: str,
+) -> pd.DataFrame:
+    """Format paper rows into the display columns for one datatype block."""
+    g1, g23 = _eda_grade_labels(target)
+    # Display family: dichotomous / multi-level categorical / interval-ratio
+    family = {
+        "binary": "dichotomous",
+        "dichotomous": "dichotomous",
+        "nominal": "categorical",
+        "ordinal": "categorical",
+        "categorical": "categorical",  # legacy CSV rows
+        "continuous": "interval",
+        "count": "interval",
+    }.get(str(table_kind), "interval")
+    out_rows: list[dict[str, str]] = []
+    for _, r in rows.iterrows():
+        role = _eda_cell(r.get("row_role")) or "variable"
+        pred = _eda_cell(r.get("predictor"))
+        level = _eda_cell(r.get("level"))
+        if role in ("level", "reference"):
+            label = f"  {level}" + (" (ref)" if role == "reference" else "")
+        else:
+            label = prettify_label(pred)
+
+        if family == "dichotomous":
+            out_rows.append({
+                "Variable": label,
+                f"{g1} n/N (%)": _eda_cell(r.get("grade1")),
+                f"{g23} n/N (%)": _eda_cell(r.get("grade23")),
+                "OR (95% CI)": _eda_cell(r.get("effect")),
+                "AUC": _eda_cell(r.get("auc")),
+                "FDR-p": _eda_cell(r.get("p_fdr")),
+            })
+        elif family == "categorical":
+            p_cell = _eda_cell(r.get("p_fdr")) or _eda_cell(r.get("p_level"))
+            out_rows.append({
+                "Variable": label,
+                f"{g1} n (%)": _eda_cell(r.get("grade1")),
+                f"{g23} n (%)": _eda_cell(r.get("grade23")),
+                "OR (95% CI)": _eda_cell(r.get("effect")),
+                "FDR-p": p_cell,
+            })
+        else:  # interval / ratio
+            out_rows.append({
+                "Variable": label,
+                f"{g1} median [IQR]": _eda_cell(r.get("grade1")),
+                f"{g23} median [IQR]": _eda_cell(r.get("grade23")),
+                "OR per SD (95% CI)": _eda_cell(r.get("effect")),
+                "AUC (95% CI)": _eda_cell(r.get("auc")),
+                "FDR-p": _eda_cell(r.get("p_fdr")),
+            })
+    return pd.DataFrame(out_rows)
+
+
+def _eda_stacked_table_html(parts: list[tuple[str, pd.DataFrame]]) -> str:
+    """One HTML table: shaded datatype divider rows + written column headers."""
+    parts = [(h, df) for h, df in parts if df is not None and not df.empty]
+    if not parts:
+        return '<p class="muted"><em>(empty table)</em></p>'
+    n_cols = max(len(df.columns) for _, df in parts)
+    body_rows: list[str] = []
+    for heading, df in parts:
+        cols = list(df.columns)
+        pad = n_cols - len(cols)
+        body_rows.append(
+            f'<tr class="eda-kind-divider">'
+            f'<th colspan="{n_cols}">{_esc(heading)}</th></tr>'
+        )
+        header_cells = "".join(f"<th>{_esc(c)}</th>" for c in cols)
+        if pad:
+            header_cells += f'<th colspan="{pad}"></th>'
+        body_rows.append(f'<tr class="eda-col-header">{header_cells}</tr>')
+        for _, row in df.iterrows():
+            cells = "".join(f"<td>{_esc(row[c])}</td>" for c in cols)
+            if pad:
+                cells += f'<td colspan="{pad}"></td>'
+            body_rows.append(f"<tr>{cells}</tr>")
+    return (
+        f'<div class="table-wrap eda-paper-stack"><table class="report">'
+        f'<tbody>{"".join(body_rows)}</tbody></table></div>'
+    )
+
+
+_EDA_KIND_SECTIONS: list[tuple[str, str, frozenset[str]]] = [
+    ("nominal", "Nominal", frozenset({"nominal", "categorical"})),
+    ("ordinal", "Ordinal", frozenset({"ordinal"})),
+    ("continuous", "Interval/Ratio", frozenset({"continuous", "count"})),
+    ("binary", "Dichotomous", frozenset({"binary", "dichotomous"})),
+]
+
+
+def _eda_datatype_parts(
+    chunk: pd.DataFrame,
+    *,
+    target: str,
+) -> list[tuple[str, pd.DataFrame]]:
+    """Build stacked datatype sections for one origin chunk; skip empties."""
+    parts: list[tuple[str, pd.DataFrame]] = []
+    for display_key, heading, kind_keys in _EDA_KIND_SECTIONS:
+        kind_rows = chunk[chunk["table_kind"].astype(str).isin(kind_keys)]
+        if kind_rows.empty:
+            continue
+        # Keep variable order; categorical levels follow their parent
+        disp = _eda_paper_display_table(
+            kind_rows, table_kind=display_key, target=target,
+        )
+        parts.append((heading, disp))
+    return parts
+
+
+def _render_eda_native_derived_block(
+    paper: pd.DataFrame,
+    *,
+    target: str,
+    derived_cols: frozenset[str],
+    n_fdr_family: int,
+    excluded_cols: frozenset[str] = frozenset(),
+) -> str:
+    """Native and Derived stay separate; each origin = one stacked datatype table."""
+    if paper is None or paper.empty:
+        return warning_box(
+            "No paper-style EDA tables found. Re-run "
+            "<code>screen_associations</code> to write "
+            "<code>eda/tables/eda_paper_tables.csv</code>."
+        )
+
+    sub = paper[paper["target"].astype(str) == str(target)].copy()
+    if excluded_cols:
+        sub = sub[~sub["predictor"].astype(str).isin(excluded_cols)]
+    if sub.empty:
+        return warning_box(
+            f"No paper-style EDA rows for target <code>{_esc(target)}</code>."
+        )
+
+    is_derived = sub["predictor"].astype(str).isin(derived_cols)
+    blocks: list[str] = []
+    for title, mask in (
+        ("🌱 Native", ~is_derived),
+        ("🧩 Derived", is_derived),
+    ):
+        chunk = sub.loc[mask]
+        if chunk.empty:
+            continue
+        parts = _eda_datatype_parts(chunk, target=target)
+        if not parts:
+            continue
+        # Exactly one <table> per origin — datatypes are divider rows, not tables.
+        blocks.append(details_block(
+            f"{title} ({chunk['predictor'].nunique()})",
+            _eda_stacked_table_html(parts),
+            open=title.startswith("🌱"),
+        ))
+
+    footnote = (
+        "<p class='muted'><small>"
+        "P values corrected for multiple comparisons using the "
+        "Benjamini–Hochberg procedure across all "
+        f"{n_fdr_family} candidate variables (binary, categorical, and "
+        "continuous) tested in this screening pass."
+        "</small></p>"
+    )
+    return "".join(blocks) + footnote
 
 
 def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
-    """🔍 EDA story — per-target, color-coded, with badges."""
+    """🔍 EDA story — per-target paper tables (native / derived) + figures."""
     body: list[str] = []
     if art.associations is None or art.associations.empty:
         body.append(warning_box("No EDA associations table was found."))
@@ -2241,14 +2521,16 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     )
 
     df = art.associations.copy()
-    # Ensure expected columns exist
     for col in ["target", "predictor", "kind", "test", "effect_label",
                 "effect", "p", "p_fdr", "n_used", "auc_univariate"]:
         if col not in df.columns:
             df[col] = np.nan
 
+    excluded_cols = art.eda_excluded_columns | art.hidden_parent_columns
+    if excluded_cols:
+        df = df[~df["predictor"].astype(str).isin(excluded_cols)].copy()
+
     targets_in_data = list(df["target"].dropna().unique())
-    # Render in the order user listed, then any extras
     order = [t for t in cfg.targets if t in targets_in_data]
     order += [t for t in targets_in_data if t not in order]
 
@@ -2257,36 +2539,32 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         _render_eda_heatmap_overview(df, cfg, art, target_order=order),
     ))
 
+    derived_cols = art.eda_derived_columns
+    paper = art.eda_paper_tables
+
     for target in order:
         sub = df[df["target"] == target].copy()
         if sub.empty:
             continue
 
         target_body: list[str] = []
+        if "in_fdr_family" in sub.columns:
+            n_fdr_family = int(sub["in_fdr_family"].fillna(True).astype(bool).sum())
+        else:
+            n_fdr_family = len(sub)
 
-        # Sort by FDR ascending, then |effect| descending
         sub["_p_num"] = sub["p_fdr"].apply(_coerce_p)
         sub["_eff_abs"] = sub["effect"].apply(
             lambda v: abs(_coerce_float(v)) if _coerce_float(v) is not None else -1)
         sub = sub.sort_values(["_p_num", "_eff_abs"],
                               ascending=[True, False], na_position="last")
-
-        def _row_class(r):
-            return classify_significance(
+        n_fdr = int(sub.apply(
+            lambda r: classify_significance(
                 r.get("p"), r.get("p_fdr"),
-                fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha)
-
-        sub["significance"] = sub.apply(
-            lambda r: {"sig-fdr": "🟢 FDR-sig",
-                       "sig-nominal": "🟡 nominal",
-                       "sig-none": "⚪ ns"}[
-                classify_significance(
-                    r.get("p"), r.get("p_fdr"),
-                    fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha)],
-            axis=1)
-
-        # Mini summary line
-        n_fdr = (sub["significance"] == "🟢 FDR-sig").sum()
+                fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha,
+            ) == "sig-fdr",
+            axis=1,
+        ).sum())
         if n_fdr > 0:
             top = sub.iloc[0]
             line = (f"For target <code>{_esc(target)}</code>, "
@@ -2295,46 +2573,26 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
                     f"Strongest exploratory association: "
                     f"<code>{_esc(top['predictor'])}</code> "
                     f"({_esc(top['effect_label'])} = {_esc(top['effect'])}, "
-                    f"FDR p = {_esc(top['p_fdr'])}).")
+                    f"FDR p = {_esc(human_p(top['p_fdr']))}).")
         else:
             line = (f"No predictors survived FDR correction for "
-                    f"<code>{_esc(target)}</code>. Any nominal findings below "
-                    f"are exploratory only.")
+                    f"<code>{_esc(target)}</code>.")
         target_body.append(f"<p>{line}</p>")
 
-        display_cols = ["predictor", "kind", "test", "effect_label", "effect",
-                        "auc_univariate", "p", "p_fdr", "significance", "n_used"]
-        display_cols = [c for c in display_cols if c in sub.columns]
-        interp_df = sub.copy()
-        if "auc_univariate" in sub.columns:
-            sub["auc_univariate"] = sub["auc_univariate"].apply(
-                lambda v: "" if _coerce_float(v) is None else f"{_coerce_float(v):.3f}",
-            )
-        sub["p"] = sub["p"].apply(human_p)
-        sub["p_fdr"] = sub["p_fdr"].apply(human_p)
-
-        main_sub, exploratory_sub, n_tests = split_fdr_family(sub)
-
-        # The full ranked screen is long — keep it folded so the summary,
-        # diagnostic accuracy and interpretation stay visible on open.
-        target_body.append(details_block(
-            f"🧬 The Full Sweep — every predictor, ranked ({len(main_sub)})",
-            table_to_html(main_sub[display_cols], row_class_fn=_row_class),
+        target_body.append(_render_eda_native_derived_block(
+            paper if paper is not None else pd.DataFrame(),
+            target=str(target),
+            derived_cols=derived_cols,
+            n_fdr_family=n_fdr_family,
+            excluded_cols=excluded_cols,
         ))
-        target_body.append(info_box(
-            f"FDR family: {n_tests} non-redundant predictors entered the "
-            f"Benjamini–Hochberg correction. Redundant variants "
-            f"(dichotomisations and binary recodes of predictors already "
-            f"tested) are exploratory and uncorrected."))
-        if not exploratory_sub.empty:
-            target_body.append(details_block(
-                "Exploratory variants — uncorrected, not in the FDR family",
-                table_to_html(exploratory_sub[display_cols], row_class_fn=_row_class)))
-        target_body.append(_render_diagnostic_accuracy(target, art, cfg))
-        target_body.append(_render_eda_interpretation(target, interp_df, cfg))
 
-        # Figures for this target
-        figs = [p for p in art.eda_figures if p.stem.startswith(f"{target}__")]
+        prefix = f"{target}__"
+        figs = [
+            p for p in art.eda_figures
+            if p.stem.startswith(prefix)
+            and p.stem[len(prefix):] not in excluded_cols
+        ]
         if figs:
             target_body.append(details_block(
                 f"🖼️ EDA figures for {target} ({len(figs)})",
@@ -3077,302 +3335,6 @@ def _render_inferential_interpretation(target: str, tbl: pd.DataFrame,
         return ""
     return details_block(
         "💡 Interpretation", "<ul>" + "".join(lines) + "</ul>")
-
-
-# Only the names the shared labeller cannot derive — a different word from the
-# column name, or a clinical phrasing. Anything it gets right on its own
-# (``cortical_destruction``, ``dwi_hyperintensity``, every ``_ge``/``_le``
-# threshold flag) is deliberately absent, so there is one place to fix a label.
-_DIAGNOSTIC_LABELS: dict[str, str] = {
-    "perifocal_edema": "Peritumoral edema",
-    # Dural venous sinus, graded 0/1/2 in the source sheet ("Sīnuss": does not
-    # grow in / grows in / grows in and through). Not the skull.
-    "sinus_invasion": "Venous sinus invasion (graded)",
-    "tumor_location_non_skull_base": "Non-skull-base location",
-    "tumor_margin_irregular": "Irregular tumor margin",
-    "sex_male": "Male sex",
-    "hist_necrosis": "Histologic necrosis",
-    "progesterone_pos": "Progesterone positive",
-}
-
-
-def _diagnostic_predictor_label(name: str) -> str:
-    """Overrides first, then the labeller every other section already uses.
-
-    The old fallback capitalised each underscore-separated token, which is why
-    this table alone printed ``Adc Value Le0.72`` while the marker panel and
-    every figure axis printed ``ADC value ≤ 0.72`` from the same column.
-    """
-    if name in _DIAGNOSTIC_LABELS:
-        return _DIAGNOSTIC_LABELS[name]
-    return prettify_label(name)
-
-
-def _format_pct_ci(point: Any, lo: Any, hi: Any) -> str:
-    """Paper-style ``70.1% [62.2–77.2]``."""
-    p = _coerce_float(point)
-    if p is None:
-        return ""
-    pct = p * 100.0
-    lo_f = _coerce_float(lo)
-    hi_f = _coerce_float(hi)
-    if lo_f is None or hi_f is None:
-        return f"{pct:.1f}%"
-    return f"{pct:.1f}% [{lo_f * 100.0:.1f}–{hi_f * 100.0:.1f}]"
-
-
-def _format_diagnostic_auc(v: Any) -> str:
-    f = _coerce_float(v)
-    if f is None:
-        return ""
-    return f"{f:.3f}"
-
-
-def _build_diagnostic_display_df(sub: pd.DataFrame, cfg: ReportConfig) -> pd.DataFrame:
-    """Paper-style Table 3 layout (Upreti et al.)."""
-    evaluated = sub[sub["note"].fillna("").eq("")].copy()
-    if evaluated.empty:
-        return pd.DataFrame()
-
-    evaluated["_p_num"] = evaluated["p_fdr"].apply(_coerce_p)
-    evaluated = evaluated.sort_values(
-        ["_p_num", "sensitivity"],
-        ascending=[True, False],
-        na_position="last",
-    ).drop(columns="_p_num")
-
-    rows = []
-    for _, r in evaluated.iterrows():
-        sig = classify_significance(
-            r.get("p"), r.get("p_fdr"),
-            fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha,
-        )
-        label = _diagnostic_predictor_label(str(r["predictor"]))
-        if sig == "sig-fdr":
-            label = f"{label}*"
-        rows.append({
-            "Imaging feature": label,
-            "Sensitivity (95% CI)": _format_pct_ci(
-                r.get("sensitivity"), r.get("sensitivity_lo"), r.get("sensitivity_hi")),
-            "Specificity (95% CI)": _format_pct_ci(
-                r.get("specificity"), r.get("specificity_lo"), r.get("specificity_hi")),
-            "PPV (95% CI)": _format_pct_ci(
-                r.get("PPV"), r.get("PPV_lo"), r.get("PPV_hi")),
-            "NPV (95% CI)": _format_pct_ci(
-                r.get("NPV"), r.get("NPV_lo"), r.get("NPV_hi")),
-            "Accuracy": _format_pct_ci(
-                r.get("accuracy"), r.get("accuracy_lo"), r.get("accuracy_hi")),
-            # Not a ROC-AUC. Balanced accuracy for a yes/no sign, and the
-            # multivariable section reports a real ROC-AUC under the same
-            # three letters, so the header has to say which one this is.
-            "AUC (binary)": _format_diagnostic_auc(r.get("AUC")),
-            "_sig": sig,
-            "_p": r.get("p"),
-            "_p_fdr": r.get("p_fdr"),
-            # Underscored: every row here passed the empty-note filter above, so
-            # the column printed nothing but still cost the table a column.
-            "_note": r.get("note", ""),
-        })
-    return pd.DataFrame(rows)
-
-
-def _diagnostic_table_html(disp: pd.DataFrame, cfg: ReportConfig) -> str:
-    if disp.empty:
-        return '<p class="muted"><em>(no evaluable binary predictors)</em></p>'
-
-    show = disp.drop(columns=[c for c in disp.columns if c.startswith("_")], errors="ignore")
-    sig_classes = disp["_sig"].astype(str).tolist()
-    counter = [0]
-
-    def _class_fn(_r: pd.Series) -> str:
-        i = counter[0]
-        counter[0] += 1
-        return sig_classes[i] if i < len(sig_classes) else ""
-
-    html = table_to_html(show, row_class_fn=_class_fn)
-    return html.replace(
-        '<table class="report">',
-        '<table class="report diagnostic-accuracy">',
-        1,
-    )
-
-
-def _diagnostic_prevalence(sub: pd.DataFrame) -> tuple[float, int, int] | None:
-    """Outcome rate, read off the row with the largest denominator.
-
-    Each row is scored on its own complete cases, so there is no single cohort
-    n in this table. The most completely measured sign is the closest thing to
-    the whole cohort, and it is quoted with its own n rather than as a bare
-    percentage nobody can check.
-    """
-    needed = {"TP", "FN", "n_used"}
-    if sub is None or sub.empty or not needed.issubset(sub.columns):
-        return None
-    rows = sub[sub["note"].fillna("").eq("")] if "note" in sub.columns else sub
-    rows = rows.dropna(subset=["TP", "FN", "n_used"])
-    if rows.empty:
-        return None
-    row = rows.loc[rows["n_used"].idxmax()]
-    events, n = int(row["TP"]) + int(row["FN"]), int(row["n_used"])
-    return (events / n, events, n) if n else None
-
-
-def _diagnostic_table_footnotes(sub: pd.DataFrame, cfg: ReportConfig) -> str:
-    """The table's own footnote block: methods, prevalence, abbreviations.
-
-    Short numbered notes rather than the paragraph this used to carry — a
-    journal table is scanned, and a reader checking what an asterisk means
-    should not have to read a methods sentence to find it.
-    """
-    lines = [
-        "Univariate diagnostic performance of each sign (present vs absent) "
-        "against the outcome, laid out as in Upreti et al. Table 3. Wilson "
-        "95% CIs in brackets. Each sign is scored on its own complete cases, "
-        "so denominators differ between rows.",
-    ]
-    prev = _diagnostic_prevalence(sub)
-    if prev is not None:
-        rate, events, n = prev
-        lines.append(
-            f"Cohort prevalence of WHO grade 2–3 is {rate:.1%} "
-            f"({events}/{n}). PPV and NPV depend on it: at this prevalence a "
-            "positive sign is more often a false alarm than a true one, and "
-            "neither value transfers to a cohort with a different case mix. "
-            "Sensitivity and specificity do not have that dependence."
-        )
-    lines.append(
-        f"* FDR p &lt; {cfg.fdr_alpha:g}. Row shading: green = FDR-significant, "
-        "yellow = nominally significant only."
-    )
-    lines.append(
-        "AUC (binary) = (sensitivity + specificity) / 2, the balanced accuracy "
-        "of a yes/no sign. It is not a ROC-AUC; the multivariable section "
-        "reports a true ROC-AUC for fitted models."
-    )
-    lines.append(
-        "ADC = apparent diffusion coefficient; AUC = area under the curve; "
-        "CI = confidence interval; DWI = diffusion-weighted imaging; "
-        "FDR = false discovery rate; NPV = negative predictive value; "
-        "PPV = positive predictive value; T1/T2 = T1- and T2-weighted imaging."
-    )
-    return "<p class='muted'><small>" + "<br>".join(lines) + "</small></p>"
-
-
-def _render_diagnostic_accuracy(target: str, art: Artifacts,
-                                cfg: ReportConfig) -> str:
-    """Collapsible univariate diagnostic accuracy table (one target)."""
-    if art.diagnostic_accuracy is None or art.diagnostic_accuracy.empty:
-        return details_block(
-            "Like in that research: univariate diagnostic accuracy",
-            warning_box("No diagnostic accuracy table was found."),
-        )
-
-    sub = art.diagnostic_accuracy[
-        art.diagnostic_accuracy["target"].astype(str) == str(target)
-    ].copy()
-    if sub.empty:
-        return details_block(
-            "Like in that research: univariate diagnostic accuracy",
-            warning_box(
-                f"No diagnostic accuracy rows for target <code>{_esc(target)}</code>."
-            ),
-        )
-
-    disp = _build_diagnostic_display_df(sub, cfg)
-    skipped = sub[sub["note"].fillna("").ne("")]
-
-    parts = [
-        "<h3><strong>Table X.</strong> Univariate diagnostic performance of "
-        "individual MRI signs for WHO grade 2–3 meningioma</h3>",
-        _diagnostic_table_html(disp, cfg),
-        _diagnostic_table_footnotes(sub, cfg),
-    ]
-    if not skipped.empty and "predictor" in skipped.columns:
-        skip_lines = "".join(
-            f"<li><code>{_esc(r['predictor'])}</code>: "
-            f"{_esc(r.get('note', ''))}</li>"
-            for _, r in skipped.iterrows()
-        )
-        parts.append(
-            "<p><strong>Skipped predictors</strong></p>"
-            f"<ul class='muted'>{skip_lines}</ul>"
-        )
-
-    return details_block(
-        "Like in that research: univariate diagnostic accuracy", "".join(parts))
-
-
-def _eda_direction_phrase(r: pd.Series, target: str) -> str:
-    """Plain-language wording for one EDA association row (signed effects)."""
-    pred = _esc(r.get("predictor"))
-    eff = _coerce_float(r.get("effect"))
-    label = str(r.get("effect_label") or "")
-    if label in ("spearman_rho", "phi", "rank_biserial_r") and eff is not None:
-        if label == "rank_biserial_r":
-            if eff > 0:
-                return (f"Higher <code>{pred}</code> values in "
-                        f"<code>{_esc(target)}</code>-positive cases")
-            if eff < 0:
-                return (f"Lower <code>{pred}</code> values in "
-                        f"<code>{_esc(target)}</code>-positive cases")
-        else:
-            if eff > 0:
-                return (f"Higher / present <code>{pred}</code> is associated with a "
-                        f"higher rate of <code>{_esc(target)}</code>")
-            if eff < 0:
-                return (f"Higher / present <code>{pred}</code> is associated with a "
-                        f"lower rate of <code>{_esc(target)}</code>")
-    return (f"<code>{pred}</code> is associated with "
-            f"<code>{_esc(target)}</code> (see figure for group differences)")
-
-
-def _render_eda_interpretation(target: str, sub: pd.DataFrame,
-                               cfg: ReportConfig) -> str:
-    """Plain-English bullets for univariate EDA rows (one target)."""
-    lines: list[str] = []
-    for _, r in sub.iterrows():
-        test = str(r.get("test") or "")
-        if test == "skip":
-            continue
-        pred = _esc(r.get("predictor"))
-        eff_label = _esc(r.get("effect_label"))
-        eff = _esc(r.get("effect"))
-        sig = classify_significance(
-            r.get("p"), r.get("p_fdr"),
-            fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha)
-        p_fdr_str = _esc(human_p(r.get("p_fdr")))
-        p_str = _esc(human_p(r.get("p")))
-        phrase = _eda_direction_phrase(r, target)
-
-        if sig == "sig-fdr":
-            sig_note = f"FDR p = {p_fdr_str}"
-            bullet = "🟢"
-        elif sig == "sig-nominal":
-            sig_note = f"nominal p = {p_str}; FDR p = {p_fdr_str} (exploratory only)"
-            bullet = "🟡"
-        else:
-            sig_note = f"FDR p = {p_fdr_str}"
-            bullet = "⚪"
-
-        if sig == "sig-none":
-            lines.append(
-                f"<li>{bullet} <code>{pred}</code>: no clear marginal association "
-                f"({sig_note}; {eff_label} = {eff}).</li>")
-            continue
-
-        lines.append(
-            f"<li>{bullet} {phrase} "
-            f"({eff_label} = {eff}, {sig_note}).</li>")
-
-    if not lines:
-        return ""
-    caveat = (
-        "<li><em>Univariate screening only — effects are not adjusted for other "
-        "predictors. Use the multivariable section to judge independent "
-        "associations.</em></li>"
-    )
-    return details_block(
-        "💡 Interpretation", "<ul>" + "".join(lines) + caveat + "</ul>")
 
 
 # ---------------------------------------------------------------------------

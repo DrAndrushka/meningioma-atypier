@@ -132,6 +132,40 @@ def test_screen_associations_plots_every_tested_pair(tmp_path):
     assert set(out["predictor"]) == {"age", "margin"}
 
 
+def test_screen_associations_skips_eda_excluded_columns(tmp_path):
+    df, schema = _tiny_cohort()
+    cleaning = tmp_path / "cleaning"
+    cleaning.mkdir(parents=True)
+    pd.DataFrame({"column": ["margin"]}).to_csv(
+        cleaning / "eda_excluded_columns.csv", index=False,
+    )
+    out = eda.screen_associations(
+        df, schema, targets=["high_grade"], predictors=["age", "margin"],
+        output_root=tmp_path,
+    )
+    assert set(out["predictor"]) == {"age"}
+    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.svg")}
+    assert "high_grade__age" in figs
+    assert "high_grade__margin" not in figs
+
+
+def test_screen_associations_skips_hidden_parent_columns(tmp_path):
+    df, schema = _tiny_cohort()
+    cleaning = tmp_path / "cleaning"
+    cleaning.mkdir(parents=True)
+    pd.DataFrame({"column": ["margin"]}).to_csv(
+        cleaning / "hidden_parent_columns.csv", index=False,
+    )
+    out = eda.screen_associations(
+        df, schema, targets=["high_grade"], predictors=["age", "margin"],
+        output_root=tmp_path,
+    )
+    assert set(out["predictor"]) == {"age"}
+    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.svg")}
+    assert "high_grade__age" in figs
+    assert "high_grade__margin" not in figs
+
+
 def test_pair_figures_carry_the_fdr_adjusted_q_value(tmp_path):
     """Figures are drawn after FDR adjustment, so they can quote q."""
     df, schema = _tiny_cohort()

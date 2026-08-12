@@ -169,6 +169,30 @@ def test_run_dda(tiny_df, tiny_schema, tmp_output):
     assert (tmp_output / "dda" / "tables" / "dda_overall.csv").exists()
 
 
+def test_run_dda_skips_hidden_parent_columns(tiny_df, tiny_schema, tmp_output):
+    cleaning = tmp_output / "cleaning"
+    cleaning.mkdir(parents=True)
+    pd.DataFrame({"column": ["sex"]}).to_csv(
+        cleaning / "hidden_parent_columns.csv", index=False,
+    )
+    tables = run_dda(tiny_df, tiny_schema, output_root=tmp_output)
+    cat = tables["categorical"]
+    assert "sex" not in set(cat["column"]) if cat is not None and not cat.empty else True
+    assert not list((tmp_output / "dda" / "figures").glob("sex__*.svg"))
+
+
+def test_run_dda_bivariate_skips_hidden_parent(tiny_df, tmp_output):
+    cleaning = tmp_output / "cleaning"
+    cleaning.mkdir(parents=True)
+    pd.DataFrame({"column": ["sex"]}).to_csv(
+        cleaning / "hidden_parent_columns.csv", index=False,
+    )
+    paths = dda.run_dda_bivariate(
+        tiny_df, {"age": ["sex"], "sex": ["age"]}, output_root=tmp_output,
+    )
+    assert paths == []
+
+
 def test_run_dda_bivariate(tiny_df, tmp_output):
     paths = dda.run_dda_bivariate(
         tiny_df, {"age": ["sex"]}, output_root=tmp_output,

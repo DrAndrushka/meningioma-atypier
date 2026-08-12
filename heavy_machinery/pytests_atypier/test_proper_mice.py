@@ -31,7 +31,10 @@ from schema_infer import ColSpec
 # Fixtures: a small mixed-type cohort with derived columns + analysis outcome
 # ---------------------------------------------------------------------------
 
-def _make_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec], dict, object]:
+def _make_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec], dict, object, list]:
+    from config import load
+    _d = load("derivations")
+
     df = pd.DataFrame({
         "id": ["p0", "p1", "p2", "p3", "p4", "p5"],
         "age": pd.array([45.0, 55.0, np.nan, 65.0, np.nan, 50.0], dtype="Float64"),
@@ -69,6 +72,24 @@ def _make_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec], dict, object]:
         "age_bins": ColSpec("age_bins", "ordinal", ordered_levels=["<50", "50+"]),
     }
     deps = {"high_grade": ["who_grade"], "age_bins": ["age"]}
+    derivations = [
+        _d.Apply(
+            name="high_grade",
+            source="who_grade",
+            fn=lambda s: pd.to_numeric(s.astype("object"), errors="coerce")
+            .pipe(lambda x: (x == 2) | (x == 3))
+            .astype("boolean"),
+            kind="binary",
+            dda_in_derived=True,
+        ),
+        _d.BinNumeric(
+            name="age_bins",
+            source="age",
+            bins=[-float("inf"), 50, float("inf")],
+            labels=["<50", "50+"],
+            dda_in_derived=True,
+        ),
+    ]
 
     def transform(frame: pd.DataFrame) -> pd.DataFrame:
         out = frame.copy()
@@ -82,7 +103,7 @@ def _make_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec], dict, object]:
             out["high_grade"] = ((wg == 2) | (wg == 3)).astype("boolean")
         return out
 
-    return df, schema, deps, transform
+    return df, schema, deps, transform, derivations
 
 
 def _fake_r_run(rscript: str, run_dir: Path) -> None:
@@ -146,7 +167,7 @@ def test_method_mapping_by_kind():
 # ---------------------------------------------------------------------------
 
 def test_classification_excludes_derived_and_duplicate_source():
-    df, schema, deps, _ = _make_cohort()
+    df, schema, deps, _, _ = _make_cohort()
     parts = mr._classify_mice_columns(
         df, schema, analysis_outcome="high_grade",
         derived_dependencies=deps, predictor_exclusions=(),
@@ -165,7 +186,7 @@ def test_classification_excludes_derived_and_duplicate_source():
 
 
 def test_spec_serializes_methods_and_dependencies():
-    df, schema, deps, _ = _make_cohort()
+    df, schema, deps, _, _ = _make_cohort()
     parts = mr._classify_mice_columns(
         df, schema, analysis_outcome="high_grade",
         derived_dependencies=deps, predictor_exclusions=(),
@@ -194,7 +215,7 @@ def test_spec_serializes_methods_and_dependencies():
 # ---------------------------------------------------------------------------
 
 def test_proper_mice_callback_called_once_per_frame(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     calls = {"n": 0}
 
     def counting(frame):
@@ -203,7 +224,7 @@ def test_proper_mice_callback_called_once_per_frame(fake_r, tmp_output):
 
     frames = proper_mice_impute(
         df, schema, m=3, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=counting,
     )
     assert len(frames) == 3
@@ -211,10 +232,10 @@ def test_proper_mice_callback_called_once_per_frame(fake_r, tmp_output):
 
 
 def test_proper_mice_observed_unchanged_and_missing_filled(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     frames = proper_mice_impute(
         df, schema, m=2, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     for frame in frames:
@@ -232,10 +253,10 @@ def test_proper_mice_observed_unchanged_and_missing_filled(fake_r, tmp_output):
 
 
 def test_proper_mice_dtype_and_row_identity(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     frames = proper_mice_impute(
         df, schema, m=2, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     frame = frames[0]
@@ -254,10 +275,10 @@ def test_proper_mice_dtype_and_row_identity(fake_r, tmp_output):
 
 
 def test_proper_mice_derived_consistency(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     frames = proper_mice_impute(
         df, schema, m=2, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     for frame in frames:
@@ -268,10 +289,10 @@ def test_proper_mice_derived_consistency(fake_r, tmp_output):
 
 
 def test_proper_mice_cell_variation_only_missing(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     proper_mice_impute(
         df, schema, m=3, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     path = tmp_output / "missingness" / "mice" / "imputed_cell_variation.csv"
@@ -290,10 +311,10 @@ def test_proper_mice_cell_variation_only_missing(fake_r, tmp_output):
 
 
 def test_proper_mice_manifest_fields(fake_r, tmp_output):
-    df, schema, deps, transform = _make_cohort()
+    df, schema, deps, transform, derivations = _make_cohort()
     proper_mice_impute(
         df, schema, m=2, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     manifest = mr.read_mice_manifest(tmp_output)
@@ -306,6 +327,32 @@ def test_proper_mice_manifest_fields(fake_r, tmp_output):
     assert manifest["methods_by_column"]["age"] == "pmm"
     assert "input_sha256" in manifest
     mr.assert_proper_multiple_imputation(tmp_output)  # passes
+
+
+def test_proper_mice_auto_deps_from_derivations(fake_r, tmp_output):
+    """Deps always come from ``derivations`` (self-source specs are skipped)."""
+    from config import load
+    _d = load("derivations")
+    df, schema, _, transform, derivations = _make_cohort()
+    derivations = list(derivations) + [
+        _d.Compute(
+            name="age",
+            sources=["age"],
+            fn=lambda frame: frame["age"],
+        ),
+    ]
+    frames = proper_mice_impute(
+        df, schema, m=2, max_iter=5, output_root=tmp_output,
+        analysis_outcome="high_grade",
+        derivations=derivations,
+        post_impute_transform=transform,
+    )
+    assert len(frames) == 2
+    manifest = mr.read_mice_manifest(tmp_output)
+    assert manifest["derived_dependencies"] == {
+        "high_grade": ["who_grade"],
+        "age_bins": ["age"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +445,26 @@ def _make_cohort_large(n: int = 60) -> tuple[pd.DataFrame, dict[str, ColSpec], d
         "age_bins": ColSpec("age_bins", "ordinal", ordered_levels=["<50", "50+"]),
     }
     deps = {"high_grade": ["who_grade"], "age_bins": ["age"]}
+    from config import load
+    _d = load("derivations")
+    derivations = [
+        _d.Apply(
+            name="high_grade",
+            source="who_grade",
+            fn=lambda s: pd.to_numeric(s.astype("object"), errors="coerce")
+            .pipe(lambda x: (x == 2) | (x == 3))
+            .astype("boolean"),
+            kind="binary",
+            dda_in_derived=True,
+        ),
+        _d.BinNumeric(
+            name="age_bins",
+            source="age",
+            bins=[-float("inf"), 50, float("inf")],
+            labels=["<50", "50+"],
+            dda_in_derived=True,
+        ),
+    ]
 
     def transform(frame: pd.DataFrame) -> pd.DataFrame:
         out = frame.copy()
@@ -411,7 +478,7 @@ def _make_cohort_large(n: int = 60) -> tuple[pd.DataFrame, dict[str, ColSpec], d
             out["high_grade"] = ((wg == 2) | (wg == 3)).astype("boolean")
         return out
 
-    return df, schema, deps, transform
+    return df, schema, deps, transform, derivations
 
 
 @pytest.mark.skipif(
@@ -419,10 +486,10 @@ def _make_cohort_large(n: int = 60) -> tuple[pd.DataFrame, dict[str, ColSpec], d
     reason="Formal MICE requires R with the mice and jsonlite packages installed.",
 )
 def test_proper_mice_real_r_smoke(tmp_output):
-    df, schema, deps, transform = _make_cohort_large(60)
+    df, schema, deps, transform, derivations = _make_cohort_large(60)
     frames = proper_mice_impute(
         df, schema, m=3, max_iter=5, output_root=tmp_output,
-        analysis_outcome="high_grade", derived_dependencies=deps,
+        analysis_outcome="high_grade", derivations=derivations,
         post_impute_transform=transform,
     )
     assert len(frames) == 3

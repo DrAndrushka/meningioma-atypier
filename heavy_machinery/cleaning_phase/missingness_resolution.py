@@ -1796,7 +1796,6 @@ def proper_mice_impute(
     random_state: int = 42,
     output_root: Path | str = "output",
     analysis_outcome: str | None = None,
-    derived_dependencies: Mapping[str, Sequence[str]] | None = None,
     derivations: list | None = None,
     post_impute_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
     predictor_exclusions: Sequence[str] = (),
@@ -1838,15 +1837,27 @@ def proper_mice_impute(
         raise ValueError(
             f"proper_mice_impute: analysis_outcome {analysis_outcome!r} not in df"
         )
-    derived_dependencies = dict(derived_dependencies or {})
+
+    # Resolve derivation module once (same object types as notebook DERIVATIONS).
+    derivations_mod = None
+    if derivations:
+        derivations_mod = getmodule(derivations[0])
+        if derivations_mod is None:
+            from heavy_machinery.config import load
+            derivations_mod = load("derivations")
+
+    derived_dependencies = (
+        derivations_mod.derived_dependencies_from(derivations)
+        if derivations_mod is not None
+        else {}
+    )
+
     if derivations is not None and post_impute_transform is None:
         # Use the same loaded config module that built DERIVATIONS in the
         # notebook. load("derivations") re-executes the file and creates new
         # dataclass types, so isinstance() inside apply_derivations would fail.
-        derivations_mod = getmodule(derivations[0]) if derivations else None
         if derivations_mod is None:
             from heavy_machinery.config import load
-
             derivations_mod = load("derivations")
         post_impute_transform = partial(
             derivations_mod.apply_post_mice_derivations,

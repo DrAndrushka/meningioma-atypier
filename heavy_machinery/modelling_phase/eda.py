@@ -76,6 +76,34 @@ def _ensure_dirs(root: Path) -> tuple[Path, Path]:
     return figs, tabs
 
 
+def _load_eda_excluded_columns(output_root: Path | str) -> frozenset[str]:
+    """Columns with ``eda_in_derived=None`` (written by apply_derivations)."""
+    path = Path(output_root) / "cleaning" / "eda_excluded_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
+
+
+def _load_hidden_parent_columns(output_root: Path | str) -> frozenset[str]:
+    """Columns with ``hide_parent=True`` (written by apply_derivations)."""
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
+
+
 def benjamini_hochberg(p: pd.Series) -> pd.Series:
     """
     Benjamini–Hochberg FDR-adjusted p-values (q-values).
@@ -1119,6 +1147,14 @@ def screen_associations(
                       if c in df.columns and sp.keep and sp.kind in testable_kinds
                       and c not in targets]
 
+    # ``eda_in_derived=None`` columns are omitted from EDA entirely.
+    # ``hide_parent=True`` parents stay in df but are omitted from the show.
+    excluded = _load_eda_excluded_columns(output_root) | _load_hidden_parent_columns(output_root)
+    if excluded:
+        predictors = [p for p in predictors if p not in excluded]
+        if fdr_family is not None:
+            fdr_family = [p for p in fdr_family if p not in excluded]
+
     rows = []
     for target in targets:
         if target not in df.columns:
@@ -1223,4 +1259,10 @@ def screen_associations(
         )
     except Exception as exc:
         warnings.warn(f"EDA association heatmap skipped: {exc}", stacklevel=2)
+
+    try:
+        from eda_paper_tables import build_eda_paper_tables
+        build_eda_paper_tables(df, schema, out, output_root=output_root)
+    except Exception as exc:
+        warnings.warn(f"EDA paper tables skipped: {exc}", stacklevel=2)
     return out

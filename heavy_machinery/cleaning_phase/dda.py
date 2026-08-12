@@ -72,6 +72,20 @@ def _ensure_dirs(root: Path) -> tuple[Path, Path]:
     return figs, tabs
 
 
+def _load_hidden_parent_columns(output_root: Path | str) -> frozenset[str]:
+    """Columns with ``hide_parent=True`` (written by apply_derivations)."""
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
+
+
 # CSV tables are saved raw (NaN preserved). Use cleaning.format_table_for_display in the notebook.
 
 # ---------------------------------------------------------------------------
@@ -764,6 +778,41 @@ def build_dda_bivariate_specs(
     }
 
 
+def _filter_hidden_from_bivariate(
+    bivariate_specs: dict[str, list[str]],
+    hidden: frozenset[str],
+) -> dict[str, list[str]]:
+    if not hidden:
+        return bivariate_specs
+    out: dict[str, list[str]] = {}
+    for x_col, partners in bivariate_specs.items():
+        if x_col in hidden:
+            continue
+        kept = [p for p in partners if p not in hidden]
+        if kept:
+            out[x_col] = kept
+    return out
+
+
+def _filter_hidden_from_trivariate(
+    trivariate_specs: dict[tuple[str, str], list[str]],
+    hidden: frozenset[str],
+) -> dict[tuple[str, str], list[str]]:
+    if not hidden:
+        return trivariate_specs
+    out: dict[tuple[str, str], list[str]] = {}
+    for pair, by_cols in trivariate_specs.items():
+        if not (isinstance(pair, tuple) and len(pair) == 2):
+            continue
+        x_col, y_col = pair
+        if x_col in hidden or y_col in hidden:
+            continue
+        kept = [c for c in by_cols if c not in hidden]
+        if kept:
+            out[pair] = kept
+    return out
+
+
 def run_dda_bivariate(
     df: pd.DataFrame,
     bivariate_specs: dict[str, list[str]],
@@ -789,6 +838,10 @@ def run_dda_bivariate(
     figs_dir.mkdir(parents=True, exist_ok=True)
     for old in figs_dir.glob("*.svg"):
         old.unlink()
+
+    bivariate_specs = _filter_hidden_from_bivariate(
+        bivariate_specs, _load_hidden_parent_columns(output_root),
+    )
 
     paths: list[Path] = []
     for x_col, by_cols in bivariate_specs.items():
@@ -1060,6 +1113,10 @@ def run_dda_trivariate(
     for old in figs_dir.glob("*.svg"):
         old.unlink()
 
+    trivariate_specs = _filter_hidden_from_trivariate(
+        trivariate_specs, _load_hidden_parent_columns(output_root),
+    )
+
     paths: list[Path] = []
     for pair, by_cols in trivariate_specs.items():
         if not (isinstance(pair, tuple) and len(pair) == 2):
@@ -1100,11 +1157,14 @@ def run_dda(
     """
     output_root = Path(output_root)
     figs_dir, tabs_dir = _ensure_dirs(output_root)
+    hidden = _load_hidden_parent_columns(output_root)
 
     rows_cont, rows_cat, rows_bin, rows_dt, rows_id = [], [], [], [], []
 
     for col, spec in schema.items():
         if col not in df.columns or not spec.keep or spec.kind == "skip":
+            continue
+        if col in hidden:
             continue
 
         s = df[col]

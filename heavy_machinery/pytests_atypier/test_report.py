@@ -334,6 +334,41 @@ def test_render_dda(report_cfg, report_art):
     assert html.index("2️⃣ DDA - bivariate") < html.index("3️⃣ DDA - trivariate")
 
 
+def test_render_dda_datatype_collapsibles_and_native_derived(report_cfg, report_art):
+    report_art.dda_derived_columns = frozenset({"high_grade", "male_sex"})
+    report_art.dda_binary = pd.DataFrame([
+        {"column": "dural_tail", "kind": "binary", "n": 10},
+        {"column": "high_grade", "kind": "binary", "n": 10},
+        {"column": "male_sex", "kind": "binary", "n": 10},
+    ])
+    report_art.dda_continuous = pd.DataFrame([
+        {"column": "age", "kind": "continuous", "n": 10, "min": 20.0},
+    ])
+    html = render_dda(report_cfg, report_art)
+    assert "✅ Binary variables (3)" in html
+    assert "🌱 Native (1)" in html
+    assert "🧩 Derived (2)" in html
+    assert "📏 Continuous / count variables (1)" in html
+    # Continuous has no flagged derived cols → plain table, no Native/Derived split
+    cont_start = html.index("📏 Continuous / count variables (1)")
+    cont_chunk = html[cont_start:cont_start + 800]
+    assert "🌱 Native" not in cont_chunk
+
+
+def test_render_dda_hides_hidden_parent_columns(report_cfg, report_art):
+    report_art.hidden_parent_columns = frozenset({"sex"})
+    report_art.dda_categorical = pd.DataFrame([
+        {"column": "sex", "kind": "nominal", "n": 10},
+        {"column": "side", "kind": "nominal", "n": 10},
+    ])
+    html = render_dda(report_cfg, report_art)
+    assert "🏷️ Categorical / ordinal variables (1)" in html
+    assert ">side<" in html or "side" in html
+    assert ">Nominal<" in html
+    # the hidden parent should not appear as a table cell value for column
+    assert ">sex<" not in html
+
+
 def test_group_dda_bivariate_figures(tmp_path):
     a = tmp_path / "age__by__sex.svg"
     b = tmp_path / "age__by__adc_value.svg"
@@ -443,45 +478,160 @@ def test_render_eda(report_cfg, report_art):
     html = render_eda(report_cfg, report_art)
     assert "<section" in html
     assert "What do these metrics mean?" in html
+    assert "💡 Interpretation" not in html
+    assert "Full Sweep" not in html
+    assert "Like in that research" not in html
+    assert "Exploratory variants" not in html
 
 
-def test_render_diagnostic_accuracy(report_cfg, report_art):
+def test_eda_paper_display_blanks_nan():
+    rows = pd.DataFrame([{
+        "row_role": "variable",
+        "predictor": "dural_tail",
+        "level": np.nan,
+        "grade1": "10/50 (20.0%)",
+        "grade23": np.nan,
+        "effect": np.nan,
+        "auc": "nan",
+        "p_fdr": np.nan,
+    }])
+    out = rp._eda_paper_display_table(
+        rows, table_kind="binary", target="high_grade",
+    )
+    assert list(out.columns) == [
+        "Variable", "WHO Grade 1 n/N (%)", "WHO Grade 2–3 n/N (%)",
+        "OR (95% CI)", "AUC", "FDR-p",
+    ]
+    row = out.iloc[0]
+    assert row["WHO Grade 1 n/N (%)"] == "10/50 (20.0%)"
+    assert row["WHO Grade 2–3 n/N (%)"] == ""
+    assert row["OR (95% CI)"] == ""
+    assert row["AUC"] == ""
+    assert row["FDR-p"] == ""
+    assert "nan" not in " ".join(map(str, row.values)).lower()
+
+
+def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
     report_art.associations = pd.DataFrame({
-        "target": ["event"], "predictor": ["age"], "kind": ["continuous"],
-        "test": ["spearman"], "effect_label": ["spearman_rho"], "effect": [0.2],
-        "p": [0.04], "p_fdr": [0.08], "n_used": [4],
+        "target": ["high_grade", "high_grade"],
+        "predictor": ["dural_tail", "male_sex"],
+        "kind": ["binary", "binary"],
+        "test": ["chi2", "chi2"],
+        "effect_label": ["phi", "phi"],
+        "effect": [0.2, 0.1],
+        "p": [0.01, 0.04],
+        "p_fdr": [0.02, 0.08],
+        "n_used": [100, 100],
+        "in_fdr_family": [True, True],
     })
-    report_art.diagnostic_accuracy = pd.DataFrame({
-        "target": ["event", "event"],
-        "predictor": ["perifocal_edema", "age"],
-        "n_used": [4, 4],
-        "TP": [2, np.nan], "FP": [0, np.nan], "FN": [1, np.nan], "TN": [1, np.nan],
-        "sensitivity": [0.667, np.nan],
-        "sensitivity_lo": [0.30, np.nan],
-        "sensitivity_hi": [0.90, np.nan],
-        "specificity": [1.0, np.nan],
-        "specificity_lo": [0.40, np.nan],
-        "specificity_hi": [1.0, np.nan],
-        "PPV": [1.0, np.nan],
-        "PPV_lo": [0.50, np.nan],
-        "PPV_hi": [1.0, np.nan],
-        "NPV": [0.5, np.nan],
-        "NPV_lo": [0.10, np.nan],
-        "NPV_hi": [0.90, np.nan],
-        "accuracy": [0.75, np.nan],
-        "accuracy_lo": [0.40, np.nan],
-        "accuracy_hi": [0.95, np.nan],
-        "AUC": [0.833, np.nan],
-        "p": [0.01, np.nan],
-        "p_fdr": [0.02, np.nan],
-        "note": ["", "Skipped: requires predefined cutoff"],
-    })
+    report_art.eda_derived_columns = frozenset({"male_sex"})
+    report_art.eda_paper_tables = pd.DataFrame([
+        {
+            "target": "high_grade", "table_kind": "binary", "predictor": "dural_tail",
+            "row_role": "variable", "level": "",
+            "grade1": "10/50 (20.0%)", "grade23": "20/50 (40.0%)",
+            "effect": "2.00 (1.10–3.50)", "auc": "", "p_fdr": "0.020",
+            "p_level": "", "sort_p": 0.02,
+        },
+        {
+            "target": "high_grade", "table_kind": "binary", "predictor": "male_sex",
+            "row_role": "variable", "level": "",
+            "grade1": "15/50 (30.0%)", "grade23": "25/50 (50.0%)",
+            "effect": "1.80 (1.00–3.20)", "auc": "", "p_fdr": "0.080",
+            "p_level": "", "sort_p": 0.08,
+        },
+        {
+            "target": "high_grade", "table_kind": "continuous", "predictor": "age",
+            "row_role": "variable", "level": "",
+            "grade1": "60.00 [50.00–70.00]", "grade23": "65.00 [55.00–75.00]",
+            "effect": "1.20 (1.00–1.45)", "auc": "0.60 (0.50–0.70)",
+            "p_fdr": "0.100", "p_level": "", "sort_p": 0.1,
+        },
+        {
+            "target": "high_grade", "table_kind": "ordinal", "predictor": "age_bins",
+            "row_role": "variable", "level": "",
+            "grade1": "", "grade23": "",
+            "effect": "", "auc": "", "p_fdr": "0.200",
+            "p_level": "", "sort_p": 0.2,
+        },
+    ])
     html = render_eda(report_cfg, report_art)
-    assert "Like in that research: univariate diagnostic accuracy" in html
-    assert "Peritumoral edema" in html
-    assert "66.7% [30.0" in html
-    assert "sig-fdr" in html
-    assert "Sensitivity (95% CI)" in html
+    assert "🌱 Native" in html
+    assert "🧩 Derived" in html
+    assert "WHO Grade 1 n/N (%)" in html
+    assert "OR per SD (95% CI)" in html
+    assert "Dichotomous" in html
+    assert "Interval/Ratio" in html
+    assert "Ordinal" in html
+    assert "eda-kind-divider" in html
+    assert "eda-col-header" in html
+    assert "eda-paper-stack" in html
+    assert "Benjamini–Hochberg procedure across all" in html
+    assert "Full Sweep" not in html
+    assert "Like in that research" not in html
+
+    # Native / Derived stay separate; each origin is exactly one <table>.
+    paper = rp._render_eda_native_derived_block(
+        report_art.eda_paper_tables,
+        target="high_grade",
+        derived_cols=frozenset({"male_sex"}),
+        n_fdr_family=2,
+    )
+    import re
+    assert "<h4>" not in paper  # datatypes are divider rows, not separate headings
+    details = re.findall(
+        r'<details class="collapsible"[^>]*>.*?</details>',
+        paper,
+        flags=re.S,
+    )
+    assert len(details) == 2
+    assert "🌱 Native" in details[0]
+    assert "🧩 Derived" in details[1]
+    assert details[0].count('<table class="report">') == 1
+    assert details[1].count('<table class="report">') == 1
+    # Native stacks multiple datatypes inside that single table
+    assert details[0].count("eda-kind-divider") >= 2
+    assert "Interval/Ratio" in details[0]
+    assert "Dichotomous" in details[0]
+    assert "Ordinal" in details[0]
+    # Derived is its own one-table stack (binary only in this fixture)
+    assert details[1].count("eda-kind-divider") == 1
+    assert "Dichotomous" in details[1]
+
+
+def test_render_eda_omits_excluded_columns(report_cfg, report_art):
+    report_art.associations = pd.DataFrame({
+        "target": ["high_grade", "high_grade"],
+        "predictor": ["dural_tail", "hidden_pred"],
+        "kind": ["binary", "binary"],
+        "test": ["chi2", "chi2"],
+        "effect_label": ["phi", "phi"],
+        "effect": [0.2, 0.9],
+        "p": [0.01, 0.001],
+        "p_fdr": [0.02, 0.002],
+        "n_used": [100, 100],
+        "in_fdr_family": [True, True],
+    })
+    report_art.eda_excluded_columns = frozenset({"hidden_pred"})
+    report_art.eda_paper_tables = pd.DataFrame([
+        {
+            "target": "high_grade", "table_kind": "binary", "predictor": "dural_tail",
+            "row_role": "variable", "level": "",
+            "grade1": "10/50 (20.0%)", "grade23": "20/50 (40.0%)",
+            "effect": "2.00 (1.10–3.50)", "auc": "", "p_fdr": "0.020",
+            "p_level": "", "sort_p": 0.02,
+        },
+        {
+            "target": "high_grade", "table_kind": "binary", "predictor": "hidden_pred",
+            "row_role": "variable", "level": "",
+            "grade1": "1/50 (2.0%)", "grade23": "40/50 (80.0%)",
+            "effect": "9.00 (2.00–20.0)", "auc": "", "p_fdr": "0.002",
+            "p_level": "", "sort_p": 0.002,
+        },
+    ])
+    html = render_eda(report_cfg, report_art)
+    assert "dural_tail" in html
+    assert "hidden_pred" not in html
 
 
 def test_render_inferential(report_cfg, report_art):
@@ -647,30 +797,6 @@ def test_render_inferential_interpretation():
         "event", tbl, "predictor_col", "or", "or_ci_lo", "or_ci_hi", "p",
     )
     assert "Interpretation" in html
-
-
-def test_eda_direction_phrase():
-    r = pd.Series({
-        "predictor": "age", "test": "spearman", "effect": 0.3,
-        "effect_label": "spearman_rho",
-    })
-    assert "age" in rp._eda_direction_phrase(r, "event")
-    assert "higher rate" in rp._eda_direction_phrase(r, "event")
-
-    r_phi = pd.Series({
-        "predictor": "progesterone_pos", "test": "fisher_exact", "effect": -0.13,
-        "effect_label": "phi",
-    })
-    assert "lower rate" in rp._eda_direction_phrase(r_phi, "high_grade")
-
-
-def test_render_eda_interpretation(report_cfg):
-    sub = pd.DataFrame({
-        "predictor": ["age"], "test": ["spearman"], "effect": [0.2],
-        "effect_label": ["spearman_rho"], "p": [0.04], "p_fdr": [0.08],
-    })
-    html = rp._render_eda_interpretation("event", sub, report_cfg)
-    assert isinstance(html, str)
 
 
 def test_render_appendix(report_cfg, report_art):
@@ -1019,27 +1145,6 @@ def test_model_note_escapes_markup_around_the_url():
 def test_model_note_survives_a_view_without_the_column():
     view = pd.DataFrame([{"Model": "m"}])
     assert list(rp._linked_model_notes(view).columns) == ["Model"]
-
-
-def test_split_fdr_family_partitions_rows():
-    import report
-    view = pd.DataFrame({
-        "predictor": ["vol", "vol_ge10"],
-        "p": [0.01, 0.02],
-        "in_fdr_family": [True, False],
-    })
-    main, exploratory, n_tests = report.split_fdr_family(view)
-    assert list(main["predictor"]) == ["vol"]
-    assert list(exploratory["predictor"]) == ["vol_ge10"]
-    assert n_tests == 1
-    assert "in_fdr_family" not in main.columns
-
-
-def test_split_fdr_family_backcompat_without_column():
-    import report
-    view = pd.DataFrame({"predictor": ["vol"], "p": [0.01]})
-    main, exploratory, n_tests = report.split_fdr_family(view)
-    assert len(main) == 1 and exploratory.empty and n_tests == 1
 
 
 def test_data_quality_flags_implausible_minima():

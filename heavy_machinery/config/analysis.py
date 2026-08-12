@@ -1,12 +1,15 @@
 """EDA config, literature/experimental model variants, resolve helpers.
 
-``resolve_eda`` filters EDA predictors to columns present in ``df``.
+``resolve_eda`` filters EDA predictors to columns present in ``df`` and drops
+``hide_parent`` sources when ``output_root`` has ``hidden_parent_columns.csv``.
 ``resolve_inferential_variants`` keeps only targets/predictors present in ``df`` and tags
 variants as literature or experimental from the list they came from.
 ``print_copy_pasteable_columns`` prints a Python list of column names for §03.
 ``resolve_inferential_targets`` collects outcome columns from merged variants.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import pandas as pd
 
@@ -16,6 +19,22 @@ from inferential import InferentialModelVariant, normalize_inferential_variants
 # modelling phase and the threshold phase must validate with the same
 # number, printed once per report in the Methods block.
 BOOTSTRAP_RESAMPLES: int = 1000
+
+
+def _load_hidden_parent_columns(output_root: Path | str | None) -> frozenset[str]:
+    """Load ``cleaning/hidden_parent_columns.csv``; empty if missing."""
+    if output_root is None:
+        return frozenset()
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
 
 
 def print_copy_pasteable_columns(
@@ -36,9 +55,15 @@ def resolve_eda(
     df: pd.DataFrame,
     eda_targets: list,
     eda_predictors: list,
+    *,
+    output_root: Path | str | None = None,
 ) -> tuple[list, list]:
-    """Filter EDA predictors to ``df`` columns."""
-    eda_predictors = [c for c in eda_predictors if c in df.columns]
+    """Filter EDA predictors to ``df`` columns; drop hidden parents when present."""
+    hidden = _load_hidden_parent_columns(output_root)
+    eda_predictors = [
+        c for c in eda_predictors
+        if c in df.columns and c not in hidden
+    ]
     return eda_targets, eda_predictors
 
 
@@ -67,19 +92,26 @@ def resolve_inferential_variants(
     experimental: list | None = None,
     *,
     default_target: str = "",
+    output_root: Path | str | None = None,
 ) -> list[InferentialModelVariant]:
     """Keep only targets/predictors present in ``df`` for each multivariable model variant.
 
     Literature vs experimental grouping follows which list each variant came from,
-    not the model id string.
+    not the model id string. Hidden parents (``hide_parent=True``) are dropped.
     """
+    hidden = _load_hidden_parent_columns(output_root)
     resolved: list[InferentialModelVariant] = []
 
     def _resolve_one(variants: list, *, is_experimental: bool) -> None:
+        if not variants:
+            return
         for var in normalize_inferential_variants(variants=variants, default_target=default_target):
             if var.target and var.target not in df.columns:
                 continue
-            preds = tuple(c for c in var.predictors if c in df.columns)
+            preds = tuple(
+                c for c in var.predictors
+                if c in df.columns and c not in hidden
+            )
             if not preds:
                 continue
             resolved.append(InferentialModelVariant(

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 import pandas as pd
 from IPython.display import display
@@ -40,11 +40,13 @@ class BinNumeric:
     labels: list
     kind: str = "ordinal"
     active: bool = True
-    overwrite: bool = False
     rule: str = ""      # how the column is computed (shown in the report)
     reason: str = ""    # why — citation for literature-derived cutoffs
     right: bool = False
     ordered_levels: list | None = None
+    dda_in_derived: bool = False  # True → DDA report "Derived" table
+    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
 
 
 @dataclass
@@ -56,10 +58,13 @@ class Apply:
     fn: Callable[[pd.Series], pd.Series]
     kind: str = "continuous"
     active: bool = True
-    overwrite: bool = False
     rule: str = ""
     reason: str = ""
     ordered_levels: list | None = None
+    dda_in_derived: bool = False  # True → DDA report "Derived" table
+    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
+
 
 @dataclass
 class Compute:
@@ -70,10 +75,150 @@ class Compute:
     sources: list[str] = field(default_factory=list)
     kind: str = "continuous"
     active: bool = True
-    overwrite: bool = False
     rule: str = ""
     reason: str = ""
     ordered_levels: list | None = None
+    dda_in_derived: bool = False  # True → DDA report "Derived" table
+    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
+
+
+def derived_dependencies_from(derivations: Sequence) -> dict[str, list[str]]:
+    """Build MICE parent→child map from active ``Apply`` / ``Compute`` / ``BinNumeric``.
+
+    Skips inactive specs. Skips in-place adjustments where ``name`` is also listed
+    as a source (e.g. structural-zero rewrite of ``edema_volume_cm3``) — those
+    stay in the imputation matrix instead of drop/recreate.
+    """
+    out: dict[str, list[str]] = {}
+    for spec in derivations:
+        if not getattr(spec, "active", True):
+            continue
+        if isinstance(spec, (Apply, BinNumeric)):
+            sources = [spec.source]
+        elif isinstance(spec, Compute):
+            sources = list(spec.sources)
+        else:
+            continue
+        if spec.name in sources:
+            continue
+        out[spec.name] = sources
+    return out
+
+
+def dda_in_derived_columns(derivations: Sequence) -> frozenset[str]:
+    """Column names flagged ``dda_in_derived=True`` on derivation specs."""
+    return frozenset(
+        spec.name
+        for spec in derivations
+        if getattr(spec, "dda_in_derived", False) is True
+    )
+
+
+def eda_in_derived_columns(derivations: Sequence) -> frozenset[str]:
+    """Column names with ``eda_in_derived=True`` (EDA Derived table)."""
+    return frozenset(
+        spec.name
+        for spec in derivations
+        if getattr(spec, "eda_in_derived", False) is True
+    )
+
+
+def eda_excluded_columns(derivations: Sequence) -> frozenset[str]:
+    """Column names with ``eda_in_derived=None`` (omit from EDA entirely)."""
+    return frozenset(
+        spec.name
+        for spec in derivations
+        if getattr(spec, "eda_in_derived", False) is None
+    )
+
+
+def hidden_parent_columns(derivations: Sequence) -> frozenset[str]:
+    """Parent column names flagged ``hide_parent=True`` on active specs.
+
+    Parents stay in the dataframe (MICE / re-derive) but are omitted from
+    EDA, DDA, and modelling predictor assembly via ``hidden_parent_columns.csv``.
+
+    In-place rewrites (``name`` also listed as a source) never hide ``name``.
+    """
+    hidden: set[str] = set()
+    for spec in derivations:
+        if not getattr(spec, "active", True):
+            continue
+        if not getattr(spec, "hide_parent", False):
+            continue
+        if isinstance(spec, (Apply, BinNumeric)):
+            if spec.source != spec.name:
+                hidden.add(spec.source)
+        elif isinstance(spec, Compute):
+            for src in spec.sources:
+                if src != spec.name:
+                    hidden.add(src)
+    return frozenset(hidden)
+
+
+def write_hidden_parent_columns(
+    output_root: Path | str,
+    derivations: Sequence,
+) -> Path:
+    """Persist hidden parents for EDA/DDA/modelling (``cleaning/hidden_parent_columns.csv``)."""
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"column": sorted(hidden_parent_columns(derivations))}).to_csv(
+        path, index=False,
+    )
+    return path
+
+
+def load_hidden_parent_columns(output_root: Path | str | None) -> frozenset[str]:
+    """Load ``cleaning/hidden_parent_columns.csv``; empty if missing."""
+    if output_root is None:
+        return frozenset()
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
+
+
+def write_dda_in_derived_columns(
+    output_root: Path | str,
+    derivations: Sequence,
+) -> Path:
+    """Persist DDA-derived names for the HTML report (``cleaning/dda_derived_columns.csv``)."""
+    path = Path(output_root) / "cleaning" / "dda_derived_columns.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"column": sorted(dda_in_derived_columns(derivations))}).to_csv(
+        path, index=False,
+    )
+    return path
+
+
+def write_eda_in_derived_columns(
+    output_root: Path | str,
+    derivations: Sequence,
+) -> tuple[Path, Path]:
+    """Persist EDA Derived / excluded column lists for the HTML report.
+
+    * ``cleaning/eda_derived_columns.csv`` — ``eda_in_derived=True``
+    * ``cleaning/eda_excluded_columns.csv`` — ``eda_in_derived=None`` (hidden)
+    """
+    root = Path(output_root) / "cleaning"
+    root.mkdir(parents=True, exist_ok=True)
+    derived_path = root / "eda_derived_columns.csv"
+    excluded_path = root / "eda_excluded_columns.csv"
+    pd.DataFrame({"column": sorted(eda_in_derived_columns(derivations))}).to_csv(
+        derived_path, index=False,
+    )
+    pd.DataFrame({"column": sorted(eda_excluded_columns(derivations))}).to_csv(
+        excluded_path, index=False,
+    )
+    return derived_path, excluded_path
 
 
 def _copy_schema(schema: dict[str, ColSpec]) -> dict[str, ColSpec]:
@@ -146,14 +291,6 @@ def _should_apply(
             **base,
             schema_action="skipped (source missing)",
             warning=f"Source column {spec.source!r} not in df.",
-        ))
-        return False
-
-    if spec.name in df.columns and not spec.overwrite:
-        log.append(_log_entry(
-            **base,
-            schema_action="skipped (already exists)",
-            warning=f"Column {spec.name!r} exists; set overwrite=True to replace.",
         ))
         return False
 
@@ -268,14 +405,6 @@ def _apply_compute(
         ))
         return df
 
-    if spec.name in df.columns and not spec.overwrite:
-        log.append(_log_entry(
-            **base,
-            schema_action="skipped (already exists)",
-            warning=f"Column {spec.name!r} exists; set overwrite=True to replace.",
-        ))
-        return df
-
     result = spec.fn(df)
     if spec.kind == "ordinal" and spec.ordered_levels is not None:
         result = pd.Categorical(result, categories=spec.ordered_levels, ordered=True)
@@ -339,6 +468,9 @@ def apply_derivations(
         out_dir = Path(output_root) / "cleaning"
         out_dir.mkdir(parents=True, exist_ok=True)
         derivation_log.to_csv(out_dir / "derivation_log.csv", index=False)
+        write_dda_in_derived_columns(output_root, derivations)
+        write_eda_in_derived_columns(output_root, derivations)
+        write_hidden_parent_columns(output_root, derivations)
         _update_cleaning_summary_derived(
             output_root,
             new_cols,
