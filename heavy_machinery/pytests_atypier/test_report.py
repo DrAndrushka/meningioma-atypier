@@ -564,13 +564,21 @@ def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
     assert "Benjamini–Hochberg across" in html
     assert "Full Sweep" not in html
     assert "Like in that research" not in html
-    assert html.index("📊 Paper-style table") < html.index("🌲 Native forest")
-    assert html.index("🌲 Native forest") < html.index("🌲 Derived forest")
-    assert html.index("📊 Paper-style table") < html.index("🌱 Native")
-    forest_chunk = html[html.index("🌲 Native forest"):]
-    assert "<img" in forest_chunk
-    assert "Native unadjusted odds ratios" in forest_chunk
-    assert "Derived unadjusted odds ratios" in html
+    # One fold per origin, each holding that origin's table AND its forest.
+    # The wrapper fold and the separate forest folds are gone: reading a table
+    # and its plot should not mean opening two places, and a native q must not
+    # sit next to a derived one.
+    assert "📊 Paper-style table" not in html
+    assert "🌲 Native forest" not in html and "🌲 Derived forest" not in html
+    assert html.index("🌱 Native") < html.index("🧩 Derived")
+
+    native_fold = html[html.index("🌱 Native"):html.index("🧩 Derived")]
+    assert "<img" in native_fold
+    assert "Native unadjusted odds ratios" in native_fold
+    assert "Derived unadjusted odds ratios" not in native_fold
+
+    derived_fold = html[html.index("🧩 Derived"):]
+    assert "Derived unadjusted odds ratios" in derived_fold
 
     # Native / Derived stay separate; each origin is exactly one <table>.
     paper = rp._render_eda_native_derived_block(
@@ -579,18 +587,26 @@ def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
         derived_cols=frozenset({"male_sex"}),
         n_fdr_family=2,
     )
-    import re
     assert "<h4>" not in paper  # datatypes are divider rows, not separate headings
-    details = re.findall(
-        r'<details class="collapsible"[^>]*>.*?</details>',
-        paper,
-        flags=re.S,
-    )
-    assert len(details) == 2
-    assert "🌱 Native" in details[0]
-    assert "🧩 Derived" in details[1]
+    # The block no longer folds itself — render_eda pairs each origin with its
+    # own forest and folds the two together, so this returns bare table html.
+    assert "<details" not in paper
+
+    def _one(only):
+        return rp._render_eda_native_derived_block(
+            report_art.eda_paper_tables,
+            target="high_grade",
+            derived_cols=frozenset({"male_sex"}),
+            n_fdr_family=2,
+            only=only,
+        )
+
+    details = [_one("native"), _one("derived")]
     assert details[0].count('<table class="report">') == 1
     assert details[1].count('<table class="report">') == 1
+    # Each origin renders only its own rows.
+    assert "Dural tail" in details[0] and "Dural tail" not in details[1]
+    assert "Male sex" in details[1] and "Male sex" not in details[0]
     # Native stacks multiple datatypes inside that single table
     assert details[0].count("eda-kind-divider") >= 2
     assert "Interval/Ratio" in details[0]

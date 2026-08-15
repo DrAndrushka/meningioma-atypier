@@ -2001,8 +2001,16 @@ def _render_eda_native_derived_block(
     hidden_parents: frozenset[str] = frozenset(),
     hidden_replacements: dict[str, list[str]] | None = None,
     derived_sources: dict[str, list[str]] | None = None,
+    only: str | None = None,
 ) -> str:
-    """Native and Derived stay separate; each origin = one stacked datatype table."""
+    """One origin's stacked table plus the footnote both origins share.
+
+    ``only`` selects "native" or "derived". The caller renders each into its own
+    fold beside that origin's forest, so a reader never has to hold a table open
+    in one place and its plot in another — and never sees a native q ranked
+    against a derived one, which is the whole reason the two are corrected
+    apart.
+    """
     if paper is None or paper.empty:
         return warning_box(
             "No paper-style EDA tables found. Re-run "
@@ -2051,10 +2059,9 @@ def _render_eda_native_derived_block(
         )
 
     blocks: list[str] = []
-    for title, mask in (
-        ("🌱 Native", ~is_derived),
-        ("🧩 Derived", is_derived),
-    ):
+    for key, mask in (("native", ~is_derived), ("derived", is_derived)):
+        if only is not None and key != only:
+            continue
         chunk = sub.loc[mask]
         if chunk.empty:
             continue
@@ -2062,11 +2069,7 @@ def _render_eda_native_derived_block(
         if not parts:
             continue
         # Exactly one <table> per origin — datatypes are divider rows, not tables.
-        blocks.append(details_block(
-            f"{title} ({chunk['predictor'].nunique()})",
-            _eda_stacked_table_html(parts),
-            open=title.startswith("🌱"),
-        ))
+        blocks.append(_eda_stacked_table_html(parts))
 
     # Named here rather than left implicit: a per-SD odds ratio means nothing
     # until the reader knows which scale that SD is measured on.
@@ -2270,25 +2273,6 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         target_body.append(f"<p>{line}</p>")
 
         paper_df = paper if paper is not None else pd.DataFrame()
-        table_html = _render_eda_native_derived_block(
-            paper_df,
-            target=str(target),
-            derived_cols=derived_cols,
-            n_fdr_family=n_fdr_family,
-            n_derived_family=n_derived_family,
-            excluded_cols=excluded_cols,
-            hidden_parents=art.hidden_parent_columns,
-            hidden_replacements=art.hidden_parent_replacements,
-            derived_sources=art.derived_sources,
-        )
-        target_body.append(details_block("📊 Paper-style table", table_html))
-
-        # output/panel/ carries no target column — it is built for the primary
-        # target, so it hangs under that target and no other.
-        if target == order[0]:
-            binary_block = _binary_marker_block(art)
-            if binary_block:
-                target_body.append(binary_block)
 
         if paper_df.empty or "predictor" not in paper_df.columns:
             paper_preds: set[str] = set()
@@ -2300,32 +2284,51 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
         native_preds = paper_preds - set(derived_cols)
         derived_preds = paper_preds & set(derived_cols)
 
-        native_forest = _render_univariate_or_forest(
-            paper_df,
-            target=str(target),
-            excluded_cols=excluded_cols,
-            include=native_preds,
-            caption="Native unadjusted odds ratios (95% CI)",
-            alt=f"{target} native univariate forest",
-        )
-        if native_forest:
+        # One fold per origin, each carrying its own table *and* its own forest.
+        # Splitting them across separate folds asked the reader to hold a table
+        # open in one place and read its plot in another, and put a native q
+        # next to a derived one in the process — the exact comparison the two
+        # families are corrected apart to prevent.
+        for key, title, preds, caption in (
+            ("native", "🌱 Native", native_preds,
+             "Native unadjusted odds ratios (95% CI)"),
+            ("derived", "🧩 Derived", derived_preds,
+             "Derived unadjusted odds ratios (95% CI)"),
+        ):
+            table_html = _render_eda_native_derived_block(
+                paper_df,
+                target=str(target),
+                derived_cols=derived_cols,
+                n_fdr_family=n_fdr_family,
+                n_derived_family=n_derived_family,
+                excluded_cols=excluded_cols,
+                hidden_parents=art.hidden_parent_columns,
+                hidden_replacements=art.hidden_parent_replacements,
+                derived_sources=art.derived_sources,
+                only=key,
+            )
+            forest = _render_univariate_or_forest(
+                paper_df,
+                target=str(target),
+                excluded_cols=excluded_cols,
+                include=preds,
+                caption=caption,
+                alt=f"{target} {key} univariate forest",
+            )
+            if not preds and not forest:
+                continue
             target_body.append(details_block(
-                "🌲 Native forest",
-                native_forest,
+                f"{title} ({len(preds)})",
+                table_html + forest,
+                open=(key == "native"),
             ))
-        derived_forest = _render_univariate_or_forest(
-            paper_df,
-            target=str(target),
-            excluded_cols=excluded_cols,
-            include=derived_preds,
-            caption="Derived unadjusted odds ratios (95% CI)",
-            alt=f"{target} derived univariate forest",
-        )
-        if derived_forest:
-            target_body.append(details_block(
-                "🌲 Derived forest",
-                derived_forest,
-            ))
+
+        # output/panel/ carries no target column — it is built for the primary
+        # target, so it hangs under that target and no other.
+        if target == order[0]:
+            binary_block = _binary_marker_block(art)
+            if binary_block:
+                target_body.append(binary_block)
 
         prefix = f"{target}__"
         figs = [
@@ -2705,7 +2708,7 @@ def _binary_marker_block(art: Artifacts) -> str:
     view = art.panel_marker_reading_view
     if art.panel_marker is None or view is None or view.empty:
         return ""
-    return details_block("⋈ Binary", _panel_aim_one(art))
+    return details_block("⋈ Binary-extended", _panel_aim_one(art))
 
 
 def _to_int_or_none(x: Any) -> int | None:
