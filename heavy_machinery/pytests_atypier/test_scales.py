@@ -1,11 +1,21 @@
 """Every phase standardises on the same scale, and says so where it prints.
 
 These tests exist because of a real defect: the modelling phase standardised
-tumor volume on the raw scale while the cut-point phase used log1p, so the same 329 patients were published as OR 1.73 in ``report.html`` and
-OR 1.96 in ``cutpoint_report.html``, with nothing on either page naming the
-scale. Both numbers were arithmetically correct, which is why nothing caught it.
+tumor volume on the raw scale while the cut-point phase used log1p, so the same
+329 patients were published as OR 1.73 in ``report.html`` and OR 1.96 in
+``cutpoint_report.html``, with nothing on either page naming the scale. Both
+numbers were arithmetically correct, which is why nothing caught it.
+
+The scale now reaches print by four routes, and each has a test here: the
+univariable odds ratio in the EDA paper table, the multivariable design matrix,
+the ``z_log`` flag written into the calculator artifacts, and the footnote that
+says which measurements were logged. A fix that mends one and misses another
+puts two scales on the same page, one section apart, which is the same defect
+wearing different clothes.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -78,6 +88,71 @@ def test_cutpoint_and_modelling_produce_the_same_per_sd_odds_ratio():
     cutpoint_or = di.odds_ratio(df["high_grade"].to_numpy(dtype=float), z)["or"]
 
     assert modelling_or == pytest.approx(cutpoint_or, abs=0.005)
+
+
+def test_every_published_measurement_agrees_across_the_two_phases(real_cohort):
+    """The same pin as above, but on the real cohort and on all five measurements.
+
+    The synthetic version proves the two code paths agree; this one proves the
+    two *published pages* agree. They are not the same claim — a fixture cannot
+    catch a measurement that is governed here but reaches the report through
+    some third path, and every measurement in the manuscript has to be checked
+    because the defect was silent on four of the five.
+    """
+    df = real_cohort
+    for m in MEASUREMENTS:
+        rows = _continuous_rows(df, "high_grade", m.col, positive_class=True,
+                                p_fdr=0.01, kind="continuous")
+        modelling_or, _, _ = parse_or_ci(rows[0]["effect"])
+        sub = df[[m.col, "high_grade"]].dropna()
+        cutpoint_or = di.odds_ratio(
+            sub["high_grade"].to_numpy(dtype=float),
+            di.standardise(sub[m.col].to_numpy(dtype=float), m.log_x))["or"]
+        # The modelling side publishes two decimals, so agreement can only be
+        # asserted to the precision a reader can actually see.
+        assert modelling_or == pytest.approx(cutpoint_or, abs=0.005), m.col
+
+
+def test_the_multivariable_design_uses_the_declared_scale(real_cohort):
+    """The other OR on the page. A univariable fix that missed this would show
+    the same measurement on one scale in the EDA table and the other in the
+    model, one section apart."""
+    from inferential import _build_design
+
+    logged = sorted(scales.LOG1P_COLUMNS)[0]
+    frame = real_cohort.dropna(subset=[logged]).copy()
+    schema = {logged: ColSpec(name=logged, kind="continuous")}
+    _, _, z_params = _build_design(frame, schema, [logged])
+    mu, sd = scales.z_params(frame[logged].to_numpy(dtype=float), True)
+    assert z_params[logged]["log"] is True
+    assert z_params[logged]["mu"] == pytest.approx(mu)
+    assert z_params[logged]["sd"] == pytest.approx(sd)
+
+
+def test_the_shipped_calculator_artifacts_carry_the_declared_scale():
+    """The last thing the scale has to survive: being written to a file.
+
+    The calculator reads ``z_log`` back out of these artifacts and logs the
+    patient's value before standardising it. A stale artifact written before the
+    declaration changed would give a different risk for the same patient than
+    the report gives an odds ratio for, and nothing in either would say so.
+    """
+    import glob
+    import json
+
+    paths = sorted(glob.glob("output/inferential/tables/*__calculator.json"))
+    if not paths:
+        pytest.skip("no calculator artifacts — run meningioma-modelling first")
+    checked = 0
+    for path in paths:
+        for term in json.loads(Path(path).read_text()).get("terms", []):
+            name = term.get("name")
+            if term.get("kind") != "continuous" or name not in scales.GOVERNED_COLUMNS:
+                continue
+            checked += 1
+            assert bool(term.get("z_log")) is scales.is_log_scaled(name), \
+                f"{Path(path).name}: {name}"
+    assert checked, "no governed continuous term in any artifact to check"
 
 
 def test_the_raw_scale_would_give_a_visibly_different_answer():
