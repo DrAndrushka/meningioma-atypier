@@ -596,9 +596,17 @@ def write_streamlit_artifacts(
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> list[Path]:
     """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta."""
-    from model_validation import build_complete_case_frame, enrich_streamlit_artifacts
+    from missingness_resolution import read_mice_manifest
+    from model_validation import (
+        build_complete_case_frame,
+        enrich_streamlit_artifacts,
+        missing_data_policy_text,
+    )
 
     output_root = Path(output_root)
+    # Built once here, the only place that knows output_root, and shipped to
+    # every worker: the sentence must describe THIS run's MICE.
+    policy_text = missing_data_policy_text(read_mice_manifest(output_root))
     tabs_dir = output_root / "inferential" / "tables"
     out_dir = Path(artifact_dir) if artifact_dir is not None else _default_streamlit_artifact_dir(output_root)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -656,7 +664,9 @@ def write_streamlit_artifacts(
 
     # Pass 2 — the bootstrap validations, which are the expensive part.
     validated = enrich_streamlit_artifacts(
-        [(a, m, d) for _, a, m, d in jobs], n_bootstrap=n_bootstrap,
+        [(a, m, d) for _, a, m, d in jobs],
+        n_bootstrap=n_bootstrap,
+        missing_data_policy=policy_text,
     )
     for (slot, *_), enriched in zip(jobs, validated):
         plan[slot] = (plan[slot][0], enriched)

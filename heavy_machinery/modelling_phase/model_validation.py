@@ -8,7 +8,7 @@ Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients merge
 from __future__ import annotations
 
 import os
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -400,12 +400,111 @@ def shrink_and_recalibrate_coefficients(
     return shrunk, processing
 
 
+# ---------------------------------------------------------------------------
+# Missing-data policy sentence
+# ---------------------------------------------------------------------------
+# Clinicians read this text in the Streamlit calculator and it is phrased like a
+# Methods sentence, so it has to describe the run that produced the artifact. It
+# is generated from the MICE manifest rather than typed by hand: a hand-typed
+# sentence is exactly what went stale and claimed complete-case analysis for a
+# fully imputed cohort.
+
+_MICE_METHOD_NAMES = {
+    "pmm": "predictive mean matching",
+    "logreg": "logistic regression",
+    "polyreg": "polytomous regression",
+    "polr": "proportional-odds regression",
+}
+#: Used only when no manifest is at hand (unit tests, ad-hoc calls).
+_MICE_FALLBACK_M = 20
+_MICE_FALLBACK_SEED = 42
+
+
+def _join_names(names: Sequence[str]) -> str:
+    """``a, b and c`` — readable prose rather than a bracketed list."""
+    names = list(names)
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def missing_data_policy_text(manifest: Mapping[str, Any] | None = None) -> str:
+    """Plain-language account of how missing values were handled, from the manifest.
+
+    ``manifest`` is ``missingness_resolution.read_mice_manifest(output_root)``.
+    Without one it falls back to a short statement that claims no per-column
+    detail — better silent than wrong.
+    """
+    manifest = dict(manifest or {})
+    m = int(manifest.get("m") or _MICE_FALLBACK_M)
+    seed = int(manifest.get("seed") or _MICE_FALLBACK_SEED)
+    methods = {
+        str(col): str(meth)
+        for col, meth in (manifest.get("methods_by_column") or {}).items()
+        if str(meth)
+    }
+    if not methods:
+        return (
+            f"Missing values were filled in by multiple imputation ({m} completed "
+            f"datasets, seed {seed}) rather than by dropping patients, so every "
+            "model was fitted on the full cohort."
+        )
+
+    by_method: dict[str, list[str]] = {}
+    for col, meth in methods.items():
+        by_method.setdefault(meth, []).append(col)
+    clauses = [
+        f"{len(cols)} by {_MICE_METHOD_NAMES.get(meth, meth)} "
+        f"({_join_names(sorted(cols))})"
+        for meth, cols in sorted(by_method.items())
+    ]
+
+    # A derived column counts as recreated-from-imputed when ANY ancestor was
+    # imputed: edema_index_ge0.0617 sits two hops above edema_volume_cm3.
+    deps = {
+        str(name): [str(s) for s in sources]
+        for name, sources in (manifest.get("derived_dependencies") or {}).items()
+    }
+    touched: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, sources in deps.items():
+            if name in touched:
+                continue
+            if any(s in methods or s in touched for s in sources):
+                touched.add(name)
+                changed = True
+    derived_clause = ""
+    if touched:
+        derived_clause = (
+            f" Derived columns were never imputed directly: "
+            f"{_join_names(sorted(touched))} were removed before imputation and "
+            "recomputed from their imputed parent measurement in each completed "
+            "dataset, which is why they are complete here."
+        )
+
+    return (
+        "Missing values were filled in by multiple imputation, not by dropping "
+        f"patients. The {len(methods)} variables that had missing values were "
+        f"imputed in one R mice chain (m = {m} completed datasets, seed {seed}): "
+        f"{_join_names(clauses)}. Every other variable was already complete."
+        f"{derived_clause}"
+        f" Coefficients were fitted in all {m} datasets and pooled with Rubin's "
+        "rules, so n is the whole cohort in every dataset and no patient was "
+        "excluded — it is not a complete-case count. Internal validation and "
+        "shrinkage were run on the first completed dataset. Imputation assumes "
+        "values were missing at random given the other recorded variables."
+    )
+
+
 def enrich_streamlit_artifact(
     artifact: dict[str, Any],
     model_df: pd.DataFrame,
     design_cols: list[str],
     *,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
+    missing_data_policy: str | None = None,
 ) -> dict[str, Any]:
     """Add validation charts, prose, shrinkage, and recalibrated coefficients."""
     target = str(artifact["target"])
@@ -433,9 +532,7 @@ def enrich_streamlit_artifact(
     }
     out["coefficient_processing"] = processing
     out["missing_data_policy"] = (
-        "Binary imaging variables were not imputed because missing values represented "
-        "unknown/unrecorded findings rather than confirmed absence. The model was fitted "
-        "on complete cases for included predictors."
+        missing_data_policy or missing_data_policy_text()
     )
     out["clinical_note"] = (
         "This is an internally validated exploratory research calculator and not a "
@@ -507,6 +604,7 @@ def _enrich_or_keep(
     design_cols: list[str],
     *,
     n_bootstrap: int,
+    missing_data_policy: str | None = None,
 ) -> dict[str, Any]:
     """Enrich one artifact, falling back to the plain artifact if validation fails.
 
@@ -514,7 +612,9 @@ def _enrich_or_keep(
     """
     try:
         return enrich_streamlit_artifact(
-            artifact, model_df, design_cols, n_bootstrap=n_bootstrap,
+            artifact, model_df, design_cols,
+            n_bootstrap=n_bootstrap,
+            missing_data_policy=missing_data_policy,
         )
     except (ValueError, RuntimeError):
         return artifact
@@ -524,6 +624,7 @@ def enrich_streamlit_artifacts(
     jobs: Sequence[tuple[dict[str, Any], pd.DataFrame, list[str]]],
     *,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
+    missing_data_policy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Validate several models, concurrently when that is safe. Order is preserved."""
     if not jobs:
@@ -532,7 +633,12 @@ def enrich_streamlit_artifacts(
     if n_workers == 1:
         # No pool, no process startup — the same code path as before.
         return [
-            _enrich_or_keep(a, m, d, n_bootstrap=n_bootstrap) for a, m, d in jobs
+            _enrich_or_keep(
+                a, m, d,
+                n_bootstrap=n_bootstrap,
+                missing_data_policy=missing_data_policy,
+            )
+            for a, m, d in jobs
         ]
 
     from joblib import Parallel, delayed, parallel_config
@@ -547,7 +653,11 @@ def enrich_streamlit_artifacts(
     with parallel_config(backend="loky", inner_max_num_threads=1):
         return list(
             Parallel(n_jobs=n_workers)(
-                delayed(_enrich_or_keep)(a, m, d, n_bootstrap=n_bootstrap)
+                delayed(_enrich_or_keep)(
+                    a, m, d,
+                    n_bootstrap=n_bootstrap,
+                    missing_data_policy=missing_data_policy,
+                )
                 for a, m, d in jobs
             )
         )

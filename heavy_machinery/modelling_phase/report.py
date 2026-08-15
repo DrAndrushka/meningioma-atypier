@@ -981,6 +981,18 @@ def _load_schema_any(path: Path, warnings: list[str]) -> pd.DataFrame | None:
 # Section renderers
 # ---------------------------------------------------------------------------
 
+def _usable_link(value) -> str:
+    """A URL, or "" — because a blank CSV cell does not arrive as a blank string.
+
+    ``pandas`` reads an empty cell as NaN and ``str(NaN)`` is ``"nan"``, which
+    is a perfectly good truthy string. The two experimental models have no
+    published source, so they rendered ``<a href="nan">source</a>``: a dead
+    relative URL under a word that promises a citation.
+    """
+    text = "" if value is None else str(value).strip()
+    return "" if text.lower() in ("", "nan", "none", "<na>", "nat") else text
+
+
 def _inferential_model_heading(
     title: str = "",
     *,
@@ -988,6 +1000,7 @@ def _inferential_model_heading(
     model_id: str = "",
 ) -> str:
     """Section heading for one multivariable model variant."""
+    link = _usable_link(link)
     if title and link:
         return (
             f'<h4>📐 {_esc(title)} · '
@@ -1866,7 +1879,9 @@ def _eda_paper_display_table(
                 "FDR-p": _eda_cell(r.get("p_fdr")),
             })
         elif family == "categorical":
-            p_cell = _eda_cell(r.get("p_fdr")) or _eda_cell(r.get("p_level"))
+            # Level rows show their own BH q, never the raw Wald p — the column
+            # is headed FDR-p and must mean that on every row in it.
+            p_cell = _eda_cell(r.get("p_fdr")) or _eda_cell(r.get("q_level"))
             out_rows.append({
                 "Variable": label,
                 f"{g1} n/N (%)": _eda_cell(r.get("grade1")),
@@ -1988,6 +2003,49 @@ def _render_eda_native_derived_block(
 
     # Named here rather than left implicit: a per-SD odds ratio means nothing
     # until the reader knows which scale that SD is measured on.
+    # Level rows are their own multiplicity family — say so, or the reader
+    # compares a level q with its parent's q and they are not comparable.
+    # Survives a frame without the column, and maps a missing role to "variable"
+    # rather than to the string "nan".
+    role = (
+        sub["row_role"].astype("string").fillna("variable")
+        if "row_role" in sub.columns
+        else pd.Series("variable", index=sub.index)
+    )
+    if "q_level" in sub.columns:
+        has_q = sub["q_level"].map(_eda_cell).astype(bool)
+    else:
+        has_q = pd.Series(False, index=sub.index)
+    n_level_native = int((role.eq("level") & ~is_derived & has_q).sum())
+    n_level_derived = int((role.eq("level") & is_derived & has_q).sum())
+    level_note = ""
+    if n_level_native or n_level_derived:
+        counts = f"{n_level_native} native"
+        if n_level_derived:
+            counts += f" and {n_level_derived} derived"
+        level_note = (
+            " Level FDR-p: indented level rows carry their own "
+            f"Benjamini–Hochberg across the {counts} level-vs-reference "
+            "comparisons, native and derived corrected separately. A level q "
+            "belongs to that family, not to the variable family above it."
+        )
+
+    # A predictor in neither BH family shows an empty FDR-p cell and quietly
+    # pulls the section heading away from the family size printed below it.
+    # Name it instead of leaving the blank to be read as "not significant".
+    q_col = (
+        sub["p_fdr"] if "p_fdr" in sub.columns
+        else pd.Series(pd.NA, index=sub.index)
+    )
+    q_blank = q_col.isna() | (q_col.astype("string").fillna("").str.strip() == "")
+    uncorrected = sorted({
+        str(p) for p in sub.loc[(role == "variable") & q_blank, "predictor"]
+    })
+    uncorrected_note = (
+        " Shown without FDR correction (in neither multiplicity family): "
+        + ", ".join(_esc(prettify_label(p)) for p in uncorrected) + "."
+    ) if uncorrected else ""
+
     scale_note = scale_footnote(sorted(set(sub["predictor"].astype(str))))
     footnote = (
         "<p class='muted'><small>"
@@ -1996,6 +2054,8 @@ def _render_eda_native_derived_block(
         "Derived FDR-p: a separate Benjamini–Hochberg across "
         f"{n_derived_family} derived variables "
         "(derived flags do not enter the native multiplicity family)."
+        + level_note
+        + uncorrected_note
         + (f" {_esc(scale_note)}" if scale_note else "")
         + "</small></p>"
     )
@@ -2401,7 +2461,7 @@ def _panel_forest_caption(art: Artifacts) -> str:
     if art.panel_marker is None or art.panel_marker.empty:
         return ""
     return (
-        "<p class='caption'><strong>Figure X.</strong> Positive likelihood "
+        "<p class='caption'><strong>Figure 3.</strong> Positive likelihood "
         "ratio for each variable, with 95% confidence interval, on a "
         "logarithmic axis. A ratio of 1 means the finding leaves the "
         "probability of WHO grade 2–3 unchanged; variables whose interval "

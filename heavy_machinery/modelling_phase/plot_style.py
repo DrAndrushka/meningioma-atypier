@@ -947,6 +947,11 @@ FIGURE_PROFILES: dict[str, tuple[str, ...]] = {
     "report": ("png",),
     "submission": ("tif", "png"),
 }
+# Suffixes save_figure() may strip. Anything else after a dot is part of the
+# name — cut-points routinely put one there.
+_IMAGE_SUFFIXES = frozenset({"png", "tif", "tiff", "jpg", "jpeg",
+                            "pdf", "svg", "eps"})
+
 _FIGURE_PROFILE_ENV = "ATYPIER_FIGURES"
 _DEFAULT_FIGURE_PROFILE = "report"
 
@@ -1071,7 +1076,13 @@ def save_figure(
     extra: dict = {}
     if pad_inches is not None:
         extra["pad_inches"] = pad_inches
-    stem = out.with_suffix("")
+    # Only strip a *real* image extension. A cut-point in the name —
+    # "high_grade__adc_value_le0.72" — is not a suffix, and with_suffix() ate it,
+    # so the file landed as adc_value_le0.png and every caption derived from that
+    # stem read "ADC value ≤ 0": an impossible threshold, on a plot whose own
+    # axis label was correct.
+    stem = (out.with_suffix("")
+            if out.suffix.lower().lstrip(".") in _IMAGE_SUFFIXES else out)
     written: list[Path] = []
     for fmt in formats:
         pth = Path(f"{stem}.{fmt}")

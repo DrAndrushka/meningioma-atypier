@@ -6,191 +6,36 @@ one is on the suspicious side. 0.50 is a coin flip — the measurement carries n
 information. 1.00 is perfect separation.
 
 The interval comes from **DeLong**, computed exactly rather than by resampling.
-Resampling an AUC gives a slightly different answer every run and costs seconds
-per measurement; DeLong is a closed formula, so the same data always yields the
-same interval. It also produces the pieces needed to compare two AUCs measured
-on the same patients, which is what step 10 does with them.
-
-Two details that change the numbers:
+The estimator itself lives in :mod:`delong`, because ``report.html`` publishes
+the same univariate AUCs in its EDA table and the two pages have to print one
+interval per AUC. What stays here is how this phase applies it.
 
 *Direction is applied, not discovered.* ADC is negated before scoring, because
 low ADC is the suspicious side. Letting the code choose the orientation would
 floor every AUC at 0.50 and quietly convert "this measurement does nothing"
-into "this measurement does a little".
-
-*The interval is built on the logit scale.* An AUC near 0.5 with a wide interval
-can otherwise be reported as reaching above 1.0, which is not a possible value.
-Working on the log-odds scale and transforming back keeps both ends inside
-[0, 1] without distorting the middle.
+into "this measurement does a little". The EDA screen on the other page has no
+direction declared for it to read and so must orient by the data — that is
+:func:`delong.auc_ci_auto`, and it is the only difference between the pages.
 """
 from __future__ import annotations
 
-from typing import NamedTuple, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
 
+# Imported rather than defined: the modelling phase publishes the same AUCs in
+# its EDA table, so one implementation serves both pages — the arrangement
+# :mod:`scales` already uses for the log scale. Re-exported under their old
+# names because six modules in this phase (criteria, decision_curve, dichotomy,
+# figures, imputation, ranking, wobble) and the tests import them from here.
+from delong import (AucError, DelongResult, auc_with_ci,  # noqa: F401
+                    delong_compare, fast_delong, logit_ci, oriented_score)
 from measurements import (MEASUREMENTS, Measurement, STRATUM_ALL,
                           STRATUM_PRESENT, stratum_mask)
 from intervals import wilson_ci
 
 OUTCOME = "high_grade"
-
-
-class AucError(Exception):
-    """The AUC cannot be computed from what was passed in."""
-
-
-class DelongResult(NamedTuple):
-    """An AUC, its variance, and the per-patient pieces that variance is made of.
-
-    ``v_pos`` and ``v_neg`` are kept because comparing two AUCs on the same
-    patients needs their covariance, and that is built from these — step 10.
-    """
-
-    auc: float
-    var: float
-    v_pos: np.ndarray
-    v_neg: np.ndarray
-    n_pos: int
-    n_neg: int
-
-
-def oriented_score(x: np.ndarray, direction: str) -> np.ndarray:
-    """Flip the measurement so that larger always means more suspicious."""
-    x = np.asarray(x, dtype=float)
-    return -x if direction == "lower" else x
-
-
-def _midrank(x: np.ndarray) -> np.ndarray:
-    """Ranks with ties sharing their average — the tie handling DeLong needs.
-
-    Many patients here share a value exactly (edema volume 0.0 above all), and
-    breaking those ties arbitrarily would understate the variance.
-    """
-    order = np.argsort(x, kind="mergesort")
-    sorted_x = x[order]
-    n = len(x)
-    ranks = np.empty(n, dtype=float)
-    i = 0
-    while i < n:
-        j = i
-        while j < n and sorted_x[j] == sorted_x[i]:
-            j += 1
-        ranks[i:j] = 0.5 * (i + j - 1) + 1.0
-        i = j
-    out = np.empty(n, dtype=float)
-    out[order] = ranks
-    return out
-
-
-def fast_delong(y: np.ndarray, score: np.ndarray) -> DelongResult:
-    """AUC and its variance by the Sun & Xu (2014) closed form.
-
-    ``y`` is 1 for high grade, 0 for low grade; ``score`` is already oriented so
-    that larger means more suspicious.
-    """
-    y = np.asarray(y).astype(int)
-    score = np.asarray(score, dtype=float)
-    if len(y) != len(score):
-        raise AucError("Outcome and score have different lengths.")
-    if np.isnan(score).any():
-        raise AucError("Score contains missing values — subset before scoring.")
-
-    pos, neg = score[y == 1], score[y == 0]
-    m, n = len(pos), len(neg)
-    if m == 0 or n == 0:
-        raise AucError(
-            f"Need both grades to compute an AUC — got {m} high, {n} low.")
-
-    t_pos = _midrank(pos)
-    t_neg = _midrank(neg)
-    t_all = _midrank(np.concatenate([pos, neg]))
-    auc = (t_all[:m].sum() / m - (m + 1) / 2) / n
-
-    v_pos = (t_all[:m] - t_pos) / n
-    v_neg = 1.0 - (t_all[m:] - t_neg) / m
-    var = (v_pos.var(ddof=1) / m if m > 1 else 0.0) + \
-          (v_neg.var(ddof=1) / n if n > 1 else 0.0)
-    return DelongResult(float(auc), float(var), v_pos, v_neg, m, n)
-
-
-def logit_ci(auc: float, var: float, *, alpha: float = 0.05
-             ) -> tuple[float, float]:
-    """DeLong interval carried through the log-odds scale and back.
-
-    ``Var(logit AUC) = Var(AUC) / [AUC·(1−AUC)]²`` — the variance is transformed
-    too, not just the estimate. Transforming only the point estimate is a common
-    slip and produces an interval that is not the one it claims to be.
-    """
-    if not np.isfinite(auc) or not np.isfinite(var) or var < 0:
-        return float("nan"), float("nan")
-    if auc <= 0 or auc >= 1 or var == 0:
-        return float(auc), float(auc)
-    z = float(norm.ppf(1 - alpha / 2))
-    eta = np.log(auc / (1 - auc))
-    se_eta = np.sqrt(var) / (auc * (1 - auc))
-    lo, hi = eta - z * se_eta, eta + z * se_eta
-    return float(1 / (1 + np.exp(-lo))), float(1 / (1 + np.exp(-hi)))
-
-
-def auc_with_ci(y: np.ndarray, x: np.ndarray, direction: str, *,
-                alpha: float = 0.05) -> dict[str, float]:
-    """AUC, its 95% interval, and the counts it rests on."""
-    result = fast_delong(y, oriented_score(x, direction))
-    lo, hi = logit_ci(result.auc, result.var, alpha=alpha)
-    return {
-        "auc": result.auc,
-        "auc_lo": lo,
-        "auc_hi": hi,
-        "n": result.n_pos + result.n_neg,
-        "n_high": result.n_pos,
-        "n_low": result.n_neg,
-        "auc_var": result.var,
-    }
-
-
-def delong_compare(y: np.ndarray, score_a: np.ndarray, score_b: np.ndarray, *,
-                   alpha: float = 0.05) -> dict[str, float]:
-    """Compare two AUCs measured on the *same* patients.
-
-    Two scores on one cohort are not independent — a patient who is easy to
-    classify is easy for both. Comparing their intervals by eye, or with a test
-    that assumes independence, overstates how different they are. DeLong uses
-    the per-patient pieces from each score to work out how much they agree, and
-    subtracts that shared agreement from the variance of the difference.
-
-    Both scores must already be oriented so larger means more suspicious.
-    """
-    y = np.asarray(y).astype(int)
-    a = fast_delong(y, np.asarray(score_a, dtype=float))
-    b = fast_delong(y, np.asarray(score_b, dtype=float))
-    m, n = a.n_pos, a.n_neg
-
-    def _cov(u: np.ndarray, v: np.ndarray) -> float:
-        return float(np.cov(u, v, ddof=1)[0, 1]) if u.size > 1 else 0.0
-
-    var = ((a.v_pos.var(ddof=1) - 2 * _cov(a.v_pos, b.v_pos)
-            + b.v_pos.var(ddof=1)) / m if m > 1 else 0.0) + \
-          ((a.v_neg.var(ddof=1) - 2 * _cov(a.v_neg, b.v_neg)
-            + b.v_neg.var(ddof=1)) / n if n > 1 else 0.0)
-    diff = a.auc - b.auc
-    # Not ``var <= 0``: two identical scores leave a variance of order 1e-19
-    # rather than exactly zero, which would otherwise be reported as an interval
-    # a billionth of a point wide instead of no interval at all. AUC variances
-    # in this phase are of order 1e-4, so this floor cannot swallow a real one.
-    if not np.isfinite(var) or var <= 1e-16:
-        return {"auc_a": a.auc, "auc_b": b.auc, "difference": float(diff),
-                "difference_lo": float(diff), "difference_hi": float(diff),
-                "z": np.nan, "p": np.nan, "correlated": True}
-    z = float(norm.ppf(1 - alpha / 2))
-    se = float(np.sqrt(var))
-    stat = diff / se
-    return {"auc_a": a.auc, "auc_b": b.auc, "difference": float(diff),
-            "difference_lo": float(diff - z * se),
-            "difference_hi": float(diff + z * se),
-            "z": stat, "p": float(2 * norm.sf(abs(stat))), "correlated": True}
 
 
 def separation_table(df: pd.DataFrame,

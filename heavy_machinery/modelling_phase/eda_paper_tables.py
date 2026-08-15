@@ -14,13 +14,17 @@ import pandas as pd
 import statsmodels.api as sm
 
 from cleaning import format_table_for_csv as _format_table_for_csv
+from delong import auc_ci_auto
 from diagnostic_accuracy import (
     _encode_feature_present,
     _odds_ratio_ci,
 )
-from eda import _encode_binary_target, compute_univariate_auc
+from eda import (
+    _encode_binary_target,
+    benjamini_hochberg,
+    compute_univariate_auc,
+)
 from inferential import _fit_logit_robust
-from plot_style import roc_auc
 from scales import is_log_scaled, standardise
 from schema_infer import ColSpec, match_level
 
@@ -36,8 +40,14 @@ _PAPER_COLUMNS = [
     "auc",
     "p_fdr",
     "p_level",
+    "q_level",  # BH across level rows only — their own family, native/derived
     "sort_p",
 ]
+
+# Carried from _categorical_rows to _apply_level_fdr, then dropped before the
+# CSV is written. BH needs the unrounded Wald p; ``p_level`` has already been
+# squashed to "<0.001", which would tie three level rows at 0.0005.
+_LEVEL_P_RAW = "p_level_raw"
 
 
 def _fmt_p(v: Any) -> str:
@@ -81,43 +91,6 @@ def _fmt_auc_ci(auc: float, lo: float, hi: float) -> str:
     if not np.isfinite(lo) or not np.isfinite(hi):
         return f"{auc:.2f}"
     return f"{auc:.2f} ({lo:.2f}–{hi:.2f})"
-
-
-def _bootstrap_auc_ci(
-    y: np.ndarray,
-    scores: np.ndarray,
-    *,
-    n_boot: int = 400,
-    seed: int = 42,
-) -> tuple[float, float, float]:
-    """ROC AUC point estimate + percentile bootstrap 95% CI."""
-    y = np.asarray(y, dtype=float)
-    scores = np.asarray(scores, dtype=float)
-    mask = np.isfinite(y) & np.isfinite(scores)
-    y, scores = y[mask], scores[mask]
-    if len(y) < 5 or len(np.unique(y)) < 2:
-        return np.nan, np.nan, np.nan
-    auc = roc_auc(y, scores)
-    if not np.isfinite(auc):
-        return np.nan, np.nan, np.nan
-    if auc < 0.5:
-        auc = 1.0 - auc
-        scores = -scores
-    rng = np.random.default_rng(seed)
-    boots: list[float] = []
-    n = len(y)
-    for _ in range(n_boot):
-        idx = rng.integers(0, n, size=n)
-        yy, ss = y[idx], scores[idx]
-        a = roc_auc(yy, ss)
-        # NaN means the resample drew one class only — AUC is undefined there.
-        if not np.isfinite(a):
-            continue
-        boots.append(a if a >= 0.5 else 1.0 - a)
-    if len(boots) < 20:
-        return auc, np.nan, np.nan
-    lo, hi = np.percentile(boots, [2.5, 97.5])
-    return auc, float(lo), float(hi)
 
 
 def _logit_or_ci(y: pd.Series, x: pd.Series) -> tuple[float, float, float, float]:
@@ -234,10 +207,15 @@ def _continuous_rows(
     # on a skewed predictor, so both are kept rather than one standing in for
     # the other.
     or_, lo, hi, p_model = _logit_or_ci(pair["y"], z)
-    auc, auc_lo, auc_hi = _bootstrap_auc_ci(
+    # DeLong — the same estimator, and so the same interval, the cut-point
+    # phase publishes for these measurements; declared once in ``delong``. It
+    # was a 400-draw percentile bootstrap here, whose lower bound moved in the
+    # second decimal with the random seed, so one AUC reached print with two
+    # different intervals one report apart.
+    auc, auc_lo, auc_hi = auc_ci_auto(
         pair["y"].to_numpy(), pair["x"].to_numpy(),
     )
-    # Prefer associations AUC if bootstrap failed
+    # Prefer associations AUC if the interval could not be computed
     if not np.isfinite(auc):
         auc = compute_univariate_auc(
             df, target, predictor, kind,
@@ -315,7 +293,7 @@ def _categorical_rows(
         k23 = int(((pair["y"] == 1) & mask).sum())
         is_ref = str(lv) == str(ref)
         if is_ref:
-            effect, p_level = "— (ref)", ""
+            effect, p_level, p_lv = "— (ref)", "", np.nan
             role = "reference"
         else:
             # 2×2: level vs rest-of-reference collapsed as level vs ref only
@@ -339,9 +317,45 @@ def _categorical_rows(
             "auc": "",
             "p_fdr": "",
             "p_level": p_level,
+            _LEVEL_P_RAW: float(p_lv) if role == "level" else np.nan,
             "sort_p": p_num,
         })
     return rows
+
+
+def _apply_level_fdr(
+    out: pd.DataFrame,
+    *,
+    derived_cols: frozenset[str] | set[str],
+    native_preds: frozenset[str] | set[str],
+) -> pd.DataFrame:
+    """Benjamini–Hochberg across level rows, native and derived kept apart.
+
+    A level row's p is the Wald p of its own level-vs-reference logit, so those
+    p's are as multiple as the variable rows above them and must not be printed
+    raw in a column headed FDR-p. The split mirrors
+    ``apply_native_and_derived_fdr``: derived flags never join the native
+    family, and a predictor in neither family gets no q at all — its level rows
+    stay blank, exactly as its variable row does.
+    """
+    out = out.copy()
+    out["q_level"] = ""
+    if out.empty or _LEVEL_P_RAW not in out.columns:
+        return out
+    derived = {str(c) for c in derived_cols}
+    native = {str(p) for p in native_preds} - derived
+    preds = out["predictor"].astype(str)
+    is_level = out["row_role"].astype(str) == "level"
+    p_raw = pd.to_numeric(out[_LEVEL_P_RAW], errors="coerce")
+    for target in out["target"].astype(str).unique():
+        in_target = out["target"].astype(str) == target
+        for family in (native, derived):
+            mask = in_target & is_level & preds.isin(family) & p_raw.notna()
+            if not mask.any():
+                continue
+            q = benjamini_hochberg(p_raw[mask])
+            out.loc[mask, "q_level"] = [_fmt_p(v) for v in q]
+    return out
 
 
 def build_eda_paper_tables(
@@ -384,6 +398,8 @@ def build_eda_paper_tables(
     if excluded:
         view = view[~view["predictor"].astype(str).isin(excluded)]
 
+    derived_cols: frozenset[str] | set[str] = frozenset()
+    native_preds: set[str] = set()
     if not view.empty:
         from eda import apply_native_and_derived_fdr, _load_eda_derived_columns
 
@@ -402,6 +418,13 @@ def build_eda_paper_tables(
         view = apply_native_and_derived_fdr(
             view, derived_cols=derived_cols, fdr_family=fam,
         )
+        # Read the native family back off the call that defined it, so the
+        # level correction cannot drift from the variable correction.
+        native_preds = {
+            str(p) for p in view.loc[
+                view["in_fdr_family"].astype(bool), "predictor"
+            ].unique()
+        }
 
     for _, assoc in view.iterrows():
         target = str(assoc["target"])
@@ -430,9 +453,12 @@ def build_eda_paper_tables(
                 feature_positive=getattr(spec, "positive_class", None),
             ))
 
-    out = pd.DataFrame(rows, columns=_PAPER_COLUMNS) if rows else pd.DataFrame(
-        columns=_PAPER_COLUMNS,
-    )
+    cols = _PAPER_COLUMNS + [_LEVEL_P_RAW]
+    out = pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+    # Level rows carry their own multiplicity, so they get their own BH family.
+    out = _apply_level_fdr(
+        out, derived_cols=derived_cols, native_preds=native_preds,
+    ).drop(columns=[_LEVEL_P_RAW])
     if not out.empty:
         role_ord = {"variable": 0, "reference": 1, "level": 2}
         kind_ord = {"nominal": 0, "ordinal": 1, "continuous": 2, "binary": 3}
