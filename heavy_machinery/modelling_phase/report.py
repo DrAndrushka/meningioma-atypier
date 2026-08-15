@@ -2615,6 +2615,24 @@ def _panel_table_footnotes(art: Artifacts) -> str:
         n_derived = int(origins.eq("derived").sum())
     else:
         n_native, n_derived = n_rows, 0
+    # A flag whose parent was hidden counts as native: it replaced that column
+    # outright, so nothing in the table restates anything. Named, because a
+    # reader who knows sex was recorded needs to be told it is here as "Male".
+    replaced_note = ""
+    if art.hidden_parent_replacements:
+        pairs = "; ".join(
+            f"{prettify_label(parent)} (as "
+            + ", ".join(prettify_label(f) for f in sorted(flags)) + ")"
+            for parent, flags in sorted(art.hidden_parent_replacements.items())
+            if flags
+        )
+        if pairs:
+            replaced_note = (
+                "Variables replaced outright by a derived flag are counted as "
+                "native, because the column they were cut from is not in this "
+                f"table for them to restate: {_esc(pairs)}. "
+            )
+
     lines = [
         "Variables are sorted by LR+ in descending order. "
         "LR+ with 95% CI crossing 1.0 indicates no significant discriminative "
@@ -2625,7 +2643,8 @@ def _panel_table_footnotes(art: Artifacts) -> str:
         "correction while its likelihood ratio interval still crosses 1, and "
         "the reverse. Read the interval for discriminative value and FDR p for "
         "whether the association survives testing several variables at once.",
-        f"{_esc('Native and derived variables are corrected separately')}: "
+        replaced_note
+        + f"{_esc('Native and derived variables are corrected separately')}: "
         f"Benjamini–Hochberg runs across the {n_native} native variables in "
         f"Table 4a and, independently, across the {n_derived} derived "
         "variables in Table 4b. Derived variables do not enter the native "
@@ -2634,13 +2653,14 @@ def _panel_table_footnotes(art: Artifacts) -> str:
         "the same information twice and shift every native q. A q from one "
         "table is a rank within its own family and is not comparable with a q "
         "from the other.",
-        f"{_esc('Adding a variable changes the q values in its own table')}. "
-        f"The derived family currently has {n_derived} members, so every q in "
-        "Table 4b is multiplied by "
-        f"{n_derived}/rank; adding another derived variable requires the whole "
-        "of Table 4b to be recomputed, and the same applies to Table 4a. The "
-        "numbers here are not per-variable constants that can be carried over "
-        "to a table with a different membership.",
+        "<strong>These q values are not portable. Adding or removing any "
+        "variable means recomputing the whole table it sits in.</strong> A "
+        "Benjamini–Hochberg q is the raw p multiplied by the family size over "
+        f"the row's rank, so it depends on which other variables are in the "
+        f"table with it. Table 4a currently has {n_native} members and Table 4b "
+        f"has {n_derived}; change either membership and every q in that table "
+        "moves. They are not per-variable constants that can be carried into a "
+        "table with different members.",
     ]
     prev = _panel_prevalence(panel)
     if prev is not None:

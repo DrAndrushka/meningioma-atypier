@@ -576,3 +576,62 @@ def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
     )
     assert not tables["01_marker_panel"].empty
     assert tables["07_count_score"].empty
+
+
+# --- which side of the panel a flag belongs to -----------------------------
+def test_a_flag_whose_parent_is_hidden_counts_as_native():
+    """It replaced that column, so nothing in the table restates anything.
+
+    ``male`` replaced ``sex``; there is no ``sex`` row left for it to
+    duplicate, so it is corrected with the other recorded signs.
+    """
+    got = mp.classify_origin(
+        ["male", "cystic_component"],
+        derivation_sources={"male": "sex"},
+        hidden_parents={"sex"},
+    )
+    assert got == {"male": mp.NATIVE, "cystic_component": mp.NATIVE}
+
+
+def test_a_flag_whose_parent_is_still_present_counts_as_derived():
+    """A cut-point and the measurement it was cut from are one thing twice."""
+    got = mp.classify_origin(
+        ["adc_value_le0.72"],
+        derivation_sources={"adc_value_le0.72": "adc_value"},
+        hidden_parents=set(),
+    )
+    assert got == {"adc_value_le0.72": mp.DERIVED}
+
+
+def test_derived_rows_take_no_part_in_the_native_family():
+    """The native q must be what BH gives on the native rows alone.
+
+    A q is p × m/rank, so a derived row slipping into the native family would
+    inflate every native q by the ratio of the two family sizes — uniform, and
+    invisible in any single number on the page.
+    """
+    from eda import benjamini_hochberg
+
+    rng = np.random.default_rng(0)
+    n = 80
+    y = rng.integers(0, 2, n).astype(bool)
+    df = pd.DataFrame({
+        TARGET: pd.array(y, dtype="boolean"),
+        "sign_a": pd.array(rng.random(n) < 0.3 + 0.3 * y, dtype="boolean"),
+        "sign_b": pd.array(rng.random(n) < 0.5, dtype="boolean"),
+        "cut_flag": pd.array(rng.random(n) < 0.2 + 0.5 * y, dtype="boolean"),
+    })
+    markers = [mp.BinaryMarker(c, c.title())
+               for c in ("sign_a", "sign_b", "cut_flag")]
+    panel = mp.marker_panel_table(
+        df, markers, TARGET, origin_by_marker={"cut_flag": mp.DERIVED},
+    )
+    assert set(panel["origin"]) == {mp.NATIVE, mp.DERIVED}
+
+    native = panel[panel["origin"] == mp.NATIVE]
+    expected = benjamini_hochberg(native["p"]).values
+    assert np.allclose(native["p_fdr"].to_numpy(float),
+                       np.asarray(expected, dtype=float), equal_nan=True)
+    # And the derived row is corrected in a family of its own, not left blank.
+    derived = panel[panel["origin"] == mp.DERIVED]
+    assert derived["p_fdr"].notna().all()

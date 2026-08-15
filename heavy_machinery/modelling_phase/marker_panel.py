@@ -143,12 +143,80 @@ _PANEL_COLUMNS = [
 NATIVE, DERIVED = "native", "derived"
 
 
+def classify_origin(
+    markers: Collection[str],
+    *,
+    derivation_sources: dict[str, str],
+    hidden_parents: Collection[str],
+) -> dict[str, str]:
+    """Which side of the panel each marker belongs to, and why.
+
+    The test is not "was this column derived" but **is the column it restates
+    still in the table**:
+
+    *Parent hidden* — the flag replaced its parent outright. Nothing in the
+    table restates anything, so the flag *is* the native variable and is
+    corrected with the others. ``male`` replaced ``sex``; there is no ``sex``
+    row left for it to duplicate.
+
+    *Parent present* — the flag and the measurement it was cut from are both
+    here. ``adc_value_le0.72`` is ``adc_value`` with a line drawn through it,
+    and correcting them together tests one thing twice. The flag goes to the
+    derived table and takes no part in the native family.
+
+    Driving this off ``hide_parent`` rather than off a hand-kept list is what
+    keeps the two in step: change the derivation and the panel follows.
+    """
+    hidden = {str(h) for h in hidden_parents}
+    out: dict[str, str] = {}
+    for marker in (str(m) for m in markers):
+        parent = derivation_sources.get(marker)
+        out[marker] = (
+            DERIVED if parent and parent not in hidden else NATIVE
+        )
+    return out
+
+
+def _hidden_parents(output_root: Path | str) -> frozenset[str]:
+    """Columns a derivation replaced outright, from the cleaning handoff."""
+    path = Path(output_root) / "cleaning" / "hidden_parent_columns.csv"
+    if not path.exists():
+        return frozenset()
+    tbl = pd.read_csv(path)
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna())
+
+
+def _derivation_parents(output_root: Path | str) -> dict[str, str]:
+    """Each derived column's single source, from the cleaning derivation log.
+
+    Only single-source derivations count. A column computed from two others
+    (``edema_index``) restates neither of them on its own, and one that lists
+    itself is a repair rule rather than a restatement.
+    """
+    path = Path(output_root) / "cleaning" / "derivation_log.csv"
+    if not path.exists():
+        return {}
+    log = pd.read_csv(path)
+    if not {"derivation", "source"} <= set(log.columns):
+        return {}
+    out: dict[str, str] = {}
+    for _, row in log.iterrows():
+        name = str(row["derivation"]).strip()
+        sources = [s.strip() for s in str(row.get("source", "")).split(",")
+                   if s.strip()]
+        if len(sources) == 1 and sources[0] != name:
+            out[name] = sources[0]
+    return out
+
+
 def marker_panel_table(
     df: pd.DataFrame,
     markers: Sequence[BinaryMarker],
     target: str,
     *,
-    derived_cols: Collection[str] = (),
+    origin_by_marker: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Every marker on its own, ranked by how hard a positive finding argues.
 
@@ -187,9 +255,9 @@ def marker_panel_table(
     # which family the q-values belong to is true by construction rather than
     # by a comment. Borrowing them from the EDA screen would silently break
     # the moment a marker is excluded here but not there.
-    derived = {str(c) for c in derived_cols}
-    out["origin"] = np.where(
-        out["marker"].astype(str).isin(derived), DERIVED, NATIVE)
+    origins = origin_by_marker or {}
+    out["origin"] = out["marker"].astype(str).map(
+        lambda m: origins.get(m, NATIVE))
     # One BH per origin, not one across the panel. Each q is therefore a rank
     # within its own family, and the two are not comparable with each other —
     # which the table footnote has to say, because nothing in the column does.
@@ -200,6 +268,18 @@ def marker_panel_table(
             if mask.any():
                 out.loc[mask, "p_fdr"] = benjamini_hochberg(
                     out.loc[mask, "p"]).values
+        # Stated, then checked. A BH q is m/rank × p, so if a derived row had
+        # slipped into the native family every native q would be wrong by the
+        # ratio of the two family sizes — a silent, uniform inflation that no
+        # single number on the page would look wrong.
+        native_mask = out["origin"] == NATIVE
+        if native_mask.any():
+            expected = benjamini_hochberg(out.loc[native_mask, "p"]).values
+            if not np.allclose(out.loc[native_mask, "p_fdr"].to_numpy(float),
+                               np.asarray(expected, dtype=float),
+                               equal_nan=True):
+                raise ValueError(
+                    "The native FDR family is not the native rows alone.")
     out = out.sort_values(
         ["chance_overlap", "lr_pos"], ascending=[True, False], kind="mergesort",
     ).reset_index(drop=True)
@@ -619,21 +699,19 @@ def run_marker_panel(
     root = Path(output_root) / "panel"
     tables: dict[str, pd.DataFrame] = {}
 
-    # Read from the cleaning handoff when the caller does not say, so the
-    # panel's idea of "derived" cannot drift from the rest of the pipeline's.
-    if not derived_cols:
-        listed = Path(output_root) / "cleaning" / "eda_derived_columns.csv"
-        if listed.exists():
-            derived_cols = frozenset(
-                str(c) for c in pd.read_csv(listed)["column"].dropna())
-
     markers = markers_from_diagnostic_accuracy(
         accuracy_table, target=target, exclude=exclude,
     )
     markers = [m for m in markers if m.col in df.columns]
     kept, dropped = usable_markers(df, markers, target)
 
-    panel = marker_panel_table(df, kept, target, derived_cols=derived_cols)
+    hidden = frozenset(derived_cols) if derived_cols else _hidden_parents(output_root)
+    origins = classify_origin(
+        [m.col for m in kept],
+        derivation_sources=_derivation_parents(output_root),
+        hidden_parents=hidden,
+    )
+    panel = marker_panel_table(df, kept, target, origin_by_marker=origins)
     _write_table(tables, root, "01_marker_panel", panel)
     _write_table(tables, root, "02_marker_panel_reading_view",
                  marker_panel_reading_view(panel))
@@ -668,6 +746,13 @@ def run_marker_panel(
         part = panel[panel["origin"] == origin] if "origin" in panel else panel
         if part.empty:
             continue
+        # The forest is scaled and ordered by the rows it is given, so a derived
+        # row reaching the native panel would move the axis and the ranking, not
+        # just add a line. Checked here because the filter above is the only
+        # thing keeping them apart.
+        if "origin" in part.columns and not (part["origin"] == origin).all():
+            raise ValueError(
+                f"The {origin} forest was handed rows from the other family.")
         ps.save_figure(lr_forest_figure(part.reset_index(drop=True)),
                        fig_dir / f"lr_forest_{origin}",
                        tight_layout=False, kind="halftone")
