@@ -2529,18 +2529,32 @@ def _panel_aim_one(art: Artifacts) -> str:
             f"{_int(top['catches'])} of the {_int(top['n_high_grade'])} "
             "high-grade tumours."
         )
-    return (
-        lead
-        + "<h3><strong>Table 4.</strong> Diagnostic performance of individual "
-          "imaging and clinical variables for WHO grade 2–3 meningioma</h3>"
-        + _table(view)
-        + _panel_table_footnotes(art)
-        + _panel_figure(art, "lr_forest")
-        + _panel_forest_caption(art)
+    origins = (view["origin"].astype(str) if "origin" in view.columns
+               else pd.Series("native", index=view.index))
+    shown = view.drop(columns=["origin"], errors="ignore")
+    parts = [lead]
+    groups = (
+        ("native", "🌱 Native", "a", "recorded directly"),
+        ("derived", "🧩 Derived", "b", "dichotomised from a measurement"),
     )
+    for key, title, letter, gloss in groups:
+        rows = shown[origins.eq(key)]
+        if rows.empty:
+            continue
+        parts.append(
+            f"<h3><strong>Table 4{letter}.</strong> {title} — diagnostic "
+            "performance of individual variables for WHO grade 2–3 meningioma "
+            f"({gloss}, n = {len(rows)})</h3>"
+        )
+        parts.append(_table(rows))
+        parts.append(_panel_figure(art, f"lr_forest_{key}"))
+        parts.append(_panel_forest_caption(art, group=title, letter=letter))
+    parts.append(_panel_table_footnotes(art))
+    return "".join(p for p in parts if p)
 
 
-def _panel_forest_caption(art: Artifacts) -> str:
+def _panel_forest_caption(art: Artifacts, *, group: str = "",
+                          letter: str = "") -> str:
     """The forest plot's own caption.
 
     A figure is read on its own — lifted into a slide, a poster or a reviewer's
@@ -2550,7 +2564,9 @@ def _panel_forest_caption(art: Artifacts) -> str:
     if art.panel_marker is None or art.panel_marker.empty:
         return ""
     return (
-        "<p class='caption'><strong>Figure 3.</strong> Positive likelihood "
+        f"<p class='caption'><strong>Figure 3{letter}.</strong> "
+        + (f"{_esc(group)}. " if group else "")
+        + "Positive likelihood "
         "ratio for each variable, with 95% confidence interval, on a "
         "logarithmic axis. A ratio of 1 means the finding leaves the "
         "probability of WHO grade 2–3 unchanged; variables whose interval "
@@ -2593,17 +2609,38 @@ def _panel_table_footnotes(art: Artifacts) -> str:
                  and "continuity_corrected" in panel.columns
                  and bool(panel["continuity_corrected"].any()))
     n_rows = 0 if panel is None or panel.empty else len(panel)
+    if panel is not None and not panel.empty and "origin" in panel.columns:
+        origins = panel["origin"].astype(str)
+        n_native = int(origins.eq("native").sum())
+        n_derived = int(origins.eq("derived").sum())
+    else:
+        n_native, n_derived = n_rows, 0
     lines = [
         "Variables are sorted by LR+ in descending order. "
         "LR+ with 95% CI crossing 1.0 indicates no significant discriminative "
         "value.",
         "FDR p is the Benjamini–Hochberg adjusted p for the χ² test of "
-        f"association between the finding and the outcome, corrected across "
-        f"the {n_rows} variables in this table. It is a different statistic "
-        "from LR+ and can disagree with it: a variable may survive correction "
-        "while its likelihood ratio interval still crosses 1, and the reverse. "
-        "Read the interval for discriminative value and FDR p for whether "
-        f"the association survives testing {n_rows} variables at once.",
+        "association between the finding and the outcome. It is a different "
+        "statistic from LR+ and can disagree with it: a variable may survive "
+        "correction while its likelihood ratio interval still crosses 1, and "
+        "the reverse. Read the interval for discriminative value and FDR p for "
+        "whether the association survives testing several variables at once.",
+        f"{_esc('Native and derived variables are corrected separately')}: "
+        f"Benjamini–Hochberg runs across the {n_native} native variables in "
+        f"Table 4a and, independently, across the {n_derived} derived "
+        "variables in Table 4b. Derived variables do not enter the native "
+        "family, because each one is a measurement already in that family with "
+        "a cut-point applied to it — correcting the two together would test "
+        "the same information twice and shift every native q. A q from one "
+        "table is a rank within its own family and is not comparable with a q "
+        "from the other.",
+        f"{_esc('Adding a variable changes the q values in its own table')}. "
+        f"The derived family currently has {n_derived} members, so every q in "
+        "Table 4b is multiplied by "
+        f"{n_derived}/rank; adding another derived variable requires the whole "
+        "of Table 4b to be recomputed, and the same applies to Table 4a. The "
+        "numbers here are not per-variable constants that can be carried over "
+        "to a table with a different membership.",
     ]
     prev = _panel_prevalence(panel)
     if prev is not None:

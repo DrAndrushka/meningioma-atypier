@@ -211,7 +211,7 @@ def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
     assert list(view.columns) == [
         "Variable", "n/N (%)",
         "Sens (95% CI)", "Spec (95% CI)",
-        "PPV (95% CI)", "NPV (95% CI)", "FDR p", "LR+ (95% CI)",
+        "PPV (95% CI)", "NPV (95% CI)", "FDR p", "LR+ (95% CI)", "origin",
     ]
     # Predictive values come from the same 2×2 table as sensitivity: of the
     # four scans with the sign, three are high grade.
@@ -554,7 +554,7 @@ def test_run_marker_panel_writes_every_table_and_figure(tmp_output):
         "12_count_headline.csv",
     ]
     figures = sorted(p.name for p in (tmp_output / "panel" / "figures").glob("*.png"))
-    assert figures == ["count_score.png", "lr_forest.png"]
+    assert figures == ["count_score.png", "lr_forest.png", "lr_forest_native.png"]
     assert set(tables) >= {"01_marker_panel", "09_selection_correction"}
 
 

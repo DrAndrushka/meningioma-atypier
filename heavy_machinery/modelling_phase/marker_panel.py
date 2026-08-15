@@ -133,14 +133,22 @@ _PANEL_COLUMNS = [
     "PPV", "PPV_lo", "PPV_hi", "NPV", "NPV_lo", "NPV_hi",
     "AUC", "OR", "OR_lo", "OR_hi",
     "lr_pos", "lr_pos_lo", "lr_pos_hi", "chance_overlap", "continuity_corrected",
-    "p", "p_fdr", "test",
+    "p", "p_fdr", "test", "origin",
 ]
+
+# A derived flag is a native column with a line drawn through it —
+# ``adc_value_le0.72`` is ``adc_value`` dichotomised. Correcting the two in one
+# family counts the same information twice and shifts every native q, so the
+# panel is split and each half is corrected on its own.
+NATIVE, DERIVED = "native", "derived"
 
 
 def marker_panel_table(
     df: pd.DataFrame,
     markers: Sequence[BinaryMarker],
     target: str,
+    *,
+    derived_cols: Collection[str] = (),
 ) -> pd.DataFrame:
     """Every marker on its own, ranked by how hard a positive finding argues.
 
@@ -179,7 +187,19 @@ def marker_panel_table(
     # which family the q-values belong to is true by construction rather than
     # by a comment. Borrowing them from the EDA screen would silently break
     # the moment a marker is excluded here but not there.
-    out["p_fdr"] = benjamini_hochberg(out["p"]) if "p" in out.columns else np.nan
+    derived = {str(c) for c in derived_cols}
+    out["origin"] = np.where(
+        out["marker"].astype(str).isin(derived), DERIVED, NATIVE)
+    # One BH per origin, not one across the panel. Each q is therefore a rank
+    # within its own family, and the two are not comparable with each other —
+    # which the table footnote has to say, because nothing in the column does.
+    out["p_fdr"] = np.nan
+    if "p" in out.columns:
+        for origin in (NATIVE, DERIVED):
+            mask = out["origin"] == origin
+            if mask.any():
+                out.loc[mask, "p_fdr"] = benjamini_hochberg(
+                    out.loc[mask, "p"]).values
     out = out.sort_values(
         ["chance_overlap", "lr_pos"], ascending=[True, False], kind="mergesort",
     ).reset_index(drop=True)
@@ -249,6 +269,10 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
         "NPV (95% CI)": [format_pct_ci(r, "NPV") for _, r in ranked.iterrows()],
         "FDR p": [_format_q(r.get("p_fdr")) for _, r in ranked.iterrows()],
         "LR+ (95% CI)": [_format_lr(r) for _, r in ranked.iterrows()],
+        # Carried so the report can split the table without re-deriving which
+        # side each row belongs to. Dropped before display.
+        "origin": (ranked["origin"] if "origin" in ranked.columns
+                   else pd.Series(NATIVE, index=ranked.index)),
     }).reset_index(drop=True)
 
 
@@ -578,6 +602,7 @@ def run_marker_panel(
     accuracy_table: pd.DataFrame,
     output_root: Path | str,
     exclude: Collection[str] = (),
+    derived_cols: Collection[str] = (),
     n_boot: int = DEFAULT_N_BOOT,
     seed: int = DEFAULT_SEED,
     max_size: int = 2,
@@ -594,13 +619,21 @@ def run_marker_panel(
     root = Path(output_root) / "panel"
     tables: dict[str, pd.DataFrame] = {}
 
+    # Read from the cleaning handoff when the caller does not say, so the
+    # panel's idea of "derived" cannot drift from the rest of the pipeline's.
+    if not derived_cols:
+        listed = Path(output_root) / "cleaning" / "eda_derived_columns.csv"
+        if listed.exists():
+            derived_cols = frozenset(
+                str(c) for c in pd.read_csv(listed)["column"].dropna())
+
     markers = markers_from_diagnostic_accuracy(
         accuracy_table, target=target, exclude=exclude,
     )
     markers = [m for m in markers if m.col in df.columns]
     kept, dropped = usable_markers(df, markers, target)
 
-    panel = marker_panel_table(df, kept, target)
+    panel = marker_panel_table(df, kept, target, derived_cols=derived_cols)
     _write_table(tables, root, "01_marker_panel", panel)
     _write_table(tables, root, "02_marker_panel_reading_view",
                  marker_panel_reading_view(panel))
@@ -628,6 +661,16 @@ def run_marker_panel(
         counts = empty
 
     fig_dir = root / FIGURES_DIRNAME
+    # One forest per family, because the two are corrected separately and a
+    # single axis invites the reader to rank a derived cut-point against a
+    # native sign as though one q had ordered them both.
+    for origin in (NATIVE, DERIVED):
+        part = panel[panel["origin"] == origin] if "origin" in panel else panel
+        if part.empty:
+            continue
+        ps.save_figure(lr_forest_figure(part.reset_index(drop=True)),
+                       fig_dir / f"lr_forest_{origin}",
+                       tight_layout=False, kind="halftone")
     ps.save_figure(lr_forest_figure(panel), fig_dir / "lr_forest",
                    tight_layout=False)
     prevalence = (
