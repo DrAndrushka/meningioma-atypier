@@ -89,31 +89,67 @@ def _package_versions() -> dict[str, str]:
     return out
 
 
-def _git(*args: str) -> str | None:
-    """One git command, or None outside a repository."""
+# The repository the manuscript is written from — the project root, not this
+# module's own folder. ``git`` searches *upward* from its working directory and
+# stops at the first ``.git`` it meets, and there is an abandoned repository
+# inside ``heavy_machinery/`` left over from an earlier layout of this project.
+# Run from here, git would report that dead history: a commit that does not
+# exist in the project, and a permanent "25 uncommitted files" from the old flat
+# modules it still believes were deleted. The outer ``.gitignore`` excludes it
+# for exactly this reason ("Nested git clone — use only this repo"), and
+# anchoring here is what makes this module obey that.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _git(*args: str, root: Path | None = None) -> str | None:
+    """One git command, run in ``root``, or None outside a repository."""
     try:
         result = subprocess.run(("git",) + args, capture_output=True,
                                 text=True, timeout=10,
-                                cwd=str(Path(__file__).resolve().parent))
+                                cwd=str(root or PROJECT_ROOT))
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def code_state() -> dict[str, object]:
-    """Commit, branch and whether the working tree matched it."""
-    commit = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain")
-    return {
-        "commit": commit,
-        "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": None if status is None else bool(status),
-        "uncommitted_files": (0 if not status else
-                              len([ln for ln in status.splitlines() if ln])),
+def code_state(root: Path | str | None = None) -> dict[str, object]:
+    """Commit, branch and whether the working tree matched it.
+
+    The repository git actually resolved is checked against the anchor before
+    anything is recorded. Anchoring alone would be enough today; the check is
+    what keeps it right tomorrow, when a moved module, a worktree, or this
+    project being vendored inside a larger repository would each silently point
+    the record at a different history. A provenance record naming the wrong
+    repository is worse than one admitting it does not know, so a mismatch is
+    written down as a mismatch and no commit is claimed.
+    """
+    root = Path(root).resolve() if root is not None else PROJECT_ROOT
+    toplevel = _git("rev-parse", "--show-toplevel", root=root)
+    resolved = Path(toplevel).resolve() if toplevel else None
+
+    state: dict[str, object] = {
+        "repo_root": str(root),
+        "repo_resolved": str(resolved) if resolved else None,
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "packages": _package_versions(),
     }
+    if resolved != root:
+        return {**state, "commit": None, "branch": None, "dirty": None,
+                "uncommitted_files": 0,
+                "repo_warning": (
+                    f"git resolved {resolved or 'no repository'} rather than "
+                    f"{root}; no commit recorded because it would describe "
+                    "different code from the code that ran")}
+
+    status = _git("status", "--porcelain", root=root)
+    return {**state,
+            "commit": _git("rev-parse", "HEAD", root=root),
+            "branch": _git("rev-parse", "--abbrev-ref", "HEAD", root=root),
+            "dirty": None if status is None else bool(status),
+            "uncommitted_files": (0 if not status else
+                                  len([ln for ln in status.splitlines() if ln])),
+            "repo_warning": None}
 
 
 def settings() -> dict[str, object]:
@@ -219,9 +255,13 @@ def verify(path: Path | str) -> list[str]:
 def describe(manifest: dict) -> str:
     """The three lines worth printing in a notebook."""
     code = manifest["code"]
-    commit = (code["commit"] or "no git")[:8]
+    commit = (code["commit"] or "no commit recorded")[:8]
     dirty = ("" if not code.get("dirty") else
              f", {code['uncommitted_files']} uncommitted file(s)")
+    if code.get("repo_warning"):
+        # Loud, and on its own line. A wrong commit hash looks exactly like a
+        # right one, so the only way this is ever noticed is if it shouts.
+        return f"⚠️  manifest: {code['repo_warning']}"
     cohort = manifest["cohort"]
     return (
         f"📌 manifest: commit {commit}{dirty}, Python {code['python']}, "

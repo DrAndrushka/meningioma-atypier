@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -60,6 +61,75 @@ def test_a_dirty_tree_is_recorded_and_not_hidden():
     state = mf.code_state()
     assert set(state) >= {"commit", "dirty", "python", "packages"}
     assert state["dirty"] in (True, False, None)
+
+
+# --- which repository ------------------------------------------------------
+def _run(*args, cwd):
+    import subprocess
+    return subprocess.run(args, cwd=str(cwd), capture_output=True, text=True,
+                          check=True).stdout.strip()
+
+
+def _repo_with_one_commit(path, filename: str):
+    """A git repository with a single commit, and that commit's SHA."""
+    path.mkdir(parents=True, exist_ok=True)
+    (path / filename).write_text("x\n")
+    _run("git", "init", "-q", cwd=path)
+    _run("git", "add", "-A", cwd=path)
+    _run("git", "-c", "user.email=t@t", "-c", "user.name=T",
+         "-c", "commit.gpgsign=false", "commit", "-qm", "one", cwd=path)
+    return _run("git", "rev-parse", "HEAD", cwd=path)
+
+
+def test_the_commit_is_the_project_repo_not_one_nested_inside_it(tmp_path):
+    """The real defect: git walks *up* and stops at the first .git it meets.
+
+    This project carries an abandoned repository inside ``heavy_machinery/``
+    from an earlier layout. Running git from a module's own folder found that
+    one, so every manifest recorded a commit absent from the project and a
+    permanent "25 uncommitted files" from modules the dead repo still thinks
+    were deleted.
+    """
+    outer = tmp_path / "project"
+    outer_sha = _repo_with_one_commit(outer, "outer.txt")
+    inner_sha = _repo_with_one_commit(outer / "library", "inner.txt")
+    assert outer_sha != inner_sha
+
+    state = mf.code_state(root=outer)
+    assert state["commit"] == outer_sha
+    assert state["commit"] != inner_sha
+    assert state["repo_warning"] is None
+
+
+def test_the_real_manifest_records_this_repository(tmp_path):
+    """The regression itself, on the actual working tree."""
+    here = Path(mf.PROJECT_ROOT)
+    expected = _run("git", "rev-parse", "HEAD", cwd=here)
+    state = mf.code_state()
+    assert state["commit"] == expected
+    assert state["repo_warning"] is None
+    # And specifically not the nested one, if it is still on disk.
+    nested = here / "heavy_machinery"
+    if (nested / ".git").exists():
+        assert state["commit"] != _run("git", "rev-parse", "HEAD", cwd=nested)
+
+
+def test_no_commit_is_claimed_when_git_resolves_somewhere_else(tmp_path):
+    """Better to admit ignorance than to name the wrong history."""
+    outside = tmp_path / "not_a_repo"
+    outside.mkdir()
+    state = mf.code_state(root=outside)
+    assert state["commit"] is None
+    assert state["dirty"] is None
+    assert state["repo_warning"] and "no commit recorded" in state["repo_warning"]
+
+
+def test_describe_shouts_when_the_repository_is_wrong(tiny, tmp_path):
+    """A wrong commit hash looks exactly like a right one — it has to shout."""
+    df, root = tiny
+    record = _record(df, root, [])
+    record["code"]["repo_warning"] = "git resolved /somewhere/else rather than /here"
+    assert "⚠️" in mf.describe(record)
 
 
 def test_every_library_that_can_move_a_digit_has_a_version():
