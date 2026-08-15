@@ -557,6 +557,18 @@ def univariate_or_forest_data(
         if parsed is None:
             continue
         est, lo, hi = parsed
+        # The forest and the table must show the same number. They are built
+        # from one source, so this can only fail if the parse drifts from the
+        # formatter — but a plot that disagrees with the table beside it is the
+        # kind of thing a reader trusts the plot on, so it is checked rather
+        # than assumed.
+        rendered = _fmt_or_ci(est, lo, hi)
+        if rendered != str(row.get("effect")).strip():
+            raise ValueError(
+                f"Forest row for {row['predictor']!r} would plot "
+                f"{rendered!r} while the table prints "
+                f"{str(row.get('effect')).strip()!r}."
+            )
         rows.append({
             "table_kind": row["table_kind"],
             "predictor": row["predictor"],

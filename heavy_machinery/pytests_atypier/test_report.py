@@ -1013,3 +1013,53 @@ def test_data_quality_duplicate_column_rows_take_minimum():
     # Should produce exactly one warning for diameter, using the minimum (0.2)
     assert len(msgs) == 1
     assert "0.2" in msgs[0] and "diameter" in msgs[0].lower()
+
+
+def _paper_pair():
+    return pd.DataFrame({
+        "target": ["y", "y"], "table_kind": ["binary", "binary"],
+        "predictor": ["adc_value", "adc_value_le0.72"],
+        "row_role": ["variable", "variable"], "level": ["", ""],
+        "grade1": ["", ""], "grade23": ["", ""],
+        "effect": ["1.00 (0.50–2.00)", "1.00 (0.50–2.00)"], "auc": ["", ""],
+        "p_fdr": ["0.01", "0.02"], "p_level": ["", ""], "sort_p": [0.01, 0.02],
+    })
+
+
+def test_a_derived_flag_may_not_be_corrected_in_the_native_family():
+    """Checked against the derivation log, not the list that decided the split.
+
+    ``adc_value_le0.72`` is ``adc_value`` with a line drawn through it, so
+    correcting it natively tests the same information twice and moves every
+    native q. This is how multiple_meningiomas ended up with no q at all.
+    """
+    with pytest.raises(ValueError, match="alongside the column they restate"):
+        rp._render_eda_native_derived_block(
+            _paper_pair(), target="y", derived_cols=frozenset(),
+            n_fdr_family=2,
+            derived_sources={"adc_value_le0.72": ["adc_value"]},
+        )
+
+
+def test_a_hidden_parent_may_not_reach_the_table():
+    """It was replaced by a flag; showing both puts one fact in twice."""
+    with pytest.raises(ValueError, match="Hidden parent"):
+        rp._render_eda_native_derived_block(
+            _paper_pair(), target="y",
+            derived_cols=frozenset({"adc_value_le0.72"}),
+            n_fdr_family=1, hidden_parents=frozenset({"adc_value"}),
+        )
+
+
+def test_the_footnote_names_what_was_dropped_and_what_replaced_it():
+    """A reader who knows sex was recorded must be told it is here as "Male"."""
+    html = rp._render_eda_native_derived_block(
+        _paper_pair(), target="y",
+        derived_cols=frozenset({"adc_value_le0.72"}),
+        n_fdr_family=1, n_derived_family=1,
+        hidden_parents=frozenset({"sex"}),
+        hidden_replacements={"sex": ["male"]},
+        derived_sources={"adc_value_le0.72": ["adc_value"]},
+    )
+    assert "Replaced by derived flags" in html
+    assert "Male" in html

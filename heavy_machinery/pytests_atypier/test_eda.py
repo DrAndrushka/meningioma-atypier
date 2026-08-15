@@ -390,3 +390,18 @@ def test_cochran_armitage_drops_rows_with_an_unlisted_level():
     row = eda._cochran_armitage_row(y, x)
     keep = np.isfinite(y) & np.isfinite(x)
     assert row["p"] == pytest.approx(_linear_by_linear_p(x[keep], y[keep]))
+
+
+def test_derived_predictors_still_get_their_own_q():
+    """Excluded from the native family, not from correction altogether."""
+    out = pd.DataFrame({
+        "target": ["y"] * 3,
+        "predictor": ["adc_value", "adc_value_le0.72", "tumor_volume_ge15.1"],
+        "p": [0.01, 0.02, 0.04],
+    })
+    got = eda.apply_native_and_derived_fdr(
+        out, derived_cols={"adc_value_le0.72", "tumor_volume_ge15.1"},
+        fdr_family=["adc_value"],
+    )
+    assert got["p_fdr"].notna().all()
+    assert list(got["in_fdr_family"]) == [True, False, False]

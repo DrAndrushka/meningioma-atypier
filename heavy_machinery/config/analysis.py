@@ -9,6 +9,7 @@ variants as literature or experimental from the list they came from.
 """
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -108,6 +109,36 @@ def resolve_inferential_variants(
         for var in normalize_inferential_variants(variants=variants, default_target=default_target):
             if var.target and var.target not in df.columns:
                 continue
+            # Dropping a hidden parent is the point of this function. Dropping a
+            # name that matches nothing at all is a typo or a rename nobody
+            # followed through, and it used to happen in silence: two published
+            # models were fitted with five predictors instead of seven, printed
+            # their own EPV and AUC for the smaller model, and read as
+            # replications of the papers they named.
+            unknown = [
+                c for c in var.predictors
+                if c not in df.columns and c not in hidden
+            ]
+            if unknown:
+                raise KeyError(
+                    f"Model {var.model_id!r} names predictor(s) that are not in "
+                    f"the cohort and are not hidden parents: {', '.join(unknown)}. "
+                    "Rename them or remove them — a model quietly fitted on "
+                    "fewer predictors than it declares is not the model it says "
+                    "it is."
+                )
+            # Hiding a parent is deliberate, so this is a warning rather than an
+            # error — but it still removes a predictor the model asked for, and
+            # the flag that replaced it usually has a different name. Saying
+            # nothing is how a model loses a variable without anyone noticing.
+            dropped = [c for c in var.predictors if c in hidden]
+            if dropped:
+                warnings.warn(
+                    f"Model {var.model_id!r} names hidden parent(s) "
+                    f"{', '.join(dropped)}; they were dropped. Name the derived "
+                    "flag that replaced each one if you meant to keep it.",
+                    stacklevel=2,
+                )
             preds = tuple(
                 c for c in var.predictors
                 if c in df.columns and c not in hidden

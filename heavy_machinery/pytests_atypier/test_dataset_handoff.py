@@ -212,9 +212,15 @@ def test_load_modelling_handoff_can_be_quiet(tmp_output, tiny_df, tiny_schema, c
 
 
 def test_midline_flag_means_midline():
+    """Renamed to ``midline_positioning`` when the nominal parents became flags.
+
+    The name changed; what it has to mean did not. This test exists because the
+    flag once marked the lateralised tumours instead of the midline ones, so it
+    follows the rename rather than being retired with it.
+    """
     df = pd.read_parquet("output/datasets/unimputed_df.parquet")
     derived = (df["side"] == "midline")
-    both = df["midline"].notna() & df["side"].notna()
-    assert (df.loc[both, "midline"].astype(bool) == derived[both]).all()
+    both = df["midline_positioning"].notna() & df["side"].notna()
+    assert (df.loc[both, "midline_positioning"].astype(bool) == derived[both]).all()
     # cohort fact: 35 midline vs 317 lateralised of 352
-    assert int(df["midline"].sum()) == 35
+    assert int(df["midline_positioning"].sum()) == 35

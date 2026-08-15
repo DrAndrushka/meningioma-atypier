@@ -726,6 +726,10 @@ class Artifacts:
     eda_derived_columns: frozenset[str] = field(default_factory=frozenset)
     eda_excluded_columns: frozenset[str] = field(default_factory=frozenset)
     hidden_parent_columns: frozenset[str] = field(default_factory=frozenset)
+    hidden_parent_replacements: dict[str, list[str]] = field(
+        default_factory=dict)
+    known_derived_columns: frozenset[str] = field(default_factory=frozenset)
+    derived_sources: dict[str, list[str]] = field(default_factory=dict)
     eda_figures: list[Path] = field(default_factory=list)
 
     # Inferential
@@ -805,6 +809,35 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
         art.hidden_parent_columns = frozenset(
             str(c) for c in hidden_parent_tbl["column"].dropna().tolist()
         )
+    # Which flag replaced which parent, so the table can say so by name rather
+    # than leaving the reader to notice that "Sex" is simply absent.
+    deriv_log = _maybe_read_csv(cleaning_dir / "derivation_log.csv", art.warnings)
+    if deriv_log is not None and {"derivation", "source"} <= set(deriv_log.columns):
+        # Every column this pipeline derived, from the log rather than from the
+        # EDA list — two sources for one fact, so they can be checked against
+        # each other instead of agreeing by construction.
+        art.known_derived_columns = frozenset(
+            str(d).strip() for d in deriv_log["derivation"].dropna()
+        )
+        for _, drow in deriv_log.iterrows():
+            name = str(drow["derivation"]).strip()
+            sources = [s.strip() for s in str(drow.get("source", "")).split(",")
+                       if s.strip()]
+            # A derivation that lists itself among its sources is repairing that
+            # column using the others as context — "edema volume, given whether
+            # any edema was recorded" — not restating them. Only a column that
+            # is a pure function of another can double-count it, so the
+            # self-referential ones carry no sources for this purpose.
+            if name in sources:
+                art.derived_sources[name] = []
+                continue
+            art.derived_sources[name] = [s for s in sources if s != name]
+        for _, row in deriv_log.iterrows():
+            parent = str(row["source"]).strip()
+            if parent in art.hidden_parent_columns:
+                art.hidden_parent_replacements.setdefault(parent, []).append(
+                    str(row["derivation"]).strip()
+                )
 
     # Schema
     if cfg.schema_path and cfg.schema_path.exists():
@@ -1965,6 +1998,9 @@ def _render_eda_native_derived_block(
     n_fdr_family: int,
     n_derived_family: int = 0,
     excluded_cols: frozenset[str] = frozenset(),
+    hidden_parents: frozenset[str] = frozenset(),
+    hidden_replacements: dict[str, list[str]] | None = None,
+    derived_sources: dict[str, list[str]] | None = None,
 ) -> str:
     """Native and Derived stay separate; each origin = one stacked datatype table."""
     if paper is None or paper.empty:
@@ -1982,7 +2018,38 @@ def _render_eda_native_derived_block(
             f"No paper-style EDA rows for target <code>{_esc(target)}</code>."
         )
 
+    # A hidden parent that reached this table would be corrected alongside the
+    # flag that replaced it — the same information counted twice in one family.
+    leaked = sorted(set(sub["predictor"].astype(str)) & set(hidden_parents))
+    if leaked:
+        raise ValueError(
+            f"Hidden parent(s) reached the EDA table: {', '.join(leaked)}. They "
+            "were dropped in favour of their derived flags, so counting them "
+            "here would put the same information in the family twice."
+        )
+
     is_derived = sub["predictor"].astype(str).isin(derived_cols)
+    # Whether a flag counts as derived comes from eda_derived_columns.csv; the
+    # derivation log is written by a different step and knows the same fact
+    # independently. Where they disagree a derived flag is corrected in the
+    # native family alongside the column it restates — which is exactly how
+    # multiple_meningiomas ended up with no q at all.
+    native_names = set(sub.loc[~is_derived, "predictor"].astype(str))
+    doubled = sorted(
+        f"{flag} (restates {src})"
+        for flag in native_names
+        for src in (derived_sources or {}).get(flag, [])
+        if src in native_names
+    )
+    if doubled:
+        raise ValueError(
+            "Derived flag(s) corrected in the native family alongside the "
+            f"column they restate: {'; '.join(doubled)}. That tests the same "
+            "information twice and moves every native q. A flag whose parent "
+            "is hidden is fine — it *is* the native variable then; this is only "
+            "about a flag sitting next to its own source."
+        )
+
     blocks: list[str] = []
     for title, mask in (
         ("🌱 Native", ~is_derived),
@@ -2046,6 +2113,24 @@ def _render_eda_native_derived_block(
         + ", ".join(_esc(prettify_label(p)) for p in uncorrected) + "."
     ) if uncorrected else ""
 
+    # Named, not merely absent. A reader who knows sex was recorded needs to be
+    # told it is here as "Male" rather than left to conclude it was not analysed.
+    replacements = hidden_replacements or {}
+    dropped_note = ""
+    if hidden_parents:
+        pairs = []
+        for parent in sorted(hidden_parents):
+            flags = replacements.get(parent) or []
+            if flags:
+                named = ", ".join(prettify_label(f) for f in sorted(flags))
+                pairs.append(f"{prettify_label(parent)} (as {named})")
+            else:
+                pairs.append(prettify_label(parent))
+        dropped_note = (
+            " Replaced by derived flags and therefore in neither multiplicity "
+            "family: " + _esc("; ".join(pairs)) + "."
+        )
+
     scale_note = scale_footnote(sorted(set(sub["predictor"].astype(str))))
     footnote = (
         "<p class='muted'><small>"
@@ -2056,6 +2141,7 @@ def _render_eda_native_derived_block(
         "(derived flags do not enter the native multiplicity family)."
         + level_note
         + uncorrected_note
+        + dropped_note
         + (f" {_esc(scale_note)}" if scale_note else "")
         + "</small></p>"
     )
@@ -2191,6 +2277,9 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             n_fdr_family=n_fdr_family,
             n_derived_family=n_derived_family,
             excluded_cols=excluded_cols,
+            hidden_parents=art.hidden_parent_columns,
+            hidden_replacements=art.hidden_parent_replacements,
+            derived_sources=art.derived_sources,
         )
         target_body.append(details_block("📊 Paper-style table", table_html))
 

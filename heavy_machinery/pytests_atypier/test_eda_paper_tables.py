@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 from schema_infer import ColSpec
 
 from eda_paper_tables import (
@@ -369,3 +370,21 @@ def test_continuous_rows_keep_the_p_of_the_model_they_report(tmp_path):
     row = out[out["predictor"] == "age"].iloc[0]
     assert row["p_level"] not in ("", None)
     assert float(str(row["p_level"]).lstrip("<")) < 0.05  # the fit is strong
+
+
+def test_the_forest_refuses_to_plot_a_number_the_table_does_not_show():
+    """A reader trusts the plot over the table, so they must not disagree."""
+    paper = pd.DataFrame({
+        "target": ["y"], "table_kind": ["binary"], "predictor": ["male"],
+        "row_role": ["variable"], "level": [""],
+        "effect": ["9.99 (1.00–2.00)"],          # estimate does not match its CI text
+        "p_fdr": ["0.01"], "sort_p": [0.01],
+    })
+    # parse_or_ci reads 9.99/1.00/2.00 back out, so the round-trip matches and
+    # this row is fine; corrupt the rendering instead.
+    paper.loc[0, "effect"] = "9.99 (1.00–2.00) "  # trailing space is stripped
+    assert not univariate_or_forest_data(paper, target="y").empty
+
+    paper.loc[0, "effect"] = "1.5 (1.00–2.00)"    # 1.5 renders as "1.50"
+    with pytest.raises(ValueError, match="while the table prints"):
+        univariate_or_forest_data(paper, target="y")

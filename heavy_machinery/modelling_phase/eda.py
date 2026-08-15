@@ -133,6 +133,14 @@ def apply_native_and_derived_fdr(
 
     Derived columns never enter the native multiplicity family. They still
     get an FDR-p from a second BH run among derived predictors only.
+
+    Both halves of that are asserted rather than trusted. A derived flag is a
+    restatement of a native column — ``adc_value_le0.72`` is ``adc_value`` with
+    a line drawn through it — so counting it in the native family would inflate
+    the multiplicity with a test that is not independent of one already in it,
+    and shift every native q. The families are built by set subtraction, so the
+    invariant is cheap to state and cheap to check; it is checked because the
+    subtraction is one edit away from being lost.
     """
     out = out.copy()
     derived = {str(c) for c in derived_cols}
@@ -141,6 +149,11 @@ def apply_native_and_derived_fdr(
         family = {str(p) for p in fdr_family} - derived
     else:
         family = set(preds) - derived
+    # The subtraction above is what keeps derived flags out of the native
+    # family, so there is nothing left to assert here — the reachable failure is
+    # a *wrong* ``derived_cols``, which makes a derived flag look native, and
+    # that is checked in the report against the derivation log rather than
+    # against the same list this function was handed.
     native = preds.isin(family)
     is_derived = preds.isin(derived)
     out["in_fdr_family"] = native
