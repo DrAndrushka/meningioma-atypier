@@ -50,7 +50,8 @@ from ajnr_format import join_names
 from criteria import YOUDEN, select, sweep
 from measurements import MEASUREMENTS_BY_COL, Measurement, stratum_mask
 from separation import auc_with_ci
-from wobble import MIN_HELD_OUT, MIN_PER_ARM, N_BOOTSTRAP, SEED
+from wobble import (MIN_HELD_OUT, MIN_PER_ARM, N_BOOTSTRAP, SEED,
+                    FrozenCutpointError)
 
 OUTCOME = "high_grade"
 
@@ -187,9 +188,9 @@ def model_curve(y: np.ndarray, x: np.ndarray, log_x: bool,
 # Optimism correction
 # --------------------------------------------------------------------------
 def corrected_curves(y: np.ndarray, x: np.ndarray, direction: str, log_x: bool,
-                     thresholds: np.ndarray, *, criterion: str = YOUDEN,
-                     n_boot: int = N_BOOTSTRAP, seed: int = SEED
-                     ) -> dict[str, object]:
+                     thresholds: np.ndarray, *, cutoff: float | None = None,
+                     criterion: str = YOUDEN, n_boot: int = N_BOOTSTRAP,
+                     seed: int = SEED) -> dict[str, object]:
     """Apparent and optimism-corrected net benefit for the rule and the number.
 
     One loop, one seed, the same resamples as step 7. In each replicate the
@@ -199,6 +200,11 @@ def corrected_curves(y: np.ndarray, x: np.ndarray, direction: str, log_x: bool,
     it is subtracted from the apparent curve threshold by threshold — the
     flattery is not the same size at every ``t``, so a single scalar correction
     would misstate the ends of the curve.
+
+    ``cutoff`` is the published, rounded cut-point. The apparent curve is scored
+    at exactly that value so this table describes the same rule as every other
+    table in the phase; the resamples still re-derive their own, because the
+    optimism being measured is the optimism of *having chosen* it.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -211,15 +217,27 @@ def corrected_curves(y: np.ndarray, x: np.ndarray, direction: str, log_x: bool,
              "model": np.full(t.shape, np.nan),
              "model_corrected": np.full(t.shape, np.nan),
              "treat_all": np.full(t.shape, np.nan),
-             "cutpoint": np.nan, "n": int(n), "n_valid": 0,
+             "cutpoint": np.nan, "derived_cutpoint": np.nan,
+             "n": int(n), "n_valid": 0,
              "n_skipped": int(n_boot), "prevalence": np.nan}
     if n == 0 or y.sum() < MIN_PER_ARM or (n - y.sum()) < MIN_PER_ARM:
         return blank
 
-    observed = select(sweep(y, x, direction), criterion,
-                      auc=auc_with_ci(y, x, direction)["auc"])
-    if not np.isfinite(observed):
+    derived = select(sweep(y, x, direction), criterion,
+                     auc=auc_with_ci(y, x, direction)["auc"])
+    if not np.isfinite(derived):
         return blank
+
+    # The rule scored here must be the rule the manuscript prints, which is the
+    # rounded one. Scoring the criterion's raw optimum instead makes this table
+    # describe a different rule from every other table in the phase: on the
+    # edema index the two differ by 0.0000155, one high-grade patient sits
+    # between them, and the published net benefit moves by 0.003.
+    #
+    # Whether the value handed in is the right one is checked by the caller,
+    # which knows the measurement's own printing precision. Here it is simply
+    # honoured, and the raw optimum is returned beside it so it can be.
+    observed = float(cutoff) if cutoff is not None and np.isfinite(cutoff) else derived
 
     apparent_rule = rule_curve(y, x, observed, direction, t)
     apparent_model = model_curve(y, x, log_x, t)
@@ -268,7 +286,8 @@ def corrected_curves(y: np.ndarray, x: np.ndarray, direction: str, log_x: bool,
         "model": apparent_model,
         "model_corrected": _corrected(apparent_model, model_gaps),
         "treat_all": treat_all_curve(y, t),
-        "cutpoint": float(observed), "n": int(n),
+        "cutpoint": float(observed), "derived_cutpoint": float(derived),
+        "n": int(n),
         "n_valid": len(rule_gaps), "n_skipped": int(skipped),
         "prevalence": float(y.mean()),
     }
@@ -311,6 +330,14 @@ def at_threshold(curve: np.ndarray, thresholds: np.ndarray,
     return float(np.asarray(curve)[int(np.argmin(np.abs(t - target)))])
 
 
+def _nearest(thresholds: np.ndarray, target: float) -> float:
+    """The grid threshold a value is read at — the one the curves were built on."""
+    t = np.asarray(thresholds, dtype=float)
+    if t.size == 0 or not np.isfinite(target):
+        return np.nan
+    return float(t[int(np.argmin(np.abs(t - target)))])
+
+
 def net_reduction_per_100(curve: np.ndarray, treat_all: np.ndarray,
                           thresholds: np.ndarray, target: float) -> float:
     """How many fewer patients get flagged per 100, for the same tumors found.
@@ -319,12 +346,19 @@ def net_reduction_per_100(curve: np.ndarray, treat_all: np.ndarray,
     for. Dividing the gain over treat-all by the exchange rate ``t/(1−t)``
     converts it into the currency the reader does have one for: patients not
     flagged unnecessarily, at no cost in high-grade tumors missed.
+
+    The exchange rate uses the grid threshold the gain was actually read at, not
+    the raw target. Reading a gain at t = .30 and dividing it by the odds at
+    t = .2983 mixes two thresholds inside one division, and the reader who
+    checks the footnote's formula against the printed number gets a different
+    answer — 14 where the table says 15.
     """
+    t_used = _nearest(thresholds, target)
     gain = at_threshold(np.asarray(curve) - np.asarray(treat_all), thresholds,
                         target)
-    if not np.isfinite(gain) or not np.isfinite(target) or target >= 1.0:
+    if not np.isfinite(gain) or not np.isfinite(t_used) or t_used >= 1.0:
         return np.nan
-    odds = target / (1.0 - target)
+    odds = t_used / (1.0 - t_used)
     return float(100.0 * gain / odds) if odds > 0 else np.nan
 
 
@@ -349,7 +383,20 @@ def decision_table(df: pd.DataFrame, eligible: pd.DataFrame,
         out = corrected_curves(
             pd.to_numeric(sub[OUTCOME], errors="coerce").to_numpy(),
             pd.to_numeric(sub[m.col], errors="coerce").to_numpy(),
-            m.direction, m.log_x, t, n_boot=n_boot, seed=seed)
+            m.direction, m.log_x, t, cutoff=m.round(cutpoints[row["col"]]),
+            n_boot=n_boot, seed=seed)
+
+        # Same contract as step 7, checked the same way: the criterion must still
+        # land on the published number once rounded to the precision that
+        # measurement prints at. Rounding may move a cut-point; nothing else may.
+        published = m.round(cutpoints[row["col"]])
+        if (np.isfinite(out["derived_cutpoint"])
+                and not np.isclose(m.round(out["derived_cutpoint"]), published)):
+            raise FrozenCutpointError(
+                f"{m.label}: the decision curve prints {published} but the "
+                f"criterion re-derives {m.round(out['derived_cutpoint'])} on "
+                "this cohort. The curve may be corrected; the point estimate "
+                "may not move.")
         out["thresholds"] = t
         out["measurement"] = row["measurement"]
         curves[row["col"]] = out
