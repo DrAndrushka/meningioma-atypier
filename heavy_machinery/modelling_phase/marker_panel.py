@@ -675,6 +675,53 @@ def _write_table(tables: dict, root: Path, stem: str, frame: pd.DataFrame) -> No
     )
 
 
+def count_score_panel(
+    df: pd.DataFrame,
+    signs: Sequence[str],
+    target: str,
+) -> dict[str, pd.DataFrame]:
+    """Does counting several signs beat using the best one alone? — NOT YET BUILT.
+
+    The dose-response argument. A radiologist checks each sign in ``signs`` and
+    counts how many are present; this asks whether risk climbs with that count.
+    The shape of the answer is what makes it defensible: if the signs were all
+    restating one underlying thing, risk would jump once and then flatten, so a
+    **monotone rise is the evidence that combining helps** and a flat or
+    wandering curve is the evidence that it does not.
+
+    ``signs`` is passed in, never mined. Picking the best-scoring combination
+    out of the data and then reporting how well it scores is the objection a
+    committee raises first, and a pre-specified list is the answer to it. The
+    existing ``selection_correction`` stays alongside as the guard for the
+    "best single vs best combination" claim, which *is* selected and so has to
+    carry its optimism correction and its winner stability.
+
+    Planned outputs, all on one patient set — complete cases across every sign,
+    because a count compared across different groups of patients is not a
+    comparison:
+
+    ``risk_by_count``   one row per k: n, events, risk with a Wilson interval.
+    ``rule_by_count``   "≥ k of n signs" as a rule: Se, Sp, PPV, NPV, LR+, J.
+    ``figure``          risk against k, greyscale, points with intervals rather
+                        than bars, and an at-risk row under the axis instead of
+                        floating labels that collide.
+
+    Two things to settle before this is trusted:
+
+    * **Collinear members double-count.** Tumor volume and max diameter
+      correlate at rho ~= 0.92 in this cohort, edema volume and edema index at
+      ~= 0.91. A count over all five cut-points rises partly for arithmetic
+      reasons, so either the list de-duplicates or the caveat is printed.
+    * **Sparse counts.** The k = 0 and k = n bins are often a handful of
+      patients; a minimum n has to be set and the dropped bins named, not
+      silently omitted.
+    """
+    raise NotImplementedError(
+        "count_score_panel is a placeholder — populate COUNT_SCORE_SIGNS in "
+        "the modelling notebook and implement this before calling it."
+    )
+
+
 def run_marker_panel(
     df: pd.DataFrame,
     *,
