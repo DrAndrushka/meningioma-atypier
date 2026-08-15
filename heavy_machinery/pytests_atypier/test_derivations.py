@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 from schema_infer import ColSpec
 
 from config import load
@@ -342,3 +343,61 @@ def test_apply_derivations_writes_hidden_parent_csv(tmp_path):
     assert pd.read_csv(path)["column"].tolist() == ["sex"]
     assert "sex" in out.columns
     assert "male_sex" in out.columns
+
+
+# --- eda_in_derived defaults from hide_parent ------------------------------
+def _apply(**kwargs):
+    return _derivations.Apply(
+        name="flag", source="parent", fn=lambda s: s, kind="binary", **kwargs)
+
+
+def test_hiding_the_parent_makes_the_flag_native():
+    """It replaced that column, so nothing in the table is left to restate."""
+    assert _apply(hide_parent=True).eda_in_derived is False
+
+
+def test_leaving_the_parent_in_place_makes_the_flag_derived():
+    """A cut-point and the measurement it was cut from are one thing twice."""
+    assert _apply(hide_parent=False).eda_in_derived is True
+
+
+def test_saying_it_outright_beats_the_default():
+    """The exception this exists for: a repair rule is native, parent visible."""
+    assert _apply(hide_parent=False, eda_in_derived=False).eda_in_derived is False
+    assert _apply(hide_parent=True, eda_in_derived=True).eda_in_derived is True
+
+
+def test_none_still_means_omit_from_the_eda_entirely():
+    """None was already spoken for, which is why the default needed a sentinel."""
+    assert _apply(hide_parent=True, eda_in_derived=None).eda_in_derived is None
+
+
+def test_the_sentinel_refuses_to_be_read_as_a_truth_value():
+    """`if spec.eda_in_derived` on an unresolved AUTO would silently mean False."""
+    with pytest.raises(TypeError, match="not a truth value"):
+        bool(_derivations.AUTO)
+
+
+def test_the_default_is_resolved_at_declaration_not_at_read_time():
+    """Otherwise the two handoff CSVs can disagree about the same column."""
+    spec = _apply(hide_parent=True)
+    assert not isinstance(spec.eda_in_derived, type(_derivations.AUTO))
+
+
+def test_no_derivation_can_be_both_hidden_parent_and_eda_derived():
+    """The pair that produced the blank-q defect: in neither family.
+
+    A column whose parent is hidden has nothing to restate, so putting it in the
+    Derived family leaves it corrected alone while its parent is gone — which is
+    how multiple_meningiomas ended up with no q value at all.
+    """
+    derivations = [
+        _derivations.Apply(name="male", source="sex", fn=lambda s: s,
+                           kind="binary", hide_parent=True),
+        _derivations.Apply(name="adc_le", source="adc", fn=lambda s: s,
+                           kind="binary"),
+    ]
+    derived = _derivations.eda_in_derived_columns(derivations)
+    hidden_flags = {d.name for d in derivations if d.hide_parent}
+    assert derived & hidden_flags == set()
+    assert derived == {"adc_le"}

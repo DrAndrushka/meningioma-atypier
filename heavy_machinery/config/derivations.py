@@ -30,6 +30,25 @@ _LOG_COLUMNS = [
 ]
 
 
+class _Auto:
+    """Sentinel for "not stated" — distinct from None, which already means something.
+
+    ``eda_in_derived`` uses all three of its values: True puts the column in the
+    Derived multiplicity family, False in the Native one, and None keeps it out
+    of the EDA entirely. So "you did not say" needs a fourth value of its own
+    rather than borrowing one that already carries meaning.
+    """
+
+    def __repr__(self) -> str:      # pragma: no cover - debugging aid
+        return "AUTO"
+
+    def __bool__(self) -> bool:
+        raise TypeError("AUTO is 'not stated', not a truth value — resolve it first.")
+
+
+AUTO = _Auto()
+
+
 @dataclass
 class BinNumeric:
     """Cut a numeric source column into ordered bins."""
@@ -45,9 +64,18 @@ class BinNumeric:
     right: bool = False
     ordered_levels: list | None = None
     dda_in_derived: bool = False  # True → DDA report "Derived" table
-    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    # Unstated → the opposite of ``hide_parent``, resolved at construction. A
+    # flag that replaced its parent *is* the native variable, with nothing left
+    # for it to restate; one whose parent is still in the table restates it and
+    # belongs in the Derived family. State it only for the exceptions — a
+    # derivation that repairs a column in place is native with no parent hidden.
+    eda_in_derived: "bool | None | _Auto" = AUTO  # True→Derived, False→Native, None→omit
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
     positive_class: Any = None  # index / present class copied onto ColSpec
+
+    def __post_init__(self) -> None:
+        if isinstance(self.eda_in_derived, _Auto):
+            self.eda_in_derived = not self.hide_parent
 
 
 @dataclass
@@ -63,9 +91,18 @@ class Apply:
     reason: str = ""
     ordered_levels: list | None = None
     dda_in_derived: bool = False  # True → DDA report "Derived" table
-    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    # Unstated → the opposite of ``hide_parent``, resolved at construction. A
+    # flag that replaced its parent *is* the native variable, with nothing left
+    # for it to restate; one whose parent is still in the table restates it and
+    # belongs in the Derived family. State it only for the exceptions — a
+    # derivation that repairs a column in place is native with no parent hidden.
+    eda_in_derived: "bool | None | _Auto" = AUTO  # True→Derived, False→Native, None→omit
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
     positive_class: Any = None  # index / present class copied onto ColSpec
+
+    def __post_init__(self) -> None:
+        if isinstance(self.eda_in_derived, _Auto):
+            self.eda_in_derived = not self.hide_parent
 
 
 @dataclass
@@ -81,9 +118,19 @@ class Compute:
     reason: str = ""
     ordered_levels: list | None = None
     dda_in_derived: bool = False  # True → DDA report "Derived" table
-    eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
+    # Unstated → the opposite of ``hide_parent``, resolved at construction. A
+    # flag that replaced its parent *is* the native variable, with nothing left
+    # for it to restate; one whose parent is still in the table restates it and
+    # belongs in the Derived family. State it only for the exceptions — a
+    # derivation that repairs a column in place is native with no parent hidden.
+    eda_in_derived: "bool | None | _Auto" = AUTO  # True→Derived, False→Native, None→omit
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
     positive_class: Any = None  # index / present class copied onto ColSpec
+
+    def __post_init__(self) -> None:
+        if isinstance(self.eda_in_derived, _Auto):
+            self.eda_in_derived = not self.hide_parent
+
 
 
 def derived_dependencies_from(derivations: Sequence) -> dict[str, list[str]]:
