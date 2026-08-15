@@ -7,7 +7,16 @@ import numpy as np
 import pandas as pd
 
 import schema_infer as si
-from schema_infer import ColSpec, export_schema_summary, infer_schema, load_schema_from_handoff, print_schema_template, schema_summary
+from schema_infer import (
+    ColSpec,
+    export_schema_summary,
+    infer_schema,
+    load_schema_from_handoff,
+    match_level,
+    pin_positive_last,
+    print_schema_template,
+    schema_summary,
+)
 
 
 def test_looks_binary():
@@ -67,9 +76,22 @@ def test_print_schema_template(tiny_df, capsys):
 
 def test_schema_summary(tiny_schema):
     tbl = schema_summary(tiny_schema)
-    assert list(tbl.columns) == ["column", "kind", "keep", "datetime_bin", "levels", "nulls", "note"]
+    assert list(tbl.columns) == [
+        "column", "kind", "keep", "datetime_bin", "levels",
+        "positive_class", "nulls", "note",
+    ]
     grade = tbl.loc[tbl["column"] == "grade", "levels"].iloc[0]
     assert grade == [1, 2, 3]
+
+
+def test_match_and_pin_positive_last():
+    levels = ["left", "right", "midline"]
+    assert match_level(levels, "right") == "right"
+    assert match_level(levels, "top") is None
+    assert pin_positive_last(levels, "right") == ["left", "midline", "right"]
+    assert pin_positive_last(levels, None) == levels
+    assert pin_positive_last([False, True], True) == [False, True]
+    assert pin_positive_last([False, True], False) == [True, False]
 
 
 def test_schema_summary_nominal_levels_from_replace():
@@ -105,3 +127,24 @@ def test_load_schema_from_handoff_roundtrip(tiny_schema, tmp_output):
     assert loaded["grade"].kind == "ordinal"
     assert loaded["grade"].ordered_levels == [1, 2, 3]
     assert loaded["id"].keep is False
+
+
+def test_positive_class_roundtrips_through_schema_summary(tmp_output):
+    schema = {
+        "side": ColSpec("side", "nominal", positive_class="right"),
+        "flag": ColSpec("flag", "binary", positive_class=True),
+        "age": ColSpec("age", "continuous"),
+    }
+    export_schema_summary(schema, tmp_output)
+    loaded = load_schema_from_handoff(tmp_output)
+    assert loaded["side"].positive_class == "right"
+    assert loaded["flag"].positive_class is True
+    assert loaded["age"].positive_class is None
+
+
+def test_print_schema_template_includes_positive_class(capsys):
+    print_schema_template({
+        "side": ColSpec("side", "nominal", positive_class="right"),
+    })
+    text = capsys.readouterr().out
+    assert "positive_class='right'" in text

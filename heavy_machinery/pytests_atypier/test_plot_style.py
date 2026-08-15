@@ -205,5 +205,119 @@ def test_set_titles_adds_a_subtitle_without_touching_the_axes_data():
 def test_save_figure_can_skip_tight_layout(tmp_path):
     fig, (top, bottom) = plt.subplots(2, 1)
     bottom.plot([1, 2], [1, 2])
-    path = ps.save_figure(fig, tmp_path / "x.svg", tight_layout=False)
+    path = ps.save_figure(fig, tmp_path / "x", tight_layout=False)
     assert path.exists()
+    assert path.suffix == ".png"
+    assert not (tmp_path / "x.eps").exists()
+
+
+def test_forest_row_order_sorts_all_rows_by_estimate_descending():
+    """Grey and black rows share one ranking — largest estimate at the top."""
+    est = [3.0, 5.0, 0.2, 1.5]
+    lo = [2.0, 0.5, 0.1, 0.8]
+    hi = [4.0, 10.0, 0.4, 2.0]
+    assert list(ps.forest_row_order(est, lo, hi)) == [1, 0, 3, 2]
+
+
+def test_forest_lr_sorts_all_rows_by_estimate_descending():
+    fig, ax = ps.forest_lr(
+        ["A", "B", "C", "D"],
+        [3.0, 5.0, 0.2, 1.5],
+        [2.0, 0.5, 0.1, 0.8],
+        [4.0, 10.0, 0.4, 2.0],
+        xlabel="OR",
+        value_header="OR (95% CI)",
+    )
+    pairs = sorted(
+        zip(ax.get_yticks(), [t.get_text() for t in ax.get_yticklabels()]),
+        reverse=True,
+    )
+    assert [lab for _, lab in pairs] == ["B", "A", "D", "C"]
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
+# Fast ROC AUC
+# ---------------------------------------------------------------------------
+# roc_auc replaces sklearn's roc_auc_score inside the bootstrap loops, so the
+# published optimism-corrected numbers depend on the two agreeing. These pin
+# that down, including the tie handling that is the only place they could part.
+
+def test_roc_auc_matches_sklearn_on_continuous_scores():
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(11)
+    for _ in range(200):
+        n = int(rng.integers(20, 400))
+        y = rng.integers(0, 2, n)
+        if y.sum() in (0, n):
+            continue
+        score = rng.normal(size=n)
+        assert ps.roc_auc(y, score) == pytest.approx(
+            roc_auc_score(y, score), abs=1e-12
+        )
+
+
+def test_roc_auc_matches_sklearn_when_scores_are_heavily_tied():
+    """Ties are the only place a rank-based AUC could disagree with the ROC."""
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(12)
+    for _ in range(200):
+        n = int(rng.integers(20, 400))
+        y = rng.integers(0, 2, n)
+        if y.sum() in (0, n):
+            continue
+        score = rng.integers(0, 3, n).astype(float)  # many exact ties
+        assert ps.roc_auc(y, score) == pytest.approx(
+            roc_auc_score(y, score), abs=1e-12
+        )
+
+
+def test_roc_auc_is_all_ties_is_one_half():
+    assert ps.roc_auc([0, 1, 0, 1], [2.0, 2.0, 2.0, 2.0]) == 0.5
+
+
+def test_roc_auc_is_nan_when_a_class_is_missing():
+    """AUC is undefined with one class; callers skip those resamples."""
+    assert np.isnan(ps.roc_auc([1, 1, 1], [0.1, 0.2, 0.3]))
+    assert np.isnan(ps.roc_auc([0, 0, 0], [0.1, 0.2, 0.3]))
+
+
+# ---------------------------------------------------------------------------
+# Figure export profile
+# ---------------------------------------------------------------------------
+
+def test_figure_profile_defaults_to_report(monkeypatch):
+    monkeypatch.delenv("ATYPIER_FIGURES", raising=False)
+    assert ps.figure_profile() == "report"
+    assert ps.figure_formats() == ("png",)
+
+
+def test_submission_profile_adds_the_journal_tif(monkeypatch):
+    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
+    assert ps.figure_formats() == ("tif", "png")
+
+
+def test_an_unknown_figure_profile_is_refused(monkeypatch):
+    """Silently falling back would ship the wrong files to a journal."""
+    monkeypatch.setenv("ATYPIER_FIGURES", "hi-res")
+    with pytest.raises(ValueError, match="figure profile"):
+        ps.figure_profile()
+
+
+def test_report_png_is_screen_dpi_and_submission_tif_is_print_dpi(monkeypatch):
+    """The TIF keeps the 1200-dpi line-art spec; only the PNG is downsampled."""
+    monkeypatch.delenv("ATYPIER_FIGURES", raising=False)
+    assert ps._dpi_for("png", "line") == ps.REPORT_PNG_DPI
+    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
+    assert ps._dpi_for("tif", "line") == 1200
+    assert ps._dpi_for("png", "line") == 1200
+
+
+def test_explicit_formats_override_the_profile(tmp_path, monkeypatch):
+    monkeypatch.delenv("ATYPIER_FIGURES", raising=False)
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [1, 2])
+    ps.save_figure(fig, tmp_path / "x", formats=("png", "pdf"))
+    assert (tmp_path / "x.pdf").exists()

@@ -6,7 +6,7 @@ import pandas as pd
 
 import combinations as cb
 import rule_matrix as rm
-from thresholds import Metric
+from marker_rules import Metric
 
 TARGET = "high_grade"
 A = Metric("a", "Metric A", "u", "higher")

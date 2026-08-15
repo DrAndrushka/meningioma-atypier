@@ -16,25 +16,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.ticker import FuncFormatter, LogLocator
 import statsmodels.api as sm
 from scipy.stats import t as t_dist
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from schema_infer import ColSpec
+from scales import is_log_scaled, to_model_scale
+from scales import z_params as z_params_for
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
 from plot_style import (
     FIG_WIDTH_MEDIUM,
-    PALETTE,
     apply_plot_style,
-    figure_size,
+    forest_lr,
     prettify_label,
     save_figure,
-    set_titles,
 )
 
 apply_plot_style()
@@ -229,9 +227,10 @@ def _clear_inferential_artifacts(figs_dir: Path, tabs_dir: Path) -> None:
     for path in tabs_dir.iterdir():
         if path.is_file() and any(path.name.endswith(s) for s in _PER_MODEL_TABLE_SUFFIXES):
             path.unlink()
-    for path in figs_dir.glob("*__forest.svg"):
-        if path.is_file():
-            path.unlink()
+    for pattern in ("*__forest.png", "*__forest.tif", "*__forest.eps", "*__forest.svg"):
+        for path in figs_dir.glob(pattern):
+            if path.is_file():
+                path.unlink()
     model_dir = tabs_dir.parent / "model_artifacts"
     if model_dir.is_dir():
         for path in model_dir.glob("*_model.json"):
@@ -264,12 +263,20 @@ def _build_design(
         spec = schema[p]
         s = df[p]
         if spec.kind in ("continuous", "count"):
-            mu, sd = s.mean(), s.std(ddof=0)
-            z = (s - mu) / _safe_z_denominator(sd)
+            # Which measurements are logged is declared in ``scales``, so the
+            # adjusted odds ratios here are on the same scale as the univariable
+            # ones in the EDA table and the cut-point tables. ``mu``/``sd`` are
+            # stored on that same scale, and ``log`` tells the risk calculator
+            # to transform a patient's raw value before applying them.
+            log_x = is_log_scaled(p)
+            mu, sd = z_params_for(s.to_numpy(dtype=float), log_x)
+            u = pd.Series(to_model_scale(s.to_numpy(dtype=float), log_x),
+                          index=s.index)
+            z = (u - mu) / _safe_z_denominator(sd)
             z.name = p
             pieces.append(z)
             mapping[p] = [p]
-            z_params[p] = {"mu": float(mu), "sd": float(sd)}
+            z_params[p] = {"mu": float(mu), "sd": float(sd), "log": bool(log_x)}
         elif spec.kind == "ordinal":
             cats = pd.Categorical(s,
                                   categories=spec.ordered_levels if spec.ordered_levels else None,
@@ -517,7 +524,7 @@ def fit_multivariable_logistic(
                          "or": np.nan, "or_ci_lo": np.nan, "or_ci_hi": np.nan,
                          "p": np.nan, "n_models": 0,
                          "intercept_coef": intercept_coef, "intercept_or": intercept_or,
-                         "z_mu": z_mu, "z_sd": z_sd})
+                         "z_mu": z_mu, "z_sd": z_sd, "z_log": is_log_scaled(c)})
             continue
         pooled = _rubin_pool(thetas, ses)
         rows.append({"predictor_col": c, **pooled, "n_models": len(thetas),
@@ -548,8 +555,14 @@ def _forest_row_label(row: pd.Series) -> str:
     one standard deviation, not per natural unit. Without saying so, a column
     labelled "Edema volume (cm³)" invites the reader to take OR 1.17 as
     per-cm³ and dismiss the strongest continuous effect in the model.
+
+    For a log-scaled predictor the SD is in log units, so printing it next to a
+    clinical label would be worse than printing nothing — "per 1 SD: 1.20" reads
+    as 1.2 cm³. Those rows name the scale instead of the width.
     """
     label = prettify_label(row["predictor_col"])
+    if is_log_scaled(row["predictor_col"]):
+        return f"{label} (per 1 SD, log scale)"
     sd = row.get("z_sd")
     try:
         sd = float(sd)
@@ -558,7 +571,7 @@ def _forest_row_label(row: pd.Series) -> str:
     if not np.isfinite(sd) or sd <= 0:
         return label
     digits = 0 if abs(sd) >= 10 else 2
-    return f"{label}\nper 1 SD ({sd:.{digits}f})"
+    return f"{label} (per 1 SD: {sd:.{digits}f})"
 
 
 def _forest_plot(
@@ -574,83 +587,27 @@ def _forest_plot(
 ) -> None:
     """Rubin-pooled adjusted odds ratios for one model variant.
 
-    Colour encodes *direction* (raises vs lowers the odds), not significance:
-    the previous split on "CI excludes 1" turned a continuous scale into an
-    on/off light and disagreed with the FDR-adjusted screening stage next door.
-    Whether an interval clears 1 is already visible where it crosses the
-    reference line.
-
-    Rows are ordered by effect magnitude so the strongest predictor is on top
-    in every variant, which is what makes the seven forests comparable.
+    Rows whose CI crosses 1 are drawn grey. All rows sort together by the
+    odds ratio, largest first.
     """
+    del model_title, n_cases, n_events, epv
     plot_df = pooled.dropna(subset=["or"]).copy()
     if plot_df.empty:
         return
-    plot_df["_strength"] = np.abs(np.log(plot_df["or"].astype(float)))
-    plot_df = plot_df.sort_values("_strength")  # strongest last → top of the axis
-    n = len(plot_df)
-
-    colors = [
-        PALETTE["accent"] if float(o) >= 1.0 else PALETTE["primary"]
-        for o in plot_df["or"]
-    ]
     labels = [_forest_row_label(r) for _, r in plot_df.iterrows()]
-    height = max(0.52 * n + 1.5, 2.6) + 0.18 * sum("\n" in lab for lab in labels)
-    fig, ax = plt.subplots(figsize=figure_size(FIG_WIDTH_MEDIUM, height=height))
-
-    y = np.arange(n)
-    for yi, (_, r), color in zip(y, plot_df.iterrows(), colors):
-        ax.errorbar(
-            r["or"], yi,
-            xerr=[[r["or"] - r["or_ci_lo"]], [r["or_ci_hi"] - r["or"]]],
-            fmt="o", color=color, ecolor=color, capsize=3,
-            markersize=5.5, linewidth=0, elinewidth=1.4, zorder=3,
-        )
-    ax.axvline(1.0, color=PALETTE["neutral"], linestyle="--", linewidth=1, zorder=1)
-    ax.set_yticks(y)
-    ax.set_yticklabels(labels)
-    ax.set_ylim(-0.6, n - 0.4)
-    ax.set_xscale("log")
-    # Plain decimals, not 6×10⁻¹ — an odds ratio axis is read, not decoded.
-    # Minor ticks are thinned to round steps so 0.6/0.7/0.8/0.9 stop colliding
-    # either side of the reference line.
-    ax.xaxis.set_minor_locator(LogLocator(base=10.0, subs=(0.2, 0.3, 0.5, 2.0, 3.0, 5.0)))
-    for axis_fmt in (ax.xaxis.set_major_formatter, ax.xaxis.set_minor_formatter):
-        axis_fmt(FuncFormatter(_or_tick))
-    ax.grid(axis="x", alpha=0.25)
-    ax.grid(axis="y", visible=False)
-    ax.set_xlabel("Adjusted odds ratio (95% CI, log scale)")
-    # OR (95% CI) just outside the right spine — small gap from the frame.
-    x_hi = float(plot_df["or_ci_hi"].max())
-    if not np.isfinite(x_hi) or x_hi <= 0:
-        x_hi = 1.0
-    ax.set_xlim(right=x_hi * 1.2)
-    for yi, (_, r) in zip(y, plot_df.iterrows()):
-        ax.annotate(
-            f"{r['or']:.2f} ({r['or_ci_lo']:.2f}–{r['or_ci_hi']:.2f})",
-            xy=(1.0, yi),
-            xycoords=("axes fraction", "data"),
-            xytext=(10, 0),
-            textcoords="offset points",
-            va="center",
-            ha="left",
-            fontsize=plt.rcParams["font.size"] * 0.85,
-            color="#444444",
-            annotation_clip=False,
-        )
-
-    title = model_title or f"Multivariable logistic regression — {prettify_label(target)}"
-    parts: list[str] = []
-    if n_cases:
-        parts.append(f"n = {int(n_cases)}")
-    if n_events:
-        parts.append(f"{int(n_events)} events")
-    if epv is not None and np.isfinite(epv):
-        parts.append(f"EPV {float(epv):.1f}")
-    parts.append("right of the line raises the odds")
-    set_titles(ax, title, " · ".join(parts))
+    fig, ax = forest_lr(
+        labels,
+        plot_df["or"].to_numpy(dtype=float),
+        plot_df["or_ci_lo"].to_numpy(dtype=float),
+        plot_df["or_ci_hi"].to_numpy(dtype=float),
+        ref=1.0,
+        xlabel="Adjusted odds ratio (95% CI)",
+        value_header="OR (95% CI)",
+        width=FIG_WIDTH_MEDIUM,
+    )
+    del ax
     stem = artifact_base(target, model_id)
-    save_figure(fig, figs_dir / f"{stem}__forest.svg")
+    save_figure(fig, figs_dir / f"{stem}__forest", tight_layout=False)
 
 
 # ---------------------------------------------------------------------------
@@ -759,7 +716,7 @@ def _write_performance_figures(
 _INFERENTIAL_COLS = [
     "target", "model_id", "model_title", "model_link", "predictor_col", "or", "or_ci_lo", "or_ci_hi",
     "coef", "se", "p", "df", "n_models",
-    "intercept_coef", "intercept_or", "z_mu", "z_sd",
+    "intercept_coef", "intercept_or", "z_mu", "z_sd", "z_log",
 ]
 
 
@@ -856,6 +813,7 @@ def export_calculator_meta(
                 "coef": coef_by_col[pred],
                 "z_mu": z_params[pred]["mu"],
                 "z_sd": z_params[pred]["sd"],
+                "z_log": bool(z_params[pred].get("log", False)),
             })
         elif spec.kind == "binary":
             if pred not in coef_by_col:

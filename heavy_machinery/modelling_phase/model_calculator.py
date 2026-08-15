@@ -97,12 +97,24 @@ def _apply_continuous_transform(
     name = feature["name"]
     if transform == "raw":
         return float(value)
-    if transform == "standardize":
+    if transform in ("standardize", "log_standardize"):
         mu = float(feature["z_mu"])
         sd = float(feature.get("z_sd") or 1.0)
         if sd == 0:
             sd = 1.0
-        return (float(value) - mu) / sd
+        # The user always types a clinical value (26 cm³). For a log-scaled
+        # predictor the stored mean and SD are in log units, so the value has to
+        # be moved onto that scale before they mean anything. Skipping this step
+        # would not fail loudly — it would return a confident, wrong risk.
+        x = float(value)
+        if transform == "log_standardize":
+            if x <= -1.0:
+                raise ValueError(
+                    f"{name!r} is log-scaled and cannot be {x}; expected a "
+                    f"non-negative measurement"
+                )
+            x = float(np.log1p(x))
+        return (x - mu) / sd
     raise ValueError(f"Unknown transform {transform!r} for feature {name!r}")
 
 
@@ -477,21 +489,30 @@ def calculator_meta_to_streamlit_artifact(
 
         if kind == "continuous":
             z_mu = float(term["z_mu"])
-            z_sd = max(float(term["z_sd"]), 1.0)
+            z_log = bool(term.get("z_log", False))
+            z_sd = max(float(term["z_sd"]), 1.0 if not z_log else 1e-6)
             coefficients[name] = float(term["coef"])
+            # Bounds and default are what the clinician types, so they stay in
+            # clinical units even when the model works in log units: the ±3 SD
+            # window is built on the model scale and mapped back with expm1.
+            lo, hi, mid = z_mu - 3 * z_sd, z_mu + 3 * z_sd, z_mu
+            if z_log:
+                lo, hi, mid = (float(np.expm1(v)) for v in (lo, hi, mid))
+            step = 0.1 if (hi - lo) < 30 else 1.0
             features.append({
                 "name": name,
                 "label": label,
                 "type": "continuous",
                 "input_widget": "number_input",
                 "unit": "cm³" if "volume" in name else None,
-                "min_value": round(max(0.0, z_mu - 3 * z_sd), 2),
-                "max_value": round(z_mu + 3 * z_sd, 2),
-                "default": round(z_mu, 2),
-                "step": 0.1 if z_sd < 5 else 1.0,
-                "transform": "standardize",
+                "min_value": round(max(0.0, lo), 2),
+                "max_value": round(hi, 2),
+                "default": round(mid, 2),
+                "step": step,
+                "transform": "log_standardize" if z_log else "standardize",
                 "z_mu": z_mu,
                 "z_sd": float(term["z_sd"]),
+                "z_log": z_log,
             })
         elif kind == "binary":
             coefficients[name] = float(term["coef"])
@@ -575,7 +596,7 @@ def write_streamlit_artifacts(
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> list[Path]:
     """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta."""
-    from model_validation import build_complete_case_frame, enrich_streamlit_artifact
+    from model_validation import build_complete_case_frame, enrich_streamlit_artifacts
 
     output_root = Path(output_root)
     tabs_dir = output_root / "inferential" / "tables"
@@ -588,7 +609,10 @@ def write_streamlit_artifacts(
     if cases_df is not None and not cases_df.empty and "target" in cases_df.columns:
         known_targets = set(cases_df["target"].astype(str))
 
-    written: list[Path] = []
+    # Pass 1 — assemble each model's artifact and design matrix. Cheap, and it
+    # collects the whole work list so the expensive bootstraps can share a pool.
+    plan: list[tuple[Path, dict]] = []
+    jobs: list[tuple[int, dict, pd.DataFrame, list[str]]] = []
     for meta_path in sorted(tabs_dir.glob("*__calculator.json")):
         base = meta_path.stem.replace("__calculator", "")
         target, model_id = parse_artifact_base(base, known_targets)
@@ -623,17 +647,23 @@ def write_streamlit_artifacts(
                     target,
                     vif_threshold=vif_threshold,
                 )
-                artifact = enrich_streamlit_artifact(
-                    artifact,
-                    model_df,
-                    design_cols,
-                    n_bootstrap=n_bootstrap,
-                )
+                jobs.append((len(plan), artifact, model_df, design_cols))
             except (ValueError, RuntimeError):
-                pass
+                pass  # no design matrix — the plain artifact still gets written
 
         fname = f"{target}_{model_id}_model.json" if model_id else f"{target}_model.json"
-        out_path = out_dir / fname
+        plan.append((out_dir / fname, artifact))
+
+    # Pass 2 — the bootstrap validations, which are the expensive part.
+    validated = enrich_streamlit_artifacts(
+        [(a, m, d) for _, a, m, d in jobs], n_bootstrap=n_bootstrap,
+    )
+    for (slot, *_), enriched in zip(jobs, validated):
+        plan[slot] = (plan[slot][0], enriched)
+
+    # Pass 3 — write in the original (sorted) order, whatever ran where.
+    written: list[Path] = []
+    for out_path, artifact in plan:
         out_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
         written.append(out_path)
     return written

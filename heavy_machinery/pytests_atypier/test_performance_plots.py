@@ -76,7 +76,7 @@ def test_calibration_figure_draws_a_point_per_bin():
     ax = fig.axes[0]
     assert ax.get_xlim() == ax.get_ylim()  # risk vs risk must share a scale
     subtitle = " ".join(t.get_text() for t in ax.texts)
-    assert "0.91" in subtitle  # corrected slope, not the meaningless apparent 1.0
+    assert "0.91" in subtitle  # corrected slope in the AJNR annotation box
     plt.close(fig)
 
 
@@ -94,14 +94,14 @@ def test_decision_curve_figure_includes_both_references():
     plt.close(fig)
 
 
-def test_outcome_rate_renders_one_decimal_with_no_false_precision():
+def test_outcome_rate_is_not_drawn_on_the_panel():
+    """Cohort rate belongs in the caption, not as on-figure text."""
     val = _validation()
     val["decision_curve"]["prevalence"] = 105 / 352  # 0.29829...
     fig = pp.decision_curve_figure(val)
     assert fig is not None
-    subtitle = " ".join(t.get_text() for t in fig.axes[0].texts)
-    assert "29.8%" in subtitle
-    assert "30%" not in subtitle
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert "Treat all" in labels and "Treat none" in labels
     plt.close(fig)
 
 
@@ -142,9 +142,9 @@ def test_write_performance_figures_emits_three_svgs(tmp_path):
     written = pp.write_performance_figures(_validation(), tmp_path, "high_grade__m1")
     names = {p.name for p in written}
     assert names == {
-        "high_grade__m1__roc.svg",
-        "high_grade__m1__calibration.svg",
-        "high_grade__m1__decision_curve.svg",
+        "high_grade__m1__roc.png",
+        "high_grade__m1__calibration.png",
+        "high_grade__m1__decision_curve.png",
     }
     assert all(p.exists() for p in written)
 
@@ -159,7 +159,7 @@ def test_write_performance_figures_skips_what_it_cannot_draw(tmp_path):
 def test_write_model_comparison_figure(tmp_path):
     entries = [{"label": "m1", "validation": _validation()}]
     path = pp.write_model_comparison_figure(entries, tmp_path, target="high_grade")
-    assert path is not None and path.name == "high_grade__model_comparison.svg"
+    assert path is not None and path.name == "high_grade__model_comparison.png"
     assert path.exists()
 
 

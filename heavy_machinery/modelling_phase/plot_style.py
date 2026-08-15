@@ -2,11 +2,12 @@
 
 Shared concerns only (do not duplicate these in phase modules):
 
-1. SciencePlots session style (``science`` + ``nature`` + ``no-latex``)
-2. Okabe–Ito palette, publication figure geometry, title/subtitle blocks
+1. AJNR house style (Okabe–Ito, Arial/Helvetica, journal vs conference)
+2. Publication figure geometry, title/subtitle blocks
 3. Statistical drawing primitives (Wilson CIs, KDE, LOWESS, raincloud)
-4. SVG save / bytes export
-5. Human-readable labels for axes, category levels, and report captions
+4. Forest / ROC / calibration / decision-curve builders
+5. TIF / PNG save and PNG bytes export
+6. Human-readable labels for axes, category levels, and report captions
 
 Everything here is column-agnostic: label maps are data, not logic, so phase
 modules never branch on a study-specific column name.
@@ -15,14 +16,17 @@ modules never branch on a study-specific column name.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from contextlib import contextmanager, nullcontext
 from io import BytesIO
 from pathlib import Path
 from typing import Iterator, Sequence
 
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import FixedFormatter, FixedLocator
 
 # Pipeline default — Nature typography without requiring a LaTeX install.
 SCIENCE_STYLE_DEFAULT: tuple[str, ...] = ("science", "nature", "no-latex")
@@ -39,17 +43,34 @@ CATEGORICAL_COLORS: tuple[str, ...] = (
     "#000000",  # black
 )
 
+# Okabe–Ito named swatches (colour-blind safe).
+OKABE = {
+    "black":     "#000000",
+    "orange":    "#E69F00",
+    "skyblue":   "#56B4E9",
+    "green":     "#009E73",
+    "yellow":    "#F0E442",
+    "blue":      "#0072B2",
+    "vermilion": "#D55E00",
+    "purple":    "#CC79A7",
+    "grey":      "#7F7F7F",
+    "lightgrey": "#D9D9D9",
+}
+G1 = OKABE["blue"]        # WHO CNS grade 1
+HG = OKABE["vermilion"]   # WHO CNS grade 2-3
+NS = OKABE["grey"]        # non-significant / CI crosses the null
+
 # Semantic roles mapped onto the same family.
 PALETTE = {
     "primary": CATEGORICAL_COLORS[0],   # blue
     "accent": CATEGORICAL_COLORS[1],    # vermillion
     "good": CATEGORICAL_COLORS[2],     # green
     "bad": CATEGORICAL_COLORS[1],      # vermillion
-    "neutral": "#666666",
-    "low_grade": CATEGORICAL_COLORS[0],
-    "high_grade": CATEGORICAL_COLORS[1],
+    "neutral": NS,
+    "low_grade": G1,
+    "high_grade": HG,
     "significant": CATEGORICAL_COLORS[1],
-    "nonsignificant": "#7A7A7A",
+    "nonsignificant": NS,
 }
 
 # Tokens that should keep a fixed casing/spelling when prettifying.
@@ -166,7 +187,7 @@ def prettify_label(name: str) -> str:
         r"(?P<base>.+?)_(?P<op>ge|gt|le|lt|eq)_?(?P<num>\d+(?:\.\d+)?)", raw,
     )
     if threshold:
-        # Three significant figures, the same as the threshold phase prints on
+        # Three significant figures, the same as the cut-point phase prints on
         # its own axes and in its own prose. Formatting the number here rather
         # than echoing the column name is what stops the same cut-point from
         # reading differently in two sections of the same manuscript.
@@ -860,15 +881,140 @@ def raincloud(
         )
 
 
+_BASE = {
+    "font.family": "sans-serif",
+    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+    "mathtext.fontset": "dejavusans",
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "axes.linewidth": 0.8,
+    "axes.grid": False,
+    "xtick.direction": "out",
+    "ytick.direction": "out",
+    "legend.frameon": False,
+    "figure.dpi": 110,
+    "savefig.bbox": "tight",
+    "savefig.pad_inches": 0.03,
+    "savefig.facecolor": "white",
+    "figure.facecolor": "white",
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+    "svg.fonttype": "none",
+}
+
+_AJNR = {
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "axes.titlesize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+    "legend.fontsize": 7,
+    "lines.linewidth": 1.2,
+    "lines.markersize": 4,
+}
+
+_CONF = {
+    "font.size": 13,
+    "axes.labelsize": 14,
+    "axes.titlesize": 16,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
+    "legend.fontsize": 12,
+    "lines.linewidth": 2.2,
+    "lines.markersize": 7,
+    "axes.linewidth": 1.2,
+}
+
+STYLE = "ajnr"
+_SAVE_DPI = {"line": 1200, "combo": 600, "halftone": 300}
+
+# ---------------------------------------------------------------------------
+# Figure export profile
+# ---------------------------------------------------------------------------
+# Two audiences want different files out of the same figure, and writing for
+# both on every run is what made the pipeline image-bound: rasterising and
+# LZW-compressing a 1200-dpi TIF is ~0.3 s per figure, and report.html inlines
+# its PNGs as base64, so a 24-megapixel PNG shown at 36 rem is ~86x the pixels
+# the browser can use.
+#
+#   "report"      (default) only the PNGs report.html embeds, at screen dpi.
+#   "submission"  byte-for-byte what the pipeline produced before this switch
+#                 existed: 1200-dpi TIF + PNG for journal upload.
+#
+# Select with the ATYPIER_FIGURES environment variable, e.g.
+#   ATYPIER_FIGURES=submission jupyter nbconvert --execute meningioma-modelling.ipynb
+FIGURE_PROFILES: dict[str, tuple[str, ...]] = {
+    "report": ("png",),
+    "submission": ("tif", "png"),
+}
+_FIGURE_PROFILE_ENV = "ATYPIER_FIGURES"
+_DEFAULT_FIGURE_PROFILE = "report"
+
+# Report cards cap figures at 36 rem (576 px); 200 dpi keeps a 7.2-inch figure
+# at 1440 px, which is still oversampled on a 2x display.
+REPORT_PNG_DPI = 200
+
+
+def figure_profile() -> str:
+    """Active export profile — read fresh so a notebook can flip it mid-session."""
+    name = os.environ.get(_FIGURE_PROFILE_ENV, _DEFAULT_FIGURE_PROFILE).strip().lower()
+    if name not in FIGURE_PROFILES:
+        raise ValueError(
+            f"{_FIGURE_PROFILE_ENV}={name!r} is not a figure profile; "
+            f"expected one of {sorted(FIGURE_PROFILES)}"
+        )
+    return name
+
+
+def figure_formats() -> tuple[str, ...]:
+    """File formats written by :func:`save_figure` under the active profile."""
+    return FIGURE_PROFILES[figure_profile()]
+
+
+def _dpi_for(fmt: str, kind: str) -> int:
+    """Export dpi. PNG is a screen artifact; everything else is print-bound."""
+    if fmt == "png" and figure_profile() == "report":
+        return min(REPORT_PNG_DPI, _SAVE_DPI[kind])
+    return _SAVE_DPI[kind]
+
+
+def use_style(profile: str = "ajnr") -> None:
+    """Set global style. profile in {'ajnr', 'conference'}."""
+    global STYLE
+    if profile not in ("ajnr", "conference"):
+        raise ValueError("profile must be 'ajnr' or 'conference'")
+    STYLE = profile
+    mpl.rcParams.update(mpl.rcParamsDefault)
+    mpl.rcParams.update(_BASE)
+    mpl.rcParams.update(_AJNR if profile == "ajnr" else _CONF)
+
+
+def _title(ax, text):
+    """On-figure titles are for posters only. Journal titles live in the legend."""
+    if STYLE == "conference" and text:
+        ax.set_title(text, loc="left", fontweight="bold", pad=10)
+
+
+def footnote(fig, text, y=-0.02):
+    """Poster-only footnote block. For AJNR this text belongs in the figure legend."""
+    if STYLE == "conference" and text:
+        fig.text(0.0, y, text, ha="left", va="top", fontsize=10,
+                 color="#333333", wrap=True)
+
+
+def panel_label(ax, letter, dx=-0.10, dy=1.04):
+    ax.text(dx, dy, letter, transform=ax.transAxes, fontweight="bold",
+            fontsize=mpl.rcParams["axes.titlesize"] + 1, va="bottom", ha="left")
+
+
 @contextmanager
 def science_style_context(
     styles: str | list[str] | tuple[str, ...] | None = None,
 ) -> Iterator[None]:
-    """Temporary SciencePlots context (for overrides / tests)."""
-    import scienceplots  # noqa: F401
-
-    with plt.style.context(normalize_science_styles(styles)):
-        _apply_export_overrides()
+    """Temporary AJNR rc context (``styles`` is a legacy no-op)."""
+    del styles
+    with mpl.rc_context():
+        use_style(STYLE)
         yield
 
 
@@ -881,38 +1027,15 @@ def maybe_science_style(
     return science_style_context(styles)
 
 
-def _apply_export_overrides() -> None:
-    """SVG-friendly overrides that SciencePlots does not set for this pipeline."""
-    import matplotlib as mpl
-
-    mpl.rcParams.update({
-        "figure.dpi": 120,
-        "savefig.dpi": 300,
-        "savefig.bbox": "tight",
-        "savefig.facecolor": "white",
-        "figure.facecolor": "white",
-        "axes.titlepad": 12,
-        "legend.frameon": True,
-        "legend.framealpha": 0.95,
-        "axes.axisbelow": True,
-        # Radiology house font. SciencePlots' `nature` style sets a Times-like
-        # serif; journals in this field want Arial/Helvetica, and every figure
-        # in a submission has to match, so it is set here rather than per
-        # figure. Mathtext follows, or exponents would stay serif.
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-        "mathtext.fontset": "dejavusans",
-    })
-
-
 def apply_plot_style(
     styles: str | list[str] | tuple[str, ...] | None = None,
 ) -> None:
-    """Apply SciencePlots + export overrides for the whole plotting session."""
-    import scienceplots  # noqa: F401
+    """Apply AJNR house style for the whole plotting session.
 
-    plt.style.use(normalize_science_styles(styles))
-    _apply_export_overrides()
+    ``styles`` is accepted for call-site compatibility and ignored.
+    """
+    del styles
+    use_style("ajnr")
 
 
 def save_figure(
@@ -922,40 +1045,436 @@ def save_figure(
     close: bool = True,
     pad_inches: float | None = None,
     tight_layout: bool = True,
+    kind: str = "line",
+    formats: tuple[str, ...] | None = None,
+    min_width_in: float = 4.0,
 ) -> Path:
-    """Single SVG export path for every phase module.
+    """AJNR export. Returns the PNG path for report embedding.
 
-    ``tight_layout=False`` preserves hand-tuned panel spacing (shared-axis
-    figures) while still trimming the outer margin via ``bbox_inches``.
+    ``path`` may carry any suffix; it is stripped to a stem. ``kind`` selects
+    print dpi (line 1200, combo 600, halftone 300). ``tight_layout=False``
+    preserves hand-tuned panel spacing.
+
+    ``formats=None`` follows the active :func:`figure_profile` — PNG only for a
+    normal run, TIF + PNG under ``ATYPIER_FIGURES=submission``. Pass an explicit
+    tuple to override the profile for one figure.
     """
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     if tight_layout:
         fig.tight_layout()
-    kwargs: dict = {"format": "svg", "bbox_inches": "tight"}
+    w, h = fig.get_size_inches()
+    if w < min_width_in:
+        fig.set_size_inches(min_width_in, h * min_width_in / w)
+    if formats is None:
+        formats = figure_formats()
+    extra: dict = {}
     if pad_inches is not None:
-        kwargs["pad_inches"] = pad_inches
-    fig.savefig(out, **kwargs)
+        extra["pad_inches"] = pad_inches
+    stem = out.with_suffix("")
+    written: list[Path] = []
+    for fmt in formats:
+        pth = Path(f"{stem}.{fmt}")
+        dpi = _dpi_for(fmt, kind)
+        if fmt == "tif":
+            fig.savefig(pth, dpi=dpi, pil_kwargs={"compression": "tiff_lzw"}, **extra)
+        elif fmt in ("pdf", "svg"):
+            fig.savefig(pth, **extra)
+        else:
+            fig.savefig(pth, dpi=dpi, **extra)
+        written.append(pth)
     if close:
         plt.close(fig)
-    return out
+    png = next((p for p in written if p.suffix.lower() == ".png"), written[0])
+    return png
 
 
-def figure_to_svg_bytes(
+def figure_to_png_bytes(
     fig: plt.Figure,
     *,
     close: bool = True,
     pad_inches: float | None = None,
     tight_layout: bool = True,
+    kind: str = "halftone",
 ) -> bytes:
-    """SVG bytes (association heatmap / in-memory exports)."""
+    """PNG bytes (association heatmap / in-memory exports)."""
     if tight_layout:
         fig.tight_layout()
     buf = BytesIO()
-    kwargs: dict = {"format": "svg", "bbox_inches": "tight"}
+    kwargs: dict = {"format": "png", "dpi": _SAVE_DPI[kind], "bbox_inches": "tight"}
     if pad_inches is not None:
         kwargs["pad_inches"] = pad_inches
     fig.savefig(buf, **kwargs)
     if close:
         plt.close(fig)
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Figure builders (AJNR)
+# ---------------------------------------------------------------------------
+
+def roc_auc(y_true, y_score) -> float:
+    """ROC AUC for a binary label, via the Mann-Whitney statistic.
+
+    Equivalent to ``sklearn.metrics.roc_auc_score`` — tied scores take the
+    mid-rank, which is exactly the half-credit the trapezoidal ROC gives them —
+    but without sklearn's per-call input validation. That validation dominates
+    the cost inside a bootstrap loop, where this is called thousands of times
+    on arrays that are already clean.
+
+    Returns NaN when one class is absent, where AUC is undefined.
+    """
+    y_true = np.asarray(y_true)
+    y_score = np.asarray(y_score, dtype=float)
+    order = np.argsort(y_score, kind="mergesort")
+    ordered = y_score[order]
+    n = ordered.size
+    starts = np.flatnonzero(np.r_[True, ordered[1:] != ordered[:-1]])
+    bounds = np.r_[starts, n]
+    # Average rank shared by each run of equal scores, 1-based.
+    group_rank = (bounds[:-1] + bounds[1:] + 1) / 2.0
+    ranks = np.empty(n, dtype=float)
+    ranks[order] = np.repeat(group_rank, np.diff(bounds))
+
+    pos = y_true == 1
+    n_pos = int(pos.sum())
+    n_neg = n - n_pos
+    if n_pos == 0 or n_neg == 0:
+        return float("nan")
+    return float((ranks[pos].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
+
+
+def auc_ci(y, score, n_boot=2000, seed=42, alpha=0.05):
+    """Stratified bootstrap percentile 95% CI for AUC. Returns (auc, lo, hi)."""
+    y = np.asarray(y).astype(int)
+    score = np.asarray(score, dtype=float)
+    point = roc_auc(y, score)
+    rng = np.random.default_rng(seed)
+    idx_pos, idx_neg = np.where(y == 1)[0], np.where(y == 0)[0]
+    boots = np.empty(n_boot)
+    for b in range(n_boot):
+        s = np.concatenate([rng.choice(idx_pos, idx_pos.size, replace=True),
+                            rng.choice(idx_neg, idx_neg.size, replace=True)])
+        boots[b] = roc_auc(y[s], score[s])
+    lo, hi = np.percentile(boots, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return point, lo, hi
+
+
+def youden_point(y, score):
+    """Return (fpr, tpr, threshold) maximising the Youden index."""
+    from sklearn.metrics import roc_curve
+
+    fpr, tpr, thr = roc_curve(y, score)
+    j = np.argmax(tpr - fpr)
+    return fpr[j], tpr[j], thr[j]
+
+
+def _lowess(y, x, frac=0.75):
+    try:
+        from statsmodels.nonparametric.smoothers_lowess import lowess as _sm
+        out = _sm(y, x, frac=frac, return_sorted=True)
+        return out[:, 0], out[:, 1]
+    except ImportError:
+        order = np.argsort(x)
+        xs, ys = x[order], y[order]
+        n = xs.size
+        w = max(int(frac * n), 3)
+        fit = np.empty(n)
+        for i in range(n):
+            d = np.abs(xs - xs[i])
+            h = np.sort(d)[w - 1] or 1e-9
+            u = np.clip(d / h, 0, 1)
+            wt = (1 - u ** 3) ** 3
+            X = np.vstack([np.ones(n), xs - xs[i]]).T
+            W = wt[:, None]
+            beta = np.linalg.lstsq((X * W).T @ X, (X * W).T @ ys, rcond=None)[0]
+            fit[i] = beta[0]
+        return xs, fit
+
+
+def calibration_metrics(y, p, eps=1e-6):
+    """Calibration intercept (ideal 0), slope (ideal 1), and Brier score."""
+    from scipy.optimize import brentq
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import brier_score_loss
+
+    y = np.asarray(y, dtype=float)
+    p = np.clip(np.asarray(p, dtype=float), eps, 1 - eps)
+    lp = np.log(p / (1 - p))
+    slope = LogisticRegression(C=np.inf, solver="lbfgs", max_iter=1000)\
+        .fit(lp.reshape(-1, 1), y).coef_[0][0]
+
+    def score(a):
+        return np.sum(y - 1.0 / (1.0 + np.exp(-(a + lp))))
+    intercept = brentq(score, -20, 20)
+    return dict(intercept=float(intercept), slope=float(slope),
+                brier=float(brier_score_loss(y, p)))
+
+
+def forest_row_order(est, lo=None, hi=None, *, ref=1.0) -> np.ndarray:
+    """Row order for a forest: all rows together, estimate descending."""
+    del lo, hi, ref
+    return np.argsort(-np.asarray(est, dtype=float))
+
+
+def forest_lr(labels, est, lo, hi, *, n_hg=None, n_g1=None, ref=1.0,
+              xlabel="Positive likelihood ratio (95% CI)", value_header="LR+ (95% CI)",
+              title=None, width=7.0, row_h=0.30, log=True, ax=None, ns=None):
+    """Forest plot for LR+ or OR. Rows whose CI crosses ``ref`` are drawn grey.
+    All rows share one ranking by the estimate, descending.
+
+    ``ns`` optionally marks extra rows as non-significant (e.g. an FDR-p above
+    alpha). It only ever adds grey: a row whose interval crosses ``ref`` stays
+    grey whatever ``ns`` says, so a full-ink row never straddles the null.
+    """
+    del n_hg, n_g1
+    order = forest_row_order(est, lo, hi, ref=ref)
+    labels = [labels[i] for i in order]
+    est = np.asarray(est, dtype=float)[order]
+    lo = np.asarray(lo, dtype=float)[order]
+    hi = np.asarray(hi, dtype=float)[order]
+    ns = None if ns is None else np.asarray(ns, dtype=bool)[order]
+    k = len(labels)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(width, max(2.2, row_h * k + 1.0)))
+    else:
+        fig = ax.figure
+    y = np.arange(k)[::-1]
+    crosses = (lo <= ref) & (hi >= ref)
+    if ns is not None:
+        crosses = crosses | ns
+
+    for i, yy in enumerate(y):
+        c = NS if crosses[i] else OKABE["black"]
+        ax.plot([lo[i], hi[i]], [yy, yy], color=c, lw=1.1, solid_capstyle="butt", zorder=2)
+        ax.plot([est[i]], [yy], marker="s", ms=mpl.rcParams["lines.markersize"],
+                color=c, zorder=3)
+        if crosses[i]:
+            ax.axhspan(yy - 0.5, yy + 0.5, color=OKABE["lightgrey"], alpha=0.35, zorder=0)
+
+    ax.axvline(ref, color=OKABE["black"], lw=0.8, ls="--", zorder=1)
+    if log:
+        ax.set_xscale("log")
+        ticks = [0.1, 0.25, 0.5, 1, 2, 4, 8]
+        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.xaxis.set_major_formatter(FixedFormatter([str(t) for t in ticks]))
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.set_ylim(-0.7, k - 0.3)
+    ax.set_xlabel(xlabel)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+
+    for i, yy in enumerate(y):
+        ax.text(1.02, yy, f"{est[i]:.2f} ({lo[i]:.2f}\u2013{hi[i]:.2f})",
+                transform=ax.get_yaxis_transform(), va="center", ha="left",
+                fontsize=mpl.rcParams["ytick.labelsize"],
+                color=NS if crosses[i] else OKABE["black"], clip_on=False)
+    ax.text(1.02, k - 0.15, value_header, transform=ax.get_yaxis_transform(),
+            va="center", ha="left", fontweight="bold",
+            fontsize=mpl.rcParams["ytick.labelsize"], clip_on=False)
+    _title(ax, title)
+    return fig, ax
+
+
+def roc_panel(curves, *, title=None, mark_youden=True, ax=None, figsize=(3.6, 3.6),
+              n_boot=1000):
+    """ROC panel. Each curve is ``name`` + ``color`` and either ``y``/``score``
+    or precomputed ``fpr``/``tpr`` (optional ``auc``, ``auc_lo``, ``auc_hi``, ``n``).
+    """
+    from sklearn.metrics import roc_curve
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    ax.plot([0, 1], [0, 1], ls=":", lw=0.9, color=OKABE["grey"], zorder=0)
+
+    for c in curves:
+        color = c.get("color", OKABE["blue"])
+        name = c.get("name", "Model")
+        if "fpr" in c and "tpr" in c:
+            fpr = np.asarray(c["fpr"], dtype=float)
+            tpr = np.asarray(c["tpr"], dtype=float)
+            a = c.get("auc")
+            lo, hi = c.get("auc_lo"), c.get("auc_hi")
+            n = c.get("n")
+            if a is None:
+                label = name
+            elif lo is not None and hi is not None:
+                n_bit = f"; n = {int(n)}" if n is not None else ""
+                label = f"{name}\nAUC {float(a):.2f} (95% CI {float(lo):.2f}\u2013{float(hi):.2f}){n_bit}"
+            else:
+                label = f"{name}\nAUC {float(a):.3f}"
+        else:
+            y, s = np.asarray(c["y"]), np.asarray(c["score"], dtype=float)
+            m = ~np.isnan(s)
+            y, s = y[m], s[m]
+            fpr, tpr, _ = roc_curve(y, s)
+            a, lo, hi = auc_ci(y, s, n_boot=n_boot)
+            label = f"{name}\nAUC {a:.2f} (95% CI {lo:.2f}\u2013{hi:.2f}); n = {y.size}"
+            n = y.size
+        ax.plot(fpr, tpr, color=color, label=label)
+        if mark_youden and len(fpr):
+            j = int(np.argmax(np.asarray(tpr) - np.asarray(fpr)))
+            ax.plot([fpr[j]], [tpr[j]], "o", ms=mpl.rcParams["lines.markersize"],
+                    mfc="white", mec=color, mew=1.4, zorder=4)
+
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_aspect("equal")
+    ax.set_xlabel("1 \u2212 specificity")
+    ax.set_ylabel("Sensitivity")
+    ax.legend(loc="lower right", handlelength=1.4, labelspacing=0.8, borderpad=0.2)
+    _title(ax, title)
+    return fig, ax
+
+
+def calibration_plot(y=None, p=None, *, n_bins=10, title=None, curve_color=None,
+                     show_hist=True, figsize=(3.6, 4.0), frac=0.75, label=None,
+                     bins=None, smooth=None, metrics=None, ax=None):
+    """Flexible calibration curve. Raw ``y``/``p`` compute LOWESS + bins +
+    metrics; otherwise draw stored ``bins`` / ``smooth`` / ``metrics``.
+    """
+    curve_color = curve_color or OKABE["blue"]
+    y_arr = None if y is None else np.asarray(y).astype(int)
+    p_arr = None if p is None else np.asarray(p, dtype=float)
+    can_hist = show_hist and ax is None and y_arr is not None and p_arr is not None
+
+    if ax is not None:
+        fig = ax.figure
+        axh = None
+    elif can_hist:
+        fig, (ax, axh) = plt.subplots(
+            2, 1, figsize=figsize, sharex=True,
+            gridspec_kw=dict(height_ratios=[4, 1], hspace=0.06))
+    else:
+        fig, ax = plt.subplots(figsize=(figsize[0], figsize[0]))
+        axh = None
+
+    ax.plot([0, 1], [0, 1], ls=":", lw=0.9, color=OKABE["grey"], zorder=0,
+            label="Ideal")
+
+    if y_arr is not None and p_arr is not None:
+        xs, fit = _lowess(y_arr.astype(float), p_arr, frac=frac)
+        ax.plot(xs, np.clip(fit, 0, 1), color=curve_color,
+                lw=mpl.rcParams["lines.linewidth"], zorder=3,
+                label=label or "Flexible calibration")
+        rng = np.random.default_rng(7)
+        grid = np.linspace(p_arr.min(), p_arr.max(), 100)
+        boots = []
+        for _ in range(300):
+            idx = rng.integers(0, y_arr.size, y_arr.size)
+            bx, bf = _lowess(y_arr[idx].astype(float), p_arr[idx], frac=frac)
+            boots.append(np.interp(grid, bx, bf))
+        lo, hi = np.percentile(np.vstack(boots), [2.5, 97.5], axis=0)
+        ax.fill_between(grid, np.clip(lo, 0, 1), np.clip(hi, 0, 1),
+                        color=curve_color, alpha=0.18, lw=0, zorder=2)
+        edges = np.quantile(p_arr, np.linspace(0, 1, n_bins + 1))
+        edges[-1] += 1e-9
+        bi = np.digitize(p_arr, edges[1:-1])
+        mx = np.array([p_arr[bi == b].mean() for b in range(n_bins)])
+        my = np.array([y_arr[bi == b].mean() for b in range(n_bins)])
+        ax.plot(mx, my, "s", ms=mpl.rcParams["lines.markersize"], color=OKABE["black"],
+                zorder=4, label=f"Observed, {n_bins} equal-size groups")
+        m = metrics or calibration_metrics(y_arr, p_arr)
+    else:
+        if smooth and smooth.get("predicted"):
+            ax.plot(smooth["predicted"], smooth["observed"], color=curve_color,
+                    lw=mpl.rcParams["lines.linewidth"], zorder=3,
+                    label=label or "Flexible calibration")
+        if bins:
+            mx = np.array([float(b["predicted"]) for b in bins])
+            my = np.array([float(b["observed"]) for b in bins])
+            ax.plot(mx, my, "s", ms=mpl.rcParams["lines.markersize"],
+                    color=OKABE["black"], zorder=4,
+                    label=f"Observed, {len(bins)} equal-size groups")
+        m = metrics or {}
+
+    if m:
+        intercept = m.get("intercept", m.get("intercept_corrected",
+                                             m.get("intercept_apparent")))
+        slope = m.get("slope", m.get("slope_corrected", m.get("slope_apparent")))
+        brier = m.get("brier")
+        lines = []
+        if intercept is not None and np.isfinite(float(intercept)):
+            lines.append(f"Calibration intercept {float(intercept):.2f}")
+        if slope is not None and np.isfinite(float(slope)):
+            lines.append(f"Calibration slope {float(slope):.2f}")
+        if brier is not None and np.isfinite(float(brier)):
+            lines.append(f"Brier score {float(brier):.3f}")
+        if lines:
+            ax.text(0.03, 0.97, "\n".join(lines), transform=ax.transAxes,
+                    va="top", ha="left", fontsize=mpl.rcParams["xtick.labelsize"])
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_ylabel("Observed proportion, WHO CNS grade 2\u20133")
+    ax.legend(loc="lower right", handlelength=1.4, borderpad=0.2)
+    _title(ax, title)
+
+    if axh is not None:
+        axh.hist(p_arr[y_arr == 0], bins=np.linspace(0, 1, 41), color=G1, alpha=0.65, lw=0)
+        axh.hist(p_arr[y_arr == 1], bins=np.linspace(0, 1, 41), color=HG, alpha=0.65, lw=0)
+        axh.set_yticks([])
+        axh.spines["left"].set_visible(False)
+        axh.set_xlabel("Predicted probability of WHO CNS grade 2\u20133")
+    else:
+        ax.set_xlabel("Predicted probability of WHO CNS grade 2\u20133")
+    return fig, ax
+
+
+def decision_curve(y=None, models=None, *, thresholds=None, title=None, ax=None,
+                   figsize=(4.0, 3.4), series=None, prevalence=None):
+    """Net benefit vs threshold. Raw ``y`` + ``models`` dict, or stored
+    ``series`` mapping name → (thresholds, net_benefit).
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    palette = [OKABE["blue"], OKABE["vermilion"], OKABE["green"], OKABE["purple"]]
+
+    if series is not None:
+        model_i = 0
+        for name, (t, nb) in series.items():
+            t = np.asarray(t, dtype=float)
+            nb = np.asarray(nb, dtype=float)
+            if name == "Treat all":
+                ax.plot(t, nb, color=OKABE["grey"], lw=1.0, ls="--", label="Treat all")
+            elif name == "Treat none":
+                ax.axhline(0, color=OKABE["black"], lw=0.8, label="Treat none")
+            else:
+                ax.plot(t, nb, color=palette[model_i % len(palette)], label=name)
+                model_i += 1
+        nb_vals = np.concatenate([np.asarray(v[1], dtype=float) for v in series.values()])
+        prev = 0.3 if prevalence is None else float(prevalence)
+        finite = nb_vals[np.isfinite(nb_vals)]
+        top = float(np.nanmax(finite)) if finite.size else prev
+        ax.set_ylim(min(-0.02, prev * -0.15), max(prev * 1.05, top * 1.05))
+    else:
+        y = np.asarray(y).astype(int)
+        n = y.size
+        thresholds = np.linspace(0.01, 0.60, 120) if thresholds is None else thresholds
+        prev = y.mean()
+        nb_all = prev - (1 - prev) * thresholds / (1 - thresholds)
+        ax.plot(thresholds, nb_all, color=OKABE["grey"], lw=1.0, ls="--", label="Treat all")
+        ax.axhline(0, color=OKABE["black"], lw=0.8, label="Treat none")
+        for (name, p), c in zip((models or {}).items(), palette):
+            p = np.asarray(p, dtype=float)
+            nb = []
+            for t in thresholds:
+                pred = p >= t
+                tp = np.sum(pred & (y == 1)) / n
+                fp = np.sum(pred & (y == 0)) / n
+                nb.append(tp - fp * t / (1 - t))
+            ax.plot(thresholds, nb, color=c, label=name)
+        ax.set_ylim(min(-0.02, prev * -0.15), prev * 1.05)
+
+    ax.set_xlabel("Threshold probability")
+    ax.set_ylabel("Net benefit")
+    ax.legend(loc="upper right", handlelength=1.4, borderpad=0.2)
+    _title(ax, title)
+    return fig, ax

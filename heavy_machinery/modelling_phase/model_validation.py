@@ -7,14 +7,16 @@ Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients merge
 
 from __future__ import annotations
 
+import os
 from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
 from scipy.optimize import brentq
-from sklearn.metrics import brier_score_loss, roc_auc_score, roc_curve
+from sklearn.metrics import roc_curve
 
+from plot_style import roc_auc as _auc
 from schema_infer import ColSpec
 
 from heavy_machinery.config import load
@@ -49,25 +51,42 @@ def build_complete_case_frame(
     return out, design_cols
 
 
-def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+# ---------------------------------------------------------------------------
+# Inner-loop primitives
+# ---------------------------------------------------------------------------
+# Everything below runs ~1000 times per model. The pandas/sklearn wrappers cost
+# far more than the arithmetic at this sample size, so the loop works on plain
+# float64 arrays. The numbers are unchanged: statsmodels unwraps a DataFrame to
+# the same ndarray before fitting, and ``plot_style.roc_auc``/``_brier`` are the
+# closed forms of the sklearn metrics they replace (see test_model_validation.py).
+
+
+def _brier(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Mean squared error of the predicted risk — ``brier_score_loss`` verbatim."""
+    return float(np.mean((y_pred - y_true) ** 2))
+
+
+def _logit_clipped(y_pred: np.ndarray) -> np.ndarray:
+    """Log-odds of a predicted risk, clipped off 0 and 1 so the log is finite."""
     eps = 1e-6
     p = np.clip(np.asarray(y_pred, dtype=float), eps, 1 - eps)
-    logit_pred = np.log(p / (1 - p))
-    y = pd.Series(y_true).reset_index(drop=True).astype(int)
-    X = sm.add_constant(pd.DataFrame({"logit_pred": logit_pred}), has_constant="add")
-    cal_model = sm.Logit(y, X).fit(disp=False)
-    return float(cal_model.params["logit_pred"])
+    return np.log(p / (1 - p))
+
+
+def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    logit_pred = _logit_clipped(y_pred)
+    y = np.asarray(y_true).astype(int)
+    # [const, logit_pred] — the column order sm.add_constant(prepend=True) uses.
+    X = np.column_stack([np.ones(y.size), logit_pred])
+    return float(sm.Logit(y, X).fit(disp=False).params[1])
 
 
 def _calibration_intercept(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """Calibration-in-the-large: offset of the logit with the slope fixed at 1."""
-    eps = 1e-6
-    p = np.clip(np.asarray(y_pred, dtype=float), eps, 1 - eps)
-    offset = np.log(p / (1 - p))
-    y = pd.Series(y_true).reset_index(drop=True).astype(int)
-    X = sm.add_constant(pd.DataFrame({"_": np.zeros(len(y))}), has_constant="add")
-    fit = sm.Logit(y, X[["const"]], offset=offset).fit(disp=False)
-    return float(fit.params["const"])
+    offset = _logit_clipped(y_pred)
+    y = np.asarray(y_true).astype(int)
+    X = np.ones((y.size, 1))
+    return float(sm.Logit(y, X, offset=offset).fit(disp=False).params[0])
 
 
 def _calibration_data(
@@ -203,15 +222,20 @@ def bootstrap_internal_validation(
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
 ) -> dict[str, Any]:
     """Apparent + optimism-corrected metrics and ROC points for the development sample."""
-    y_orig = model_df[target].astype(int)
-    X_orig = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
-    apparent_fit = sm.Logit(y_orig, X_orig).fit(disp=False)
-    y_pred_apparent = apparent_fit.predict(X_orig).values
-    y_arr = y_orig.values
+    y_arr = model_df[target].astype(int).to_numpy()
+    n_rows = y_arr.size
+    # Design matrix built once as float64 with the constant prepended, matching
+    # sm.add_constant(..., has_constant="add"). Resampling then indexes rows of
+    # this array instead of rebuilding a DataFrame 1000 times.
+    X_orig = np.column_stack(
+        [np.ones(n_rows), model_df[design_cols].astype(float).to_numpy()]
+    )
+    apparent_fit = sm.Logit(y_arr, X_orig).fit(disp=False)
+    y_pred_apparent = np.asarray(apparent_fit.predict(X_orig), dtype=float)
 
-    auc_app = roc_auc_score(y_arr, y_pred_apparent)
-    brier_app = brier_score_loss(y_arr, y_pred_apparent)
-    baseline_brier = brier_score_loss(y_arr, np.repeat(y_arr.mean(), len(y_arr)))
+    auc_app = _auc(y_arr, y_pred_apparent)
+    brier_app = _brier(y_arr, y_pred_apparent)
+    baseline_brier = _brier(y_arr, np.repeat(y_arr.mean(), n_rows))
     # Development-sample logistic has apparent calibration slope ≈ 1 and apparent
     # calibration-in-the-large ≈ 0 by construction. Both are measured rather than
     # asserted for the intercept, because a near-separable fit can drift off zero.
@@ -224,32 +248,34 @@ def bootstrap_internal_validation(
     intercept_optimisms: list[float] = []
 
     for i in range(n_bootstrap):
-        boot_df = model_df.sample(n=len(model_df), replace=True, random_state=i).reset_index(drop=True)
-        y_boot = boot_df[target].astype(int)
-        X_boot = sm.add_constant(boot_df[design_cols].astype(float), has_constant="add")
+        # Same draws as ``model_df.sample(replace=True, random_state=i)``, which
+        # is RandomState(i).choice under the hood — the resamples are unchanged.
+        idx = np.random.RandomState(i).choice(n_rows, size=n_rows, replace=True)
+        y_boot = y_arr[idx]
+        X_boot = X_orig[idx]
 
         try:
             boot_result = sm.Logit(y_boot, X_boot).fit(disp=False)
-            pred_boot = boot_result.predict(X_boot)
-            pred_orig = boot_result.predict(X_orig)
+            pred_boot = np.asarray(boot_result.predict(X_boot), dtype=float)
+            pred_orig = np.asarray(boot_result.predict(X_orig), dtype=float)
 
             auc_optimisms.append(
-                roc_auc_score(y_boot, pred_boot) - roc_auc_score(y_orig, pred_orig)
+                _auc(y_boot, pred_boot) - _auc(y_arr, pred_orig)
             )
             brier_optimisms.append(
-                brier_score_loss(y_orig, pred_orig) - brier_score_loss(y_boot, pred_boot)
+                _brier(y_arr, pred_orig) - _brier(y_boot, pred_boot)
             )
             slope_optimisms.append(
-                _calibration_slope(y_boot.values, pred_boot.values)
-                - _calibration_slope(y_orig.values, pred_orig.values)
+                _calibration_slope(y_boot, pred_boot)
+                - _calibration_slope(y_arr, pred_orig)
             )
             # Calibration-in-the-large drifts under resampling for the same
             # reason the slope does, and a model can be well-calibrated in
             # slope while systematically over- or under-predicting. Correcting
             # only the slope reports half the calibration.
             intercept_optimisms.append(
-                _calibration_intercept(y_boot.values, pred_boot.values)
-                - _calibration_intercept(y_orig.values, pred_orig.values)
+                _calibration_intercept(y_boot, pred_boot)
+                - _calibration_intercept(y_arr, pred_orig)
             )
         except Exception:
             continue
@@ -422,3 +448,106 @@ def enrich_streamlit_artifact(
             "1 = high-grade meningioma, 0 = non-high-grade meningioma"
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# Running several model validations at once
+# ---------------------------------------------------------------------------
+# Each model's bootstrap is self-contained — same resamples, same fits, same
+# numbers whether it runs alone or beside the others. Only the wall clock
+# changes, which makes this the one speedup that cannot move a published
+# figure. The caps below are what keep it laptop-friendly rather than maximal.
+
+MAX_VALIDATION_WORKERS = 4
+#: Cores deliberately left for the OS, the browser, and the rest of the pipeline.
+RESERVED_CORES = 2
+#: Override the worker count, e.g. ATYPIER_VALIDATION_WORKERS=1 to force sequential.
+WORKERS_ENV = "ATYPIER_VALIDATION_WORKERS"
+
+
+def _on_battery() -> bool:
+    """True on macOS running unplugged. Detection failure counts as plugged in."""
+    try:
+        from missingness_resolution import _macos_on_battery
+
+        return _macos_on_battery()
+    except Exception:
+        return False
+
+
+def validation_workers(n_tasks: int) -> int:
+    """Processes to use for ``n_tasks`` model validations — conservative by design.
+
+    One process on battery (spinning up every core is what empties it), never
+    more than :data:`MAX_VALIDATION_WORKERS`, and always ``RESERVED_CORES``
+    left free so the machine stays responsive.
+
+    ``ATYPIER_VALIDATION_WORKERS`` overrides all of that, still bounded by the
+    task count, for a plugged-in batch run or to force the sequential path.
+    """
+    if n_tasks <= 1:
+        return 1
+    override = os.environ.get(WORKERS_ENV, "").strip()
+    if override:
+        try:
+            return max(1, min(int(override), n_tasks))
+        except ValueError:
+            raise ValueError(
+                f"{WORKERS_ENV}={override!r} is not a whole number of workers"
+            ) from None
+    if _on_battery():
+        return 1
+    usable = (os.cpu_count() or 1) - RESERVED_CORES
+    return max(1, min(MAX_VALIDATION_WORKERS, usable, n_tasks))
+
+
+def _enrich_or_keep(
+    artifact: dict[str, Any],
+    model_df: pd.DataFrame,
+    design_cols: list[str],
+    *,
+    n_bootstrap: int,
+) -> dict[str, Any]:
+    """Enrich one artifact, falling back to the plain artifact if validation fails.
+
+    Module-level (not a closure) so it can be shipped to a worker process.
+    """
+    try:
+        return enrich_streamlit_artifact(
+            artifact, model_df, design_cols, n_bootstrap=n_bootstrap,
+        )
+    except (ValueError, RuntimeError):
+        return artifact
+
+
+def enrich_streamlit_artifacts(
+    jobs: Sequence[tuple[dict[str, Any], pd.DataFrame, list[str]]],
+    *,
+    n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
+) -> list[dict[str, Any]]:
+    """Validate several models, concurrently when that is safe. Order is preserved."""
+    if not jobs:
+        return []
+    n_workers = validation_workers(len(jobs))
+    if n_workers == 1:
+        # No pool, no process startup — the same code path as before.
+        return [
+            _enrich_or_keep(a, m, d, n_bootstrap=n_bootstrap) for a, m, d in jobs
+        ]
+
+    from joblib import Parallel, delayed, parallel_config
+
+    print(
+        f"🔀 Validating {len(jobs)} models on {n_workers} processes "
+        f"({os.cpu_count()} cores, {RESERVED_CORES} held back)…",
+        flush=True,
+    )
+    # inner_max_num_threads=1: each worker's BLAS must not also fan out, or
+    # n_workers x BLAS threads oversubscribes the machine and runs slower hot.
+    with parallel_config(backend="loky", inner_max_num_threads=1):
+        return list(
+            Parallel(n_jobs=n_workers)(
+                delayed(_enrich_or_keep)(a, m, d, n_bootstrap=n_bootstrap)
+                for a, m, d in jobs
+            )
+        )

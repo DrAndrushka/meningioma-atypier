@@ -7,7 +7,11 @@ import pandas as pd
 import pytest
 
 from model_calculator import calculator_meta_to_streamlit_artifact
-from model_validation import bootstrap_internal_validation, enrich_streamlit_artifact
+import model_validation as mv
+from model_validation import (
+    bootstrap_internal_validation,
+    enrich_streamlit_artifact,
+)
 
 
 @pytest.fixture
@@ -182,3 +186,94 @@ def test_bootstrap_default_comes_from_shared_config():
     for fn in (bootstrap_internal_validation, enrich_streamlit_artifact):
         sig = inspect.signature(fn)
         assert sig.parameters["n_bootstrap"].default == analysis.BOOTSTRAP_RESAMPLES
+
+
+# ---------------------------------------------------------------------------
+# Parallel validation policy
+# ---------------------------------------------------------------------------
+# Running the model validations side by side must stay a wall-clock change and
+# nothing else, and it must stay polite on a laptop.
+
+def test_a_single_model_never_starts_a_pool(monkeypatch):
+    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
+    monkeypatch.setattr(mv, "_on_battery", lambda: False)
+    assert mv.validation_workers(1) == 1
+    assert mv.validation_workers(0) == 1
+
+
+def test_battery_power_forces_sequential(monkeypatch):
+    """Unplugged, spinning up every core is exactly what empties the battery."""
+    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
+    monkeypatch.setattr(mv, "_on_battery", lambda: True)
+    assert mv.validation_workers(7) == 1
+
+
+def test_worker_count_is_capped_and_leaves_cores_free(monkeypatch):
+    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
+    monkeypatch.setattr(mv, "_on_battery", lambda: False)
+    monkeypatch.setattr(mv.os, "cpu_count", lambda: 64)
+    assert mv.validation_workers(50) == mv.MAX_VALIDATION_WORKERS
+
+    monkeypatch.setattr(mv.os, "cpu_count", lambda: 4)
+    assert mv.validation_workers(50) == 4 - mv.RESERVED_CORES
+
+    monkeypatch.setattr(mv.os, "cpu_count", lambda: 2)
+    assert mv.validation_workers(50) == 1  # never zero or negative
+
+
+def test_worker_count_never_exceeds_the_number_of_models(monkeypatch):
+    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
+    monkeypatch.setattr(mv, "_on_battery", lambda: False)
+    monkeypatch.setattr(mv.os, "cpu_count", lambda: 64)
+    assert mv.validation_workers(2) == 2
+
+
+def test_env_override_wins_over_the_battery_check(monkeypatch):
+    monkeypatch.setattr(mv, "_on_battery", lambda: True)
+    monkeypatch.setenv(mv.WORKERS_ENV, "3")
+    assert mv.validation_workers(7) == 3
+    monkeypatch.setenv(mv.WORKERS_ENV, "1")
+    assert mv.validation_workers(7) == 1
+
+
+def test_a_nonsense_worker_override_is_refused(monkeypatch):
+    monkeypatch.setenv(mv.WORKERS_ENV, "lots")
+    with pytest.raises(ValueError, match="whole number of workers"):
+        mv.validation_workers(7)
+
+
+def test_parallel_and_sequential_validation_agree(tiny_model_df, monkeypatch):
+    """The published numbers must not depend on how many processes ran."""
+    df, design_cols, _ = tiny_model_df
+    meta = {
+        "target": "event",
+        "intercept": -0.5,
+        "terms": [{"name": c, "kind": "binary", "coef": 0.3} for c in design_cols],
+    }
+    art = calculator_meta_to_streamlit_artifact(meta, n=len(df), events=None)
+    jobs = [(art, df, design_cols), (art, df, design_cols)]
+
+    monkeypatch.setenv(mv.WORKERS_ENV, "1")
+    seq = mv.enrich_streamlit_artifacts(jobs, n_bootstrap=40)
+    monkeypatch.setenv(mv.WORKERS_ENV, "2")
+    par = mv.enrich_streamlit_artifacts(jobs, n_bootstrap=40)
+
+    assert len(seq) == len(par) == 2
+    assert [s["validation"] for s in seq] == [p["validation"] for p in par]
+
+
+def test_a_model_that_cannot_be_validated_keeps_its_plain_artifact(monkeypatch):
+    """One unfittable model must not take the other six down with it."""
+    monkeypatch.setenv(mv.WORKERS_ENV, "1")
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("Bootstrap internal validation failed for all resamples")
+
+    monkeypatch.setattr(mv, "enrich_streamlit_artifact", boom)
+    art = {"target": "event", "coefficients": {}}
+    df = pd.DataFrame({"event": [1, 0], "x": [1.0, 2.0]})
+    assert mv.enrich_streamlit_artifacts([(art, df, ["x"])], n_bootstrap=5) == [art]
+
+
+def test_no_models_is_not_an_error():
+    assert mv.enrich_streamlit_artifacts([]) == []

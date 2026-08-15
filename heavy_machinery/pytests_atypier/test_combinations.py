@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 import combinations as cb
-from thresholds import Metric
+from marker_rules import Metric
 
 TARGET = "high_grade"
 A = Metric("a", "Metric A", "u", "higher")

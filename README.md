@@ -45,7 +45,7 @@ meningioma-atypier/
 ├── app.py                          # 🌐 Streamlit calculator entry point
 ├── meningioma-cleaning.ipynb       # 🧹 Cohort cleaning → output/datasets/ (run first)
 ├── meningioma-modelling.ipynb      # 🧠 EDA + multivariable + report (run second)
-├── meningioma-thresholder.ipynb    # 🎯 Cut-points, risk curves, combinations (independent)
+├── meningioma-cutpoints.ipynb      # 🎯 Cut-points, step by step → manuscript tables (run third)
 ├── aesthetics_experiments.ipynb    # 🎨 Local graph / e-poster prototyping (optional, gitignored)
 ├── pytest.ini                      # 🧪 Test discovery (repo root)
 ├── pyrightconfig.json              # 🔍 basedpyright extraPaths for phase imports
@@ -64,10 +64,11 @@ meningioma-atypier/
 │   │   ├── figures/                # Forest, ROC, calibration, decision curve,
 │   │   │                           #   and the model-comparison figure
 │   │   └── model_artifacts/        # Streamlit JSON per model variant
-│   ├── thresholds/                 # 🎯 Threshold phase — read by nothing else
-│   │   ├── figures/                # Risk curves, ROC trade-offs, count score
-│   │   ├── tables/                 # Cut-points, combinations, stability
-│   │   └── manifest.json           # What the run wrote + the settings behind it
+│   ├── cutpoints/                  # 🎯 Cut-point phase — read by nothing else
+│   │   ├── figures/                # fig_1_cutpoints, fig_2_decision (TIFF + PNG)
+│   │   ├── tables/                 # table_1.docx, supplemental_tables.docx (S1–S4)
+│   │   ├── cutpoint_report.html    # Proof sheet: dashboard, every table, both figures
+│   │   └── manifest.json           # Commit, library versions, seeds, hash of every file
 │   └── report/report.html
 └── heavy_machinery/                # 📚 Pipeline library code
     ├── cleaning_phase/             # 🧹 Schema, cleaning, DDA, MICE, handoff, validation
@@ -84,18 +85,22 @@ meningioma-atypier/
     │   ├── model_validation.py
     │   ├── model_calculator.py
     │   ├── marker_panel.py         # 🔬 §04.5 marker panel — the two study aims
+    │   ├── marker_rules.py         # Metric, ROC table, five cut-point selection rules
+    │   ├── combinations.py         # AND / OR / count rules + benchmarks
+    │   ├── rule_matrix.py          # ⚡ The same rule menu as boolean arrays — for the bootstrap
+    │   ├── scales.py               # 📏 Which columns are log1p — one source of truth
     │   ├── performance_plots.py    # 📈 ROC / calibration / decision curve / comparison
     │   ├── plot_style.py           # 🎨 One shared figure toolkit for the whole pipeline
     │   └── report.py
-    ├── threshold_phase/            # 🎯 Cut-points, risk curves, multi-cut rules
-    │   ├── thresholds.py           # Metric, ROC table, five selection rules, bootstrap
-    │   ├── risk_curves.py          # Spline risk curves — the "šķēre" analysis
-    │   ├── combinations.py         # AND / OR / count rules + benchmarks
-    │   ├── rule_matrix.py          # ⚡ The same rule menu as boolean arrays — for the bootstrap
-    │   ├── stability.py            # All three re-derived across the MICE draws
-    │   ├── artifacts.py            # output/thresholds/ writer + manifest
-    │   ├── study.py                # methods facts: read from cleaning, or asked of you
-    │   └── threshold_report.py     # 📄 threshold_report.html — seven questions, seven answers
+    ├── cutpoint_phase/             # 🎯 One question per module, in notebook order
+    │   ├── loading.py · measurements.py · separation.py       # steps 1–3
+    │   ├── nonlinearity.py · bend_location.py · eligibility.py  # steps 4–5
+    │   ├── criteria.py · wobble.py · imputation.py            # steps 6–8
+    │   ├── dichotomy.py · ranking.py · collinearity.py · models.py  # steps 9–11
+    │   ├── scorecard.py · segmented.py · decision_curve.py    # steps 12–14
+    │   ├── ajnr_style.py · ajnr_format.py · figures.py        # what the journal sees
+    │   ├── docx_tables.py · manuscript_tables.py · report_html.py
+    │   └── outputs.py · manifest.py # step 15: writes files, computes nothing
     ├── config/                     # ⚙️ Pipeline config · `load("name")` (no numeric prefixes)
     │   ├── cohort.py               # load_raw + ANALYSIS_YEARS filter
     │   ├── column_rename_map.py
@@ -117,7 +122,7 @@ Run notebooks and commands from the **repo root** (`meningioma-atypier/`, same f
 | Context | How imports work |
 |---------|------------------|
 | **Notebooks** | `from heavy_machinery.config import load` and `from heavy_machinery.cleaning_phase…` / `heavy_machinery.modelling_phase…` |
-| **Library modules** | Flat sibling imports (`from schema_infer import ColSpec`, `from plot_style import …`) — `heavy_machinery.config` prepends `cleaning_phase/`, `modelling_phase/` and `threshold_phase/` to `sys.path` |
+| **Library modules** | Flat sibling imports (`from schema_infer import ColSpec`, `from plot_style import …`) — `heavy_machinery.config` prepends `cleaning_phase/`, `modelling_phase/` and `cutpoint_phase/` to `sys.path` |
 | **pytest** | Root `pytest.ini` → `heavy_machinery/pytests_atypier/` with the same `pythonpath` as above |
 | **Type checking** | `pyrightconfig.json` adds phase folders + test package to `extraPaths` |
 
@@ -266,27 +271,25 @@ Any model looks better on the patients it was built from than it will on the nex
 - **Shrinkage + intercept recalibration** → exported into each Streamlit JSON artifact
 - Feeds the three performance figures below, so the report shows the corrected numbers rather than only the flattering ones
 
-### 🎯 Thresholds (`threshold_phase/`)
+### 🎯 Cut-points (`cutpoint_phase/`)
 
-An **independent** analysis, driven by `meningioma-thresholder.ipynb`. It reads the same `output/datasets/` handoff and writes only to `output/thresholds/`, which nothing else reads. That separation is structural, not stylistic: a cut-point estimated on this cohort has already seen the outcome, so feeding it back into imputation or the multivariable models would leak the answer into the predictors. Published cut-points are the exception and live in cleaning as derived flags.
+An **independent** analysis, driven by `meningioma-cutpoints.ipynb`. It reads the same `output/datasets/` handoff and writes only to `output/cutpoints/`, which nothing else reads. That separation is structural, not stylistic: a cut-point estimated on this cohort has already seen the outcome, so feeding it back into imputation or the multivariable models would leak the answer into the predictors. Published cut-points are the exception and live in cleaning as derived flags.
 
-Three questions, deliberately kept apart because they are routinely conflated:
+The notebook is written to be read in order, one question per step, with the statistics explained rather than assumed. The five headline cut-points are **frozen** — ADC ≤ 0.72, max diameter ≥ 3.81 cm, tumour volume ≥ 15.1 cm³, oedema volume ≥ 4.76 cm³, oedema index ≥ 0.0617 — and every step that resamples is allowed to bracket them, never to move them. That is enforced by assertion (`wobble.FrozenCutpointError`), not by convention.
 
-**1. Where does risk climb most steeply?** (`risk_curves.py`) — the *"šķēre"*. A logistic regression with the metric entered as a **restricted cubic spline** (Harrell quantile knots; three knots at this sample size, reduced automatically when ties collapse them). Right-skewed metrics are fitted on `log1p(x)` and reported back on the original scale. Outputs, in decreasing order of trustworthiness: the fitted curve with a 95% band and observed proportions in equal-count bins over it; **risk-level crossings** ("risk passes 50% at X"); and the **steepest-rise point**.
+**Is a threshold even real?** (`nonlinearity.py`, `bend_location.py`) — a logistic regression with the measurement entered as a **restricted cubic spline** (Harrell quantile knots, three knots at this sample size), tested against a straight line by likelihood ratio. The test is run twice, in clinical units *and* on `log1p(x)`, because whether a curve looks bent depends on the axis it is drawn against, and a bend that survives only one scale is a claim about the axis. Only ADC bends on both. A steepest-rise point is quotable only when the bend is real and the maximum is interior to the data — otherwise the module reports that risk rises steadily and refuses to name a threshold.
 
-A steepest-rise point is only reported as a threshold when it passes two tests: a **likelihood-ratio test of the spline against a straight line** (p < 0.05), and a maximum that is **interior** to the observed range. The first is the subtle one — even a perfectly linear log-odds relationship gives an S-shaped probability curve whose slope peaks at exactly the 50% crossing, carrying no information that crossing does not already carry. Requiring real curvature first is what separates *"risk changes behaviour here"* from *"risk passes one half here"*. Where both tests fail, the module reports that risk rises steadily and refuses to name a threshold.
+**Where does the break sit?** (`segmented.py`) — a spline has no break, so its "steepest point" cannot carry an interval. **Segmented regression** fits what a threshold claim actually implies, two straight lines meeting at ψ, and estimates ψ as a parameter. Its P value carries **Davies' correction**: under the null ψ has no effect on the model at all, so the ordinary likelihood-ratio test is anti-conservative and finds breakpoints in straight lines. ΔAIC charges for both added parameters (`ΔAIC = 4 − χ²`).
 
-**2. What is the best single cut-point?** (`thresholds.py`) — the ROC table of every distinguishable cut-point, with five selection rules: `youden`, `closest_01`, `equal_sens_spec`, and the constrained `spec_ge_90` / `sens_ge_90`. Every rule takes a maximum over hundreds of candidates on the data it is then scored on, so each cut-point gets a **percentile bootstrap interval** and an **optimism-corrected Youden J** (Harrell: choose on the resample, score on the original, average the gap). Every cut-point also carries an **odds ratio with a Woolf 95% interval** (Haldane–Anscombe correction when a 2×2 cell is empty), because that is the effect size the meningioma literature quotes for a dichotomised feature — Magill 2018 reports OR 1.69 above 3 cm and 3.01 above 6 cm, and ours are read next to those. Published cut-points are scored alongside without correction — they were not estimated here, which is what makes validating an external cut-point the stronger design. The list of published cut-points and their links lives in the notebook (`LITERATURE_CUTOFFS` / `LITERATURE_LINKS`), with the outcome each was derived against in the label: only Magill's were fitted against WHO grade itself.
+**Which number, and how much does it move?** (`criteria.py`, `wobble.py`, `imputation.py`) — the ROC sweep of every distinguishable cut-point under four optimum-seeking criteria (Youden, closest-to-perfect, sens = spec, index of union) and three pre-specified ones. Each cut-point gets a **percentile bootstrap interval with the cut-point re-derived inside every resample** — evaluating one fixed value across resamples measures the stability of its performance, not of the number — plus an **optimism-corrected Youden J** scored on the patients each resample left out. Everything is then re-derived on each of the *m* = 20 MICE draws. ⚠️ The across-draw spread is **between-imputation variance only, not Rubin pooling**: a cut-point chosen by maximising J has neither a normal sampling distribution nor a within-imputation variance to combine, so it is a stability check and must never be quoted as a confidence interval.
 
-**3. Do several cut-points together beat one?** (`combinations.py`) — cut-points are **frozen first**, then only the way of joining them varies: AND, OR, and a count score ("how many of the *k* criteria are met"). Missing flags follow Kleene logic, so `False AND missing` resolves to `False`. Three benchmarks must be cleared before an improvement is claimed: the best single cut-point, a **logistic model on the uncut continuous metrics**, and the **selection optimism** of picking the winner off a menu — reported with a `winner_stability` figure, since a "best combination" that wins under half the resamples is a coin toss rather than a finding.
+**What does cutting cost?** (`dichotomy.py`, `ranking.py`, `collinearity.py`, `models.py`) — the AUC of the raw number against the AUC of the yes/no flag, compared by **DeLong on the same patients**, with the share of discriminating power retained. Spearman ρ flags pairs that move together; **VIF** then says whether they can share a model. Two pairs here sit at ρ ≈ 0.92, and max diameter's odds ratio moves from 0.90 (P = .73, VIF 6.05) in the five-predictor model to 1.38 (P = .036, VIF 1.43) in the three-predictor one — the same patients, the same measurement, opposite readings.
 
-That optimism costs a menu rebuild per resample, and the menu is large — 25 markers make 650 candidate rules. `rule_matrix.py` scores it from two boolean arrays (`present`, `observed`) instead of a pandas table, because the loop reads one column, `youden_J`, and the Wilson intervals and χ² around it were computed and discarded. Same order, same Kleene logic, same numbers to the last bit; `full_rule_menu` still builds the full table for the report. Both sides of the correction share one resample loop — they always used the same seed, so they were drawing identical resamples twice. §04.5 went from 102 minutes to 14 seconds this way, with all thirteen output CSVs byte-for-byte unchanged.
+**Is it worth acting on?** (`decision_curve.py`) — the only step whose answer a clinician can act on. **Net benefit**, `TP/n − (FP/n) × t/(1−t)`, plotted across every threshold probability *t* a reasonable reader might hold, against the two strategies available for free: treat everyone as high grade, treat no one. A rule is worth following only where its line sits above both. Both the cut-point and the same measurement kept continuous are **corrected for optimism in the same 1000 resamples and with the same seed** as the Youden J, so the comparison between "use the number" and "use the yes/no rule" is like for like.
 
-`threshold_report.py` assembles `output/thresholds/threshold_report.html` from those artifacts — no refitting, so the document and the CSVs can never disagree. It is deliberately short and written for a radiologist rather than a statistician: **seven questions**, each with a two-sentence method note, one figure, one table and one answer templated from the numbers. Detail figures sit behind folds; **§8 is a copy-paste abstract block**. **§9 is the methods section** — `study.py` reads the WHO edition, the inclusion flow and every derived measurement's source back out of `output/cleaning/`, so they cannot drift from what the code did, and lists the four acquisition facts that are not in any file (histology blinding, DWI b-values, ADC ROI, volumetry) as open questions until `STUDY_FACTS` in the notebook answers them. Regenerate any time with `python heavy_machinery/threshold_phase/threshold_report.py --output-root output`.
+`outputs.py` writes what the journal receives — `table_1.docx`, `supplemental_tables.docx` (S1–S4), two 600-dpi TIFFs — plus `cutpoint_report.html`, a self-contained proof sheet with the dashboard, every table and both figures inlined. It calculates nothing: every number arrives already estimated and already formatted, because a writer that recomputes is a second analysis, free to disagree with the first. The Word files are **audited after writing**, by re-opening the saved file rather than trusting the object in memory — borders live in the style definition rather than in the table XML, and widths are stored in twips and rounded up, so both were silently wrong until the audit read them back off disk.
 
-All three are re-derived on each of the *m* MICE draws (`stability.py`). Two uncertainties then sit side by side: the bootstrap covers sampling noise, the across-draw spread covers the missing data. ⚠️ The across-draw spread is **between-imputation variance only, not Rubin pooling** — a cut-point chosen by maximising J has neither a normal sampling distribution nor a within-imputation variance to combine, so it is a stability check and must never be quoted as a confidence interval.
-
----
+`manifest.py` records what produced the run: commit and whether the tree was dirty, Python and library versions, every seed and resample count imported from the module that owns it, a SHA-256 of the cohort file, and a hash of every file written. `mf.verify(path)` re-reads them later and names anything that has changed since.
 
 ---
 
@@ -368,7 +371,7 @@ Rscript -e 'cat("R:", as.character(getRversion()), "| mice:", as.character(packa
 cd meningioma-atypier
 jupyter notebook meningioma-cleaning.ipynb   # 1. cleaning → output/datasets/
 jupyter notebook meningioma-modelling.ipynb  # 2. analysis → output/report/
-jupyter notebook meningioma-thresholder.ipynb # 3. thresholds → output/thresholds/ (optional)
+jupyter notebook meningioma-cutpoints.ipynb   # 3. cut-points → output/cutpoints/
 ```
 
 Run each notebook top to bottom from the **repo root** (not inside `heavy_machinery/`). Cleaning writes handoff parquets under `output/datasets/`; modelling loads them and must **not** wipe `output/`. Edit `LITERATURE_MODEL_VARIANTS` and `EXPERIMENTAL_MODEL_VARIANTS` in modelling §03 before §06 multivariable cells.
@@ -417,16 +420,12 @@ cd heavy_machinery && python -m pytest   # from library folder
 | `output/inferential/figures/<target>__<model_id>__calibration.svg` | Predicted vs observed risk — does a stated 30% mean 30%? |
 | `output/inferential/figures/<target>__<model_id>__decision_curve.svg` | Whether acting on the model beats treating everyone / no one |
 | `output/inferential/figures/<target>__model_comparison.svg` | All model variants ranked side by side on our cohort |
-| `output/thresholds/tables/03_risk_curves.csv` | Non-linearity test, steepest-rise point, risk crossings per metric |
-| `output/thresholds/tables/07_threshold_summary.csv` | Every metric × rule + published cut-points, with Wilson CIs and optimism-corrected J |
-| `output/thresholds/tables/12_combination_menu.csv` | Single / AND / OR / count rules with full 2×2 metrics |
-| `output/thresholds/tables/17_combination_verdict.csv` | Does combining beat the best single cut-point, after optimism? |
-| `output/thresholds/tables/21_risk_curve_stability.csv` | How often each threshold survives the MICE draws (`knee_rate`) |
-| `output/thresholds/tables/26_headline_findings.csv` | One row per metric — the results-paragraph table |
-| `output/thresholds/figures/05_risk_curves_panel.svg` | Risk of high grade across the observed range, all metrics |
-| `output/thresholds/figures/16_count_score.svg` | Risk by number of criteria met — the clinically usable rule |
-| `output/thresholds/threshold_report.html` | Self-contained write-up: seven questions, one figure and one answer each, plus a copy-paste abstract |
-| `output/thresholds/manifest.json` | Every artifact the run wrote plus the settings that produced it |
+| `output/cutpoints/tables/table_1.docx` | Main text: does a threshold exist at all, per measurement |
+| `output/cutpoints/tables/supplemental_tables.docx` | S1 can you locate it · S2 what cutting costs · S3 presence vs amount · S4 decision curves |
+| `output/cutpoints/figures/fig_1_cutpoints.tif` | ROC curves, the flatness of the optimum, and each cut-point's interval |
+| `output/cutpoints/figures/fig_2_decision.tif` | Net benefit against treating everyone / no one, and number vs yes/no |
+| `output/cutpoints/cutpoint_report.html` | Proof sheet: dashboard, every table, both figures, one self-contained file |
+| `output/cutpoints/manifest.json` | Commit, library versions, seeds, and a hash of the cohort and every file written |
 | `output/report/report.html` | Full narrative report — major sections collapse/expand |
 | `output/inferential/tables/<target>__<model_id>__calculator.json` | Calculator metadata (intercept, terms, z-scores) per variant |
 | `output/inferential/model_artifacts/<target>_<model_id>_model.json` | Streamlit-ready shrunken model with bootstrap validation |
@@ -444,12 +443,12 @@ cd heavy_machinery && python -m pytest   # from library folder
 - **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has SVGs (grouped by the `(x, y)` pair key)
 - **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
 - **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`) with the serif face overridden to **Arial/Helvetica**, colour-blind-safe palette, single SVG export path, and clinician-friendly labels for both axes and category names (no raw `snake_case` anywhere on a figure)
-- **`prettify_label` is the one labeller.** Every section — figure axes, the marker panel, the diagnostic-accuracy table — routes column names through it, so a threshold flag reads as `ADC value ≤ 0.72` everywhere and its cut-point prints at three significant figures, the same precision the threshold phase uses on its own axes. A second labeller is how `Adc Value Le0.72` and `ADC value ≤ 0.72` once appeared in the same report
+- **`prettify_label` is the one labeller.** Every section — figure axes, the marker panel, the diagnostic-accuracy table — routes column names through it, so a threshold flag reads as `ADC value ≤ 0.72` everywhere and its cut-point prints at three significant figures, the same precision the cut-point phase uses on its own axes. A second labeller is how `Adc Value Le0.72` and `ADC value ≤ 0.72` once appeared in the same report
 - **Figures that explain themselves** — sample size, group counts, and (in EDA) the test result sit above each plot, so a figure lifted into a slide deck still carries its numbers
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
 - **Multivariable section:** a **model-comparison figure** at the top of each target (all variants ranked on the same cohort), then nested 📚 Literature-based models and 🧪 Experimental model dropdowns; per variant, a forest plot, VIF diagnostics, and a 📈 **Model performance** dropdown holding its ROC, calibration, and decision curve
-- **Marker panel section** (§04.5) — which MRI signs argue hardest for high grade, and whether a combination beats any single one. In *Against the multivariable models*, each published predictor set links out to the paper it came from; our own experimental variants show an empty cell rather than an invented citation
+- **Marker panel section** (§04.5) — which MRI signs argue hardest for high grade, and whether a combination beats any single one
 - **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
 - **Interpretation dropdowns** per EDA target and per inferential model variant
@@ -496,7 +495,7 @@ After running modelling §06, Streamlit JSON artifacts live under `output/infere
 | Commit | What landed |
 |--------|-------------|
 | `9c6db0c` · `4ad9784` · `0a6c61a` | **Modelling notebook cells hold only inputs, calls and comments.** The §04.5 cell's helper function and two dict comprehensions moved into `marker_panel.py` (which now finds its own model artifacts, MICE draws and paper links), and the §01 cell's imputation-method `if`/`else` moved into `dataset_handoff.py`. The move exposed a bug: the panel matched artifact filenames to variant ids with `str.replace("_model", "")`, which strips *every* occurrence rather than the trailing one — the two sides agreed only because both were mangled identically, and any model id carrying `_model` in the middle would have silently lost its row. `panel_key` now delegates to `inferential._artifact_model_id`. Two rows in the panel's comparison table are renamed to `Experimental model 1` / `Experimental model 2`, matching the figure captions; every other byte of `output/` is unchanged, verified against a pre-change copy. Also closed a latent trap in the same function: panel artifacts are now filtered on their own `target`, so adding a second outcome can no longer pull a foreign model into the panel and shrink the shared `n_scored` denominator for every published row. |
-| `fe01d1b` · `1006fd5` | **§04.5 marker panel: 102 minutes → 14 seconds**, with all thirteen output CSVs byte-for-byte unchanged. The selection-optimism bootstrap rebuilt a 650-rule pandas table per resample — Wilson intervals, χ² and an odds ratio per rule — and read one column of it. New `threshold_phase/rule_matrix.py` scores that column from boolean arrays instead, and both sides of the correction now share one resample loop (they always used the same seed, so they were drawing identical resamples twice). Characterization tests pin the pre-change numbers to twelve decimals. Also: each published model in the panel's comparison table now links to its paper. |
+| `fe01d1b` · `1006fd5` | **§04.5 marker panel: 102 minutes → 14 seconds**, with all thirteen output CSVs byte-for-byte unchanged. The selection-optimism bootstrap rebuilt a 650-rule pandas table per resample — Wilson intervals, χ² and an odds ratio per rule — and read one column of it. New `rule_matrix.py` (now in `modelling_phase/`) scores that column from boolean arrays instead, and both sides of the correction now share one resample loop (they always used the same seed, so they were drawing identical resamples twice). Characterization tests pin the pre-change numbers to twelve decimals. Also: each published model in the panel's comparison table now links to its paper. |
 | `4184448` | **Model performance figures** — every model variant now gets a ROC curve, a calibration plot (does a predicted 30% mean 30%?), and a decision curve (is acting on it better than treating everyone or no one?), plus one **model-comparison** figure per outcome ranking all variants on the same cohort. All of it appears in the HTML report under 📈 *Model performance*; previously these numbers existed only inside the Streamlit calculator. New module: `modelling_phase/performance_plots.py`. |
 | `4184448` | **Forest plots reworked** — colour now shows direction (raises vs lowers the odds) instead of a pass/fail significance split; rows sort strongest-first so variants are comparable; rescaled predictors say *per 1 SD* so their odds ratio is not misread as per-unit; the heading carries patients, events, and the sample-size check. |
 | `4e237c9` · `4184448` | **DDA + EDA figures rebuilt for publication** — percentage bars carry their counts and confidence intervals; distributions show every patient alongside the histogram; overlapping translucent histograms replaced with side-by-side distributions that cannot hide one another; trend lines are flexible rather than forced straight; EDA figures print their own test result; empty months are no longer dropped from timelines; category names read as English. Shared toolkit lives in `plot_style.py`. |

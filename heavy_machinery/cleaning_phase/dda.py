@@ -13,6 +13,7 @@ Artifacts → ``output/dda/``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -20,7 +21,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import skew, kurtosis, trim_mean
 
-from schema_infer import ColSpec
+from schema_infer import ColSpec, pin_positive_last
 from heavy_machinery.modelling_phase.plot_style import (
     FIG_WIDTH_DOUBLE,
     FIG_WIDTH_MEDIUM,
@@ -342,8 +343,7 @@ def _plot_continuous(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
 
     set_titles(ax_top, label, n_subtitle(n, extra=describe_continuous(vals)))
     fig.align_ylabels([ax_top, ax_hist])
-    p = out_dir / f"{name}__distribution.svg"
-    save_figure(fig, p, tight_layout=False)
+    p = save_figure(fig, out_dir / f"{name}__distribution", tight_layout=False)
     return [p]
 
 
@@ -427,8 +427,7 @@ def _plot_category_proportions(
         ax.set_xlabel(label if len(order) > 2 else "")
 
     set_titles(ax, label, n_subtitle(total, extra=note))
-    p = out_dir / f"{name}__bar.svg"
-    save_figure(fig, p)
+    p = save_figure(fig, out_dir / f"{name}__bar")
     return [p]
 
 
@@ -446,6 +445,8 @@ def _plot_ordinal(
 
 def _plot_nominal(
     s: pd.Series, name: str, out_dir: Path, top_n: int = DEFAULT_TOP_N_LEVELS,
+    *,
+    positive_class: Any = None,
 ) -> list[Path]:
     """Nominal levels sorted by frequency; the tail is pooled and disclosed."""
     nn = s.dropna()
@@ -460,14 +461,18 @@ def _plot_nominal(
         order = list(vc.head(top_n).index)
     else:
         order = list(vc.index)
+    order = pin_positive_last(order, positive_class)
     return _plot_category_proportions(s, name, out_dir, order=order, note=note)
 
 
-def _plot_binary(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
+def _plot_binary(
+    s: pd.Series, name: str, out_dir: Path, *, positive_class: Any = None,
+) -> list[Path]:
     """Absent before present, one neutral colour — no good/bad encoding.
 
     Colouring a radiological sign green/red asserts a prognostic direction the
-    descriptive stage has not established.
+    descriptive stage has not established. A declared ``positive_class`` is
+    drawn last so the bar order matches the table contrast (baseline → index).
     """
     nn = s.dropna()
     if nn.empty:
@@ -476,6 +481,7 @@ def _plot_binary(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     order = [lv for lv in (False, True) if lv in observed]
     if not order:
         order = sorted(observed, key=str)
+    order = pin_positive_last(order, positive_class)
     return _plot_category_proportions(s, name, out_dir, order=order)
 
 
@@ -509,8 +515,7 @@ def _plot_datetime(s: pd.Series, name: str, out_dir: Path) -> list[Path]:
     ax.set_ylim(0, max(float(monthly.max()) * 1.15, 1.0))
     span = f"{full_range[0]} to {full_range[-1]}"
     set_titles(ax, f"{label} — records over time", n_subtitle(int(nn.size), extra=span))
-    p = out_dir / f"{name}__timeline.svg"
-    save_figure(fig, p)
+    p = save_figure(fig, out_dir / f"{name}__timeline")
     return [p]
 
 
@@ -565,7 +570,7 @@ def _plot_continuous_density_by_categorical(
     cont_label = prettify_label(cont_col)
     cat_label = prettify_label(cat_col)
     order = _ordered_levels(plot_df[cat_col])
-    path = out_dir / f"{file_stem}.svg"
+    path = out_dir / file_stem
 
     groups = [
         plot_df.loc[plot_df[cat_col] == lv, cont_col].astype(float).dropna().to_numpy()
@@ -590,8 +595,7 @@ def _plot_continuous_density_by_categorical(
         ax, f"{cont_label} by {cat_label}",
         n_subtitle(int(len(plot_df))),
     )
-    save_figure(fig, path)
-    return path
+    return save_figure(fig, path)
 
 
 def _plot_categorical_by_categorical(
@@ -655,9 +659,8 @@ def _plot_categorical_by_categorical(
         ax, f"{by_label} within {x_label}",
         n_subtitle(int(len(plot_df)), extra="whiskers are 95% Wilson CIs"),
     )
-    path = out_dir / f"{file_stem}.svg"
-    save_figure(fig, path)
-    return path
+    path = out_dir / file_stem
+    return save_figure(fig, path)
 
 
 def _plot_bivariate(
@@ -717,9 +720,8 @@ def _plot_bivariate(
         ax.set_xlabel(x_label)
         ax.set_ylabel(by_label)
         set_titles(ax, f"{x_label} vs {by_label}", n_subtitle(n_total))
-        path = out_dir / f"{file_stem}.svg"
-        save_figure(fig, path)
-        return path
+        path = out_dir / file_stem
+        return save_figure(fig, path)
 
     # Continuous ↔ categorical — raincloud per level
     if x_cont and not by_cont:
@@ -836,8 +838,9 @@ def run_dda_bivariate(
     output_root = Path(output_root)
     figs_dir = output_root / "dda" / "figures_bivariate"
     figs_dir.mkdir(parents=True, exist_ok=True)
-    for old in figs_dir.glob("*.svg"):
-        old.unlink()
+    for pat in ("*.png", "*.tif", "*.eps", "*.svg"):
+        for old in figs_dir.glob(pat):
+            old.unlink()
 
     bivariate_specs = _filter_hidden_from_bivariate(
         bivariate_specs, _load_hidden_parent_columns(output_root),
@@ -906,7 +909,7 @@ def _plot_trivariate(
             return None
 
     file_stem = f"{x_col}__vs__{y_col}__by__{by_col}"
-    path = out_dir / f"{file_stem}.svg"
+    path = out_dir / file_stem
     x_label, y_label, by_label = (
         prettify_label(x_col), prettify_label(y_col), prettify_label(by_col),
     )
@@ -947,8 +950,7 @@ def _plot_trivariate(
                 ax, f"{x_label} vs {y_label} by {by_label}",
                 n_subtitle(n_total, extra="lines are LOESS trends"),
             )
-            save_figure(fig, path)
-            return path
+            return save_figure(fig, path)
 
         if x_cont ^ y_cont:
             cont_col, cat_col = (x_col, y_col) if x_cont else (y_col, x_col)
@@ -1013,8 +1015,7 @@ def _plot_trivariate(
                 ax, f"{cont_label} by {cat_label} × {by_label}",
                 n_subtitle(n_total),
             )
-            save_figure(fig, path)
-            return path
+            return save_figure(fig, path)
 
         # categorical × categorical × by — % within each x level, shared 0–100 y
         x_order = _ordered_levels(plot_df[x_col])
@@ -1073,8 +1074,7 @@ def _plot_trivariate(
             "bars are % within each column, whiskers are 95% Wilson CIs)",
             y=1.02,
         )
-        save_figure(fig, path)
-        return path
+        return save_figure(fig, path)
 
 
 def run_dda_trivariate(
@@ -1110,8 +1110,9 @@ def run_dda_trivariate(
     output_root = Path(output_root)
     figs_dir = output_root / "dda" / "figures_trivariate"
     figs_dir.mkdir(parents=True, exist_ok=True)
-    for old in figs_dir.glob("*.svg"):
-        old.unlink()
+    for pat in ("*.png", "*.tif", "*.eps", "*.svg"):
+        for old in figs_dir.glob(pat):
+            old.unlink()
 
     trivariate_specs = _filter_hidden_from_trivariate(
         trivariate_specs, _load_hidden_parent_columns(output_root),
@@ -1175,17 +1176,20 @@ def run_dda(
 
         elif spec.kind in ("ordinal", "nominal"):
             row = {"column": col, "kind": spec.kind,
+                   "positive_class": spec.positive_class,
                    **_stats_categorical(s, ordered=(spec.kind == "ordinal"))}
             rows_cat.append(row)
             if spec.kind == "ordinal":
                 _plot_ordinal(s, col, figs_dir, ordered_levels=spec.ordered_levels)
             else:
-                _plot_nominal(s, col, figs_dir)
+                _plot_nominal(s, col, figs_dir, positive_class=spec.positive_class)
 
         elif spec.kind == "binary":
-            row = {"column": col, "kind": "binary", **_stats_binary(s)}
+            row = {"column": col, "kind": "binary",
+                   "positive_class": spec.positive_class,
+                   **_stats_binary(s)}
             rows_bin.append(row)
-            _plot_binary(s, col, figs_dir)
+            _plot_binary(s, col, figs_dir, positive_class=spec.positive_class)
 
         elif spec.kind == "datetime":
             row = {"column": col, "kind": "datetime", **_stats_datetime(s)}
@@ -1201,12 +1205,12 @@ def run_dda(
                   "min", "p_5th", "median", "mean", "trimmed_mean",
                   "p_95th", "max", "mode", "std", "cv", "iqr",
                   "skewness", "kurtosis"]
-    CAT_ORDER = ["column", "kind", "ordered", "n", "n_unique", "missing_pct",
+    CAT_ORDER = ["column", "kind", "ordered", "positive_class", "n", "n_unique", "missing_pct",
                  "first_mode", "first_mode_pct",
                  "second_mode", "second_mode_pct",
                  "rarest", "rarest_pct", "max_class_imbalance",
                  "median_category", "balance", "entropy_bin"]
-    BIN_ORDER = ["column", "kind", "ordered", "n", "n_unique", "missing_pct",
+    BIN_ORDER = ["column", "kind", "ordered", "positive_class", "n", "n_unique", "missing_pct",
                  "mode", "mode_pct", "rarest", "rarest_pct",
                  "max_class_imbalance", "balance", "entropy_bin"]
 

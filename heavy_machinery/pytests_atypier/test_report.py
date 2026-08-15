@@ -30,9 +30,7 @@ from report import (
     render_eda,
     render_header,
     render_inferential,
-    render_marker_panel,
     render_missingness,
-    render_schema,
     svg_grid,
     table_to_html,
     warning_box,
@@ -60,17 +58,24 @@ def report_art(tmp_output):
     ))
 
 
-def test_embed_svg_src(tmp_path):
-    p = tmp_path / "x.svg"
-    p.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
-    assert rp._embed_svg_src(p).startswith("data:image/svg+xml;base64,")
+def test_embed_png_src(tmp_path):
+    p = tmp_path / "x.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert rp._embed_png_src(p).startswith("data:image/png;base64,")
 
 
 def test_figure_img_html(tmp_path):
-    p = tmp_path / "x.svg"
-    p.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    p = tmp_path / "x.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
     html = rp._figure_img_html(p)
     assert "<img" in html
+
+
+def test_report_css_caps_embedded_images_to_the_page():
+    """High-dpi PNG files stay full-size on disk; HTML must not display them native."""
+    assert "img { max-width: 100%; height: auto; }" in rp._CSS
+    assert "max-width: 36rem" in rp._CSS
+    assert "max-width: none" not in rp._CSS
 
 
 def test_esc():
@@ -125,8 +130,8 @@ def test_table_to_html():
 
 
 def test_svg_grid(tmp_path):
-    p = tmp_path / "x.svg"
-    p.write_text('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    p = tmp_path / "x.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n")
     assert "figure-grid" in svg_grid([p])
 
 
@@ -317,11 +322,6 @@ def test_render_cleaning_coercion_audit(report_cfg, report_art):
     assert "<td>1.10</td>" not in html
 
 
-def test_render_schema(report_cfg, report_art):
-    report_art.schema_summary = pd.DataFrame([{"column": "age", "kind": "continuous"}])
-    assert "<section" in render_schema(report_cfg, report_art)
-
-
 def test_render_dda(report_cfg, report_art):
     report_art.dda_overall = pd.DataFrame([{"n_rows": 4}])
     html = render_dda(report_cfg, report_art)
@@ -370,9 +370,9 @@ def test_render_dda_hides_hidden_parent_columns(report_cfg, report_art):
 
 
 def test_group_dda_bivariate_figures(tmp_path):
-    a = tmp_path / "age__by__sex.svg"
-    b = tmp_path / "age__by__adc_value.svg"
-    c = tmp_path / "sex__by__adc_value.svg"
+    a = tmp_path / "age__by__sex.png"
+    b = tmp_path / "age__by__adc_value.png"
+    c = tmp_path / "sex__by__adc_value.png"
     for p in (a, b, c):
         p.write_text("<svg></svg>", encoding="utf-8")
     groups = rp._group_dda_bivariate_figures([a, b, c])
@@ -382,9 +382,9 @@ def test_group_dda_bivariate_figures(tmp_path):
 
 
 def test_group_dda_trivariate_figures(tmp_path):
-    a = tmp_path / "vol__vs__diam__by__high_grade.svg"
-    b = tmp_path / "vol__vs__diam__by__sex.svg"
-    c = tmp_path / "age__vs__adc__by__sex.svg"
+    a = tmp_path / "vol__vs__diam__by__high_grade.png"
+    b = tmp_path / "vol__vs__diam__by__sex.png"
+    c = tmp_path / "age__vs__adc__by__sex.png"
     for p in (a, b, c):
         p.write_text("<svg></svg>", encoding="utf-8")
     groups = rp._group_dda_trivariate_figures([a, b, c])
@@ -393,8 +393,8 @@ def test_group_dda_trivariate_figures(tmp_path):
 
 
 def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
-    a = tmp_path / "age__by__sex.svg"
-    b = tmp_path / "sex__by__adc_value.svg"
+    a = tmp_path / "age__by__sex.png"
+    b = tmp_path / "sex__by__adc_value.png"
     for p in (a, b):
         p.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
     report_art.dda_bivariate_figures = [a, b]
@@ -404,7 +404,7 @@ def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
 
 
 def test_render_dda_trivariate_key_dropdowns(report_cfg, report_art, tmp_path):
-    a = tmp_path / "tumor_volume__vs__max_diameter_cm__by__high_grade.svg"
+    a = tmp_path / "tumor_volume__vs__max_diameter_cm__by__high_grade.png"
     a.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
     report_art.dda_trivariate_figures = [a]
     html = render_dda(report_cfg, report_art)
@@ -445,31 +445,6 @@ def test_render_dda_continuous_table_in_report(report_cfg, report_art):
     assert ">63<" in html or ">63.0<" in html
 
 
-def test_dda_glossary():
-    assert "missing_pct" in rp._dda_glossary()
-
-
-def test_eda_glossary():
-    html = rp._eda_glossary()
-    assert "mann_whitney_u" in html
-    assert "rank_biserial_r" in html
-    assert "Sensitivity" in html
-
-
-def test_inferential_glossary():
-    html = rp._inferential_glossary()
-    assert "epv" in html
-    assert "Rubin pooling" in html
-    assert "vif" in html
-
-
-def test_missingness_glossary():
-    html = rp._missingness_glossary()
-    assert "mice" in html
-    assert "method by variable type" in html
-    assert "missingness_resolution.py" in html
-
-
 def test_render_missingness(report_cfg, report_art):
     assert "<section" in render_missingness(report_cfg, report_art)
 
@@ -477,7 +452,6 @@ def test_render_missingness(report_cfg, report_art):
 def test_render_eda(report_cfg, report_art):
     html = render_eda(report_cfg, report_art)
     assert "<section" in html
-    assert "What do these metrics mean?" in html
     assert "💡 Interpretation" not in html
     assert "Full Sweep" not in html
     assert "Like in that research" not in html
@@ -500,15 +474,36 @@ def test_eda_paper_display_blanks_nan():
     )
     assert list(out.columns) == [
         "Variable", "WHO Grade 1 n/N (%)", "WHO Grade 2–3 n/N (%)",
-        "OR (95% CI)", "AUC", "FDR-p",
+        "OR (95% CI)", "FDR-p",
     ]
     row = out.iloc[0]
     assert row["WHO Grade 1 n/N (%)"] == "10/50 (20.0%)"
     assert row["WHO Grade 2–3 n/N (%)"] == ""
     assert row["OR (95% CI)"] == ""
-    assert row["AUC"] == ""
     assert row["FDR-p"] == ""
+    assert "AUC" not in out.columns
     assert "nan" not in " ".join(map(str, row.values)).lower()
+
+
+def test_eda_paper_display_categorical_uses_nn_pct():
+    rows = pd.DataFrame([{
+        "row_role": "level",
+        "predictor": "side",
+        "level": "left",
+        "grade1": "10/50 (20.0%)",
+        "grade23": "20/50 (40.0%)",
+        "effect": "2.00 (1.10–3.50)",
+        "auc": "",
+        "p_fdr": "",
+        "p_level": "0.020",
+    }])
+    out = rp._eda_paper_display_table(
+        rows, table_kind="nominal", target="high_grade",
+    )
+    assert list(out.columns) == [
+        "Variable", "WHO Grade 1 n/N (%)", "WHO Grade 2–3 n/N (%)",
+        "OR (95% CI)", "FDR-p",
+    ]
 
 
 def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
@@ -566,9 +561,16 @@ def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
     assert "eda-kind-divider" in html
     assert "eda-col-header" in html
     assert "eda-paper-stack" in html
-    assert "Benjamini–Hochberg procedure across all" in html
+    assert "Benjamini–Hochberg across" in html
     assert "Full Sweep" not in html
     assert "Like in that research" not in html
+    assert html.index("📊 Paper-style table") < html.index("🌲 Native forest")
+    assert html.index("🌲 Native forest") < html.index("🌲 Derived forest")
+    assert html.index("📊 Paper-style table") < html.index("🌱 Native")
+    forest_chunk = html[html.index("🌲 Native forest"):]
+    assert "<img" in forest_chunk
+    assert "Native unadjusted odds ratios" in forest_chunk
+    assert "Derived unadjusted odds ratios" in html
 
     # Native / Derived stay separate; each origin is exactly one <table>.
     paper = rp._render_eda_native_derived_block(
@@ -632,6 +634,7 @@ def test_render_eda_omits_excluded_columns(report_cfg, report_art):
     html = render_eda(report_cfg, report_art)
     assert "dural_tail" in html
     assert "hidden_pred" not in html
+    assert "Hidden pred" not in html
 
 
 def test_render_inferential(report_cfg, report_art):
@@ -654,7 +657,6 @@ def test_render_inferential(report_cfg, report_art):
     assert "<section" in html
     assert 'class="epv-card"' in html
     assert "Underpowered" in html
-    assert "What do these metrics mean?" in html
 
 
 def test_render_inferential_multiple_variants(report_cfg, report_art):
@@ -699,7 +701,6 @@ def test_render_inferential_multiple_variants(report_cfg, report_art):
     assert "Bondo et al." in html
     assert 'href="https://example.com/bondo"' in html
     assert "Interpretation" in html
-    assert "What do these metrics mean?" in html
 
 
 def test_render_inferential_experimental_last(report_cfg, report_art):
@@ -909,47 +910,23 @@ def panel_output(tmp_output):
          "correction_effect": "widens"},
     ]).to_csv(tables / "09_selection_correction.csv", index=False)
     pd.DataFrame([
-        {"Rule": "Cortical destruction OR Edema", "Type": "or", "n": 301,
-         "Sens (95% CI)": "58% (48–67)", "Spec (95% CI)": "65% (58–71)",
-         "PPV (95% CI)": "44% (36–53)", "NPV (95% CI)": "76% (69–82)",
-         "TP/FP/FN/TN": "55/70/40/136", "OR (95% CI)": "2.7 (1.6–4.4)", "J": 0.23},
-    ]).to_csv(tables / "06_rule_reading_view.csv", index=False)
-    pd.DataFrame([
-        {"model": "amano_et_al_2021", "n_scored": 301, "n_complete_own": 324,
-         "denominator": "the patients every model could score",
-         "auc_shared_apparent": 0.74, "auc_artifact_corrected": 0.733,
-         "auc_artifact_apparent": 0.749, "best_single_rule": "Cortical destruction",
-         "n_best_single": 344, "best_single_auc_corrected": 0.622,
-         "best_single_J_corrected": 0.244, "note": ""},
-    ]).to_csv(tables / "10_model_vs_single.csv", index=False)
-    pd.DataFrame([
-        {"item": "Draws", "value": 20, "note": "20 scorable"},
-        {"item": "Winning rule reproduced", "value": 0.4,
-         "note": "most often: Cortical destruction OR Edema"},
-    ]).to_csv(tables / "11_imputation_stability.csv", index=False)
-    pd.DataFrame([
         {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "rises",
          "low_count": 0, "low_n": 100, "low_risk": 0.11,
          "high_count": 1, "high_n": 90, "high_risk": 0.33, "note": ""},
     ]).to_csv(tables / "12_count_headline.csv", index=False)
+
+    # The panel now renders inside its EDA target, so the target has to exist.
+    eda_tab = tmp_output / "eda" / "tables"
+    eda_tab.mkdir(parents=True)
     pd.DataFrame([
-        {"Model": "Amano et al 2021", "Patients scored": "301",
-         "Model AUC here (apparent)": "0.740",
-         "Model AUC, own patients (corrected)": "0.733",
-         "Model AUC, own patients (apparent)": "0.749",
-         "Best single sign": "Cortical destruction",
-         "Best single AUC (corrected)": "0.622",
-         "Best single Youden J (corrected)": "0.244", "Note": ""},
-    ]).to_csv(tables / "13_model_reading_view.csv", index=False)
-    pd.DataFrame([
-        {"What was checked": "Draws", "Result": "20", "Detail": "20 scorable"},
-        {"What was checked": "Winning rule reproduced", "Result": "40%",
-         "Detail": "most often: Cortical destruction OR Edema"},
-    ]).to_csv(tables / "14_stability_reading_view.csv", index=False)
+        {"target": "high_grade", "predictor": "cortical_destruction",
+         "kind": "binary", "test": "chi2", "effect_label": "OR", "effect": 3.42,
+         "p": 0.001, "p_fdr": 0.004, "n_used": 351, "auc_univariate": 0.58},
+    ]).to_csv(eda_tab / "associations.csv", index=False)
 
     figures = tmp_output / "panel" / "figures"
     figures.mkdir(parents=True)
-    for name in ("lr_forest.svg", "count_score.svg", "rule_space.svg"):
+    for name in ("lr_forest.png", "count_score.png"):
         (figures / name).write_text(
             '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>',
             encoding="utf-8",
@@ -960,191 +937,45 @@ def panel_output(tmp_output):
 def test_load_artifacts_finds_the_panel_tables(panel_output):
     art = load_artifacts(ReportConfig(output_root=panel_output, title="T"))
     assert art.panel_marker_reading_view is not None
-    assert art.panel_selection_correction is not None
-    assert len(art.panel_figures) == 3
+    assert len(art.panel_figures) == 2
 
 
-def test_marker_panel_section_answers_both_aims(panel_output):
+def test_the_binary_block_answers_aim_one(panel_output):
     cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    html = rp._binary_marker_block(load_artifacts(cfg))
+    assert "⋈ Binary" in html
     assert "Cortical destruction" in html
     assert "2.8 (1.7–4.6)" in html
-    assert "301" in html
-
-
-def test_marker_panel_section_quotes_the_corrected_gain_not_the_apparent_one(
-    panel_output,
-):
-    """+0.133 is the corrected gain; +0.120 is the uncorrected one, and 0.42 is
-    the combination's apparent Youden J.
-
-    Quoting an apparent number where the corrected one belongs is the
-    CHANGES.md mistake in prose form, so the headline gain must be the
-    corrected one *and* the apparent figures must not be able to stand in for
-    it. Asserting only that the corrected value appears cannot catch that.
-    """
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "<strong>+0.133</strong>" in html
-    assert "<strong>+0.120</strong>" not in html
-    assert "0.42" not in html
-
-
-def test_the_correction_sentence_reports_which_way_correction_moved_the_gap(
-    panel_output,
-):
-    """On the real cohort the corrected gap is the *larger* one.
-
-    The best-of-16-singles side carries more selection optimism than the
-    best-of-many-combinations side, so prose asserting "the uncorrected gap is
-    larger" is false there. The direction is a column, and the sentence follows
-    it.
-    """
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "widens" in html
-    assert "+0.120" in html          # the uncorrected gap, named as such
-    assert "0.056" in html and "0.043" in html   # what each side cost to choose
-
-
-def test_the_correction_sentence_flips_when_correction_narrows_the_gap(
-    panel_output,
-):
-    """The same page, opposite data: the wording must follow the table."""
-    tables = panel_output / "panel" / "tables"
-    corr = pd.read_csv(tables / "09_selection_correction.csv")
-    corr["gain_apparent"] = 0.200
-    corr["correction_effect"] = "narrows"
-    corr.to_csv(tables / "09_selection_correction.csv", index=False)
-
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "narrows" in html
-    assert "widens" not in html
-
-
-def test_the_headline_sentence_follows_the_measured_direction(panel_output):
-    """The aim-2 lead said "Risk rises" whatever the table held.
-
-    On the real cohort that sentence read "Risk rises from 0% with 3 of the
-    signs present to 0% with 15" — the two thinnest bins, and not a rise. The
-    direction now comes from ``12_count_headline.csv``.
-    """
-    tables = panel_output / "panel" / "tables"
-    pd.DataFrame([
-        {"k_markers": 2, "min_n": 10, "n_bins_usable": 2, "direction": "falls",
-         "low_count": 0, "low_n": 100, "low_risk": 0.33,
-         "high_count": 1, "high_n": 90, "high_risk": 0.11, "note": ""},
-    ]).to_csv(tables / "12_count_headline.csv", index=False)
-
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "Risk falls from 33.0%" in html
-    assert "Risk rises" not in html
-
-
-def test_the_headline_sentence_quotes_the_denominators_behind_it(panel_output):
-    """A bin holding one patient is what made the old sentence wrong; showing
-    each endpoint's patient count makes a thin endpoint visible on the page."""
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "Risk rises from 11.0% among the 100 patients" in html
-    assert "33.0% among the 90 with 1" in html
 
 
 def test_the_panel_tables_never_show_raw_machine_column_names(panel_output):
     """Every other table in the section goes through a reading view; these two
     used to be dumped straight from the CSV."""
     cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
+    html = rp._binary_marker_block(load_artifacts(cfg))
     for machine_name in ("auc_shared_apparent", "auc_artifact_corrected",
                          "best_single_J_corrected", "n_bootstrap", "n_scored"):
         assert machine_name not in html
 
 
-def test_the_model_prose_names_which_column_compares_with_which(panel_output):
-    """A Youden J of 0.24 beside an AUC of 0.74 reads as three times worse.
-
-    They are different scales, so the page has to say which column is the
-    like-for-like one — the corrected single-marker AUC, not the J.
-    """
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "Best single AUC (corrected)" in html
-    assert "0.622" in html
-    assert "(J + 1) / 2" in html
-
-
-def test_the_model_prose_names_the_one_patient_set_the_models_share(panel_output):
-    """Seven models with seven different denominators in one column invites the
-    reader to subtract them. They are restricted to one set, and it is named —
-    together with the wider set the single-sign columns are scored on."""
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "one shared set of 301 patients" in html
-    assert "the patients every model could score" in html
-    assert "the 344 patients with every marker observed" in html
-
-
-def test_the_panel_warning_shows_no_escaped_markup(tmp_output):
+def test_the_binary_block_is_absent_when_no_panel_was_computed(tmp_output):
+    """No dropdown at all — a reader of the EDA target should not meet a
+    warning about artifacts they never asked for."""
     cfg = ReportConfig(output_root=tmp_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "&lt;code&gt;" not in html
-    assert "output/panel/" in html
+    assert rp._binary_marker_block(load_artifacts(cfg)) == ""
 
 
-def test_marker_panel_degrades_to_a_warning_when_nothing_was_computed(tmp_output):
-    cfg = ReportConfig(output_root=tmp_output, title="T")
-    html = rp.render_marker_panel(cfg, load_artifacts(cfg))
-    assert "warning" in html.lower()
-
-
-def test_the_panel_section_sits_between_modelling_and_the_appendix(panel_output):
-    cfg = ReportConfig(output_root=panel_output, title="T")
+def test_the_binary_block_sits_inside_the_eda_target(panel_output):
+    """The panel is a screening result, so it hangs under the target it was
+    screened against — not as a section of its own."""
+    cfg = ReportConfig(output_root=panel_output, title="T",
+                       targets=("high_grade",))
     html = build_report(cfg)
-    assert html.index("Multivariable modelling") < html.index("Which MRI markers")
-    assert html.index("Which MRI markers") < html.index("📎 Appendix")
-
-
-# --------------------------------------------------------------------------
-# The model table's Note cell carries the paper link
-# --------------------------------------------------------------------------
-def test_model_note_url_becomes_an_anchor():
-    view = pd.DataFrame([{"Model": "Yao et al 2022",
-                          "Note": "https://pubmed.ncbi.nlm.nih.gov/30317276/"}])
-    out = rp._linked_model_notes(view)
-    cell = out.iloc[0]["Note"]
-    assert 'href="https://pubmed.ncbi.nlm.nih.gov/30317276/"' in cell
-    assert 'rel="noopener noreferrer"' in cell
-    assert "Paper" in cell
-
-
-def test_model_note_keeps_surrounding_text():
-    view = pd.DataFrame([{"Model": "m", "Note": "not scorable here https://x.org/a"}])
-    cell = rp._linked_model_notes(view).iloc[0]["Note"]
-    assert "not scorable here" in cell
-    assert 'href="https://x.org/a"' in cell
-
-
-def test_model_note_without_a_url_is_escaped_not_linked():
-    view = pd.DataFrame([{"Model": "m", "Note": "one outcome class only"}])
-    cell = rp._linked_model_notes(view).iloc[0]["Note"]
-    assert cell == "one outcome class only"
-    assert "<a " not in cell
-
-
-def test_model_note_escapes_markup_around_the_url():
-    """The column is emitted as safe HTML, so everything else must be escaped."""
-    view = pd.DataFrame([{"Model": "m",
-                          "Note": "<script>alert(1)</script> https://x.org/a"}])
-    cell = rp._linked_model_notes(view).iloc[0]["Note"]
-    assert "<script>" not in cell
-    assert "&lt;script&gt;" in cell
-
-
-def test_model_note_survives_a_view_without_the_column():
-    view = pd.DataFrame([{"Model": "m"}])
-    assert list(rp._linked_model_notes(view).columns) == ["Model"]
+    assert "Which MRI markers" not in html
+    eda = html.index("Exploratory association screening")
+    inferential = html.index("Multivariable modelling")
+    assert eda < html.index("⋈ Binary") < inferential
+    assert html.index("🎯 Target: <code>high_grade</code>") < html.index("⋈ Binary")
 
 
 def test_data_quality_flags_implausible_minima():

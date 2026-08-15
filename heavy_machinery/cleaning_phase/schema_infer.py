@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Literal, Optional
 import ast
 import re
@@ -41,6 +42,9 @@ class ColSpec:
     datetime_bin: Optional[DatetimeBin] = None
     # Free-text note for the schema printout.
     note: str = ""
+    # Index / "present" class for binary and categorical contrast.
+    # None → inferred (binary: True; nominal: not the most frequent; ordinal: unused).
+    positive_class: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +166,32 @@ def infer_schema(
     return out
 
 
+def match_level(levels: Sequence[Any], value: Any) -> Any | None:
+    """Return the observed level that matches ``value``, else None."""
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    observed = list(levels)
+    for lv in observed:
+        if lv == value:
+            return lv
+    value_s = str(value)
+    for lv in observed:
+        if str(lv) == value_s:
+            return lv
+    return None
+
+
+def pin_positive_last(levels: Sequence[Any], positive_class: Any) -> list[Any]:
+    """Move the matching positive class to the end; keep remaining order."""
+    observed = list(levels)
+    pos = match_level(observed, positive_class)
+    if pos is None:
+        return observed
+    return [lv for lv in observed if lv != pos and str(lv) != str(pos)] + [pos]
+
+
 def print_schema_template(schema: dict[str, ColSpec]) -> None:
     """Print a paste-back-able Python dict literal of the schema."""
     lines = ["schema_overrides = {"]
@@ -177,6 +207,8 @@ def print_schema_template(schema: dict[str, ColSpec]) -> None:
             extras.append("keep=False")
         if spec.datetime_bin:
             extras.append(f"datetime_bin={spec.datetime_bin!r}")
+        if spec.positive_class is not None:
+            extras.append(f"positive_class={spec.positive_class!r}")
         extras_str = (", " + ", ".join(extras)) if extras else ""
         lines.append(f'    {col!r}: ColSpec(name={col!r}, kind={spec.kind!r}{extras_str}),')
     lines.append("}")
@@ -288,6 +320,7 @@ def schema_summary(schema: dict[str, ColSpec]) -> pd.DataFrame:
             "keep": spec.keep,
             "datetime_bin": spec.datetime_bin,
             "levels": _levels_for_spec(spec),
+            "positive_class": spec.positive_class,
             "nulls": list(spec.nulls) if spec.nulls else None,
             "note": spec.note,
         })
@@ -340,6 +373,36 @@ def _parse_summary_bool(value: Any, *, default: bool = True) -> bool:
     return default
 
 
+def _parse_level_value(value: Any) -> Any:
+    """Parse a declared class label from schema_summary.csv (bool / int / str)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        return value
+    parsed = _parse_summary_cell(value)
+    if parsed is None:
+        return None
+    if isinstance(parsed, bool):
+        return parsed
+    if isinstance(parsed, str):
+        text = parsed.strip()
+        low = text.lower()
+        if low == "true":
+            return True
+        if low == "false":
+            return False
+        if text.lstrip("-").isdigit():
+            return int(text)
+        return text
+    return parsed
+
+
 def load_schema_from_handoff(output_root: Path | str = "output") -> dict[str, ColSpec]:
     """Rebuild ``ColSpec`` schema from ``output/schema/schema_summary.csv``.
 
@@ -364,6 +427,9 @@ def load_schema_from_handoff(output_root: Path | str = "output") -> dict[str, Co
         keep = _parse_summary_bool(getattr(row, "keep", True))
         datetime_bin = _parse_summary_cell(getattr(row, "datetime_bin", None))
         levels = _parse_summary_cell(getattr(row, "levels", None))
+        positive_class = _parse_level_value(
+            getattr(row, "positive_class", None),
+        )
         nulls_raw = _parse_summary_cell(getattr(row, "nulls", None))
         note = getattr(row, "note", "") or ""
         if isinstance(note, float) and pd.isna(note):
@@ -389,5 +455,6 @@ def load_schema_from_handoff(output_root: Path | str = "output") -> dict[str, Co
             keep=keep,
             datetime_bin=datetime_bin,  # type: ignore[arg-type]
             note=str(note),
+            positive_class=positive_class,
         )
     return out

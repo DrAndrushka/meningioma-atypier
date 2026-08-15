@@ -16,7 +16,7 @@ import pandas as pd
 from inferential import InferentialModelVariant, normalize_inferential_variants
 
 # One bootstrap-resample count for the whole pipeline (spec 5.3): the
-# modelling phase and the threshold phase must validate with the same
+# modelling phase and the cut-point phase must validate with the same
 # number, printed once per report in the Methods block.
 BOOTSTRAP_RESAMPLES: int = 1000
 

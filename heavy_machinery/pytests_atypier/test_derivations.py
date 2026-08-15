@@ -42,6 +42,38 @@ def test_apply_derivations_bin_and_flag():
     assert "derivation" in log.columns
 
 
+def test_apply_derivations_copies_positive_class_onto_colspec():
+    df = pd.DataFrame({
+        "age": [45, 55, 65],
+        "who_grade": ["1", "2", "3"],
+    })
+    schema = {
+        "age": ColSpec("age", "continuous"),
+        "who_grade": ColSpec("who_grade", "ordinal", ordered_levels=["1", "2", "3"]),
+    }
+    derivations = [
+        _derivations.BinNumeric(
+            name="age_bins",
+            source="age",
+            bins=[0, 50, 60, 100],
+            labels=["<50", "50-59", "60+"],
+            positive_class="60+",
+        ),
+        _derivations.Apply(
+            name="high_grade",
+            source="who_grade",
+            fn=lambda s: s.isin(["2", "3"]).astype("boolean"),
+            kind="binary",
+            positive_class=True,
+        ),
+    ]
+    _, out_schema, _ = _derivations.apply_derivations(
+        df, schema, derivations, preview=False,
+    )
+    assert out_schema["age_bins"].positive_class == "60+"
+    assert out_schema["high_grade"].positive_class is True
+
+
 def test_apply_derivations_custom_apply():
     df = pd.DataFrame({"x": [1, 2, 3]})
     schema = {"x": ColSpec("x", "continuous")}

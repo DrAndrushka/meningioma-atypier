@@ -56,3 +56,21 @@ def tmp_output(tmp_path: Path) -> Path:
     out = tmp_path / "output"
     out.mkdir()
     return out
+
+
+_REAL_COHORT = (Path(__file__).resolve().parents[2]
+                / "output" / "datasets" / "unimputed_df.parquet")
+
+
+@pytest.fixture(scope="session")
+def real_cohort() -> pd.DataFrame:
+    """The actual cleaned cohort, for tests that freeze a published number.
+
+    Skipped rather than failed when ``output/`` has not been built. A fresh
+    clone has no cohort to read, and a test that cannot run is not a test that
+    failed — but on a machine that *has* run the cleaning notebook, a frozen
+    number that moves must be loud.
+    """
+    if not _REAL_COHORT.exists():
+        pytest.skip("no output/datasets/unimputed_df.parquet — run cleaning first")
+    return pd.read_parquet(_REAL_COHORT)

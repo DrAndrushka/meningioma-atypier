@@ -1,10 +1,11 @@
 """Paper-style univariate EDA tables (native / derived × datatype).
 
 Builds ``output/eda/tables/eda_paper_tables.csv`` from the analysis frame and
-the associations screen — used by the HTML report only.
+the associations screen — used by the HTML report and the manuscript forest.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,9 @@ from diagnostic_accuracy import (
 )
 from eda import _encode_binary_target, compute_univariate_auc
 from inferential import _fit_logit_robust
-from schema_infer import ColSpec
+from plot_style import roc_auc
+from scales import is_log_scaled, standardise
+from schema_infer import ColSpec, match_level
 
 _PAPER_COLUMNS = [
     "target",
@@ -64,12 +67,6 @@ def _fmt_nn_pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100.0 * k / n:.1f}%)"
 
 
-def _fmt_n_pct(k: int, n: int) -> str:
-    if n <= 0:
-        return ""
-    return f"{k} ({100.0 * k / n:.1f}%)"
-
-
 def _fmt_median_iqr(s: pd.Series) -> str:
     s = pd.to_numeric(s, errors="coerce").dropna()
     if s.empty:
@@ -94,17 +91,14 @@ def _bootstrap_auc_ci(
     seed: int = 42,
 ) -> tuple[float, float, float]:
     """ROC AUC point estimate + percentile bootstrap 95% CI."""
-    from sklearn.metrics import roc_auc_score
-
     y = np.asarray(y, dtype=float)
     scores = np.asarray(scores, dtype=float)
     mask = np.isfinite(y) & np.isfinite(scores)
     y, scores = y[mask], scores[mask]
     if len(y) < 5 or len(np.unique(y)) < 2:
         return np.nan, np.nan, np.nan
-    try:
-        auc = float(roc_auc_score(y, scores))
-    except ValueError:
+    auc = roc_auc(y, scores)
+    if not np.isfinite(auc):
         return np.nan, np.nan, np.nan
     if auc < 0.5:
         auc = 1.0 - auc
@@ -115,11 +109,9 @@ def _bootstrap_auc_ci(
     for _ in range(n_boot):
         idx = rng.integers(0, n, size=n)
         yy, ss = y[idx], scores[idx]
-        if len(np.unique(yy)) < 2:
-            continue
-        try:
-            a = float(roc_auc_score(yy, ss))
-        except ValueError:
+        a = roc_auc(yy, ss)
+        # NaN means the resample drew one class only — AUC is undefined there.
+        if not np.isfinite(a):
             continue
         boots.append(a if a >= 0.5 else 1.0 - a)
     if len(boots) < 20:
@@ -162,6 +154,7 @@ def _binary_rows(
     *,
     positive_class: Any,
     p_fdr: Any,
+    feature_positive: Any = None,
 ) -> list[dict[str, Any]]:
     y_enc, _ = _encode_binary_target(df[target], positive_class)
     x_enc = _encode_feature_present(df[predictor])
@@ -170,6 +163,10 @@ def _binary_rows(
         return []
     y = pair["y"].astype(int)
     x = pair["x"].astype(int)
+    # x=1 is "present". Default positive class is True. Invert when the
+    # declared index class is absent, so n(%) and OR are for that class.
+    if match_level([False, True], feature_positive) is False:
+        x = (1 - x).astype(int)
     # y=1 → WHO 2–3 (positive); y=0 → WHO 1
     g1 = y == 0
     g23 = y == 1
@@ -224,9 +221,19 @@ def _continuous_rows(
         return []
     g1 = pair.loc[pair["y"] == 0, "x"]
     g23 = pair.loc[pair["y"] == 1, "x"]
-    sd = float(pair["x"].std(ddof=0))
-    z = (pair["x"] - pair["x"].mean()) / sd if sd > 0 else pair["x"] * 0.0
-    or_, lo, hi, _p = _logit_or_ci(pair["y"], z)
+    # Right-skewed measurements are standardised on the log scale — declared in
+    # ``scales``, not here, so this table cannot disagree with the threshold and
+    # cut-point phases about what one SD means. Medians and IQRs above stay in
+    # clinical units; only the odds ratio is affected.
+    z = pd.Series(
+        standardise(pair["x"].to_numpy(dtype=float), is_log_scaled(predictor)),
+        index=pair.index,
+    )
+    # ``p_model`` belongs to the per-SD OR printed on this row. The screen's
+    # ``p_fdr`` comes from a rank test, which can disagree with a logit slope
+    # on a skewed predictor, so both are kept rather than one standing in for
+    # the other.
+    or_, lo, hi, p_model = _logit_or_ci(pair["y"], z)
     auc, auc_lo, auc_hi = _bootstrap_auc_ci(
         pair["y"].to_numpy(), pair["x"].to_numpy(),
     )
@@ -248,7 +255,7 @@ def _continuous_rows(
         "effect": _fmt_or_ci(or_, lo, hi),
         "auc": _fmt_auc_ci(auc, auc_lo, auc_hi),
         "p_fdr": _fmt_p(p_fdr),
-        "p_level": "",
+        "p_level": _fmt_p(p_model),
         "sort_p": _coerce_sort_p(p_fdr),
     }]
 
@@ -262,6 +269,7 @@ def _categorical_rows(
     p_fdr: Any,
     ordered_levels: list | None,
     table_kind: str,
+    feature_positive: Any = None,
 ) -> list[dict[str, Any]]:
     y_enc, _ = _encode_binary_target(df[target], positive_class)
     x = df[predictor]
@@ -273,11 +281,16 @@ def _categorical_rows(
         extras = [lv for lv in pair["x"].astype(str).unique() if lv not in levels]
         levels = levels + extras
     else:
-        # Reference = most frequent level
+        # Fallback reference = most frequent level
         levels = list(pair["x"].astype(str).value_counts().index)
     if len(levels) < 2:
         return []
-    ref = levels[0]
+    pos = match_level(levels, feature_positive)
+    if pos is not None:
+        rest = [lv for lv in levels if lv != pos and str(lv) != str(pos)]
+        ref = rest[0] if rest else pos
+    else:
+        ref = levels[0]
     n1 = int((pair["y"] == 0).sum())
     n23 = int((pair["y"] == 1).sum())
     p_num = _coerce_sort_p(p_fdr)
@@ -320,8 +333,8 @@ def _categorical_rows(
             "predictor": predictor,
             "row_role": role,
             "level": str(lv),
-            "grade1": _fmt_n_pct(k1, n1),
-            "grade23": _fmt_n_pct(k23, n23),
+            "grade1": _fmt_nn_pct(k1, n1),
+            "grade23": _fmt_nn_pct(k23, n23),
             "effect": effect,
             "auc": "",
             "p_fdr": "",
@@ -362,14 +375,33 @@ def build_eda_paper_tables(
                 pass
 
     rows: list[dict[str, Any]] = []
-    # Prefer FDR-family main predictors for the paper tables
+    # FDR family is a multiplicity correction, not an inclusion filter.
+    # ``eda_in_derived=True`` columns stay in the Derived block; they get a
+    # separate BH so FDR-p is shown without counting toward the native family.
     view = associations.copy()
-    if "in_fdr_family" in view.columns:
-        view = view[view["in_fdr_family"].fillna(True).astype(bool)]
     if "test" in view.columns:
         view = view[view["test"].astype(str) != "skip"]
     if excluded:
         view = view[~view["predictor"].astype(str).isin(excluded)]
+
+    if not view.empty:
+        from eda import apply_native_and_derived_fdr, _load_eda_derived_columns
+
+        derived_cols = (
+            _load_eda_derived_columns(output_root) if output_root is not None
+            else frozenset()
+        )
+        if "in_fdr_family" in view.columns:
+            fam = [
+                str(p) for p in view.loc[
+                    view["in_fdr_family"].fillna(True).astype(bool), "predictor"
+                ].unique()
+            ]
+        else:
+            fam = None
+        view = apply_native_and_derived_fdr(
+            view, derived_cols=derived_cols, fdr_family=fam,
+        )
 
     for _, assoc in view.iterrows():
         target = str(assoc["target"])
@@ -380,8 +412,10 @@ def build_eda_paper_tables(
         pos = assoc.get("positive_class", None)
         p_fdr = assoc.get("p_fdr", np.nan)
         if kind == "binary":
+            spec = schema.get(pred)
             rows.extend(_binary_rows(
                 df, target, pred, positive_class=pos, p_fdr=p_fdr,
+                feature_positive=getattr(spec, "positive_class", None),
             ))
         elif kind in ("continuous", "count"):
             rows.extend(_continuous_rows(
@@ -393,6 +427,7 @@ def build_eda_paper_tables(
             rows.extend(_categorical_rows(
                 df, target, pred, positive_class=pos, p_fdr=p_fdr,
                 ordered_levels=levels, table_kind=kind,
+                feature_positive=getattr(spec, "positive_class", None),
             ))
 
     out = pd.DataFrame(rows, columns=_PAPER_COLUMNS) if rows else pd.DataFrame(
@@ -413,3 +448,148 @@ def build_eda_paper_tables(
         tabs.mkdir(parents=True, exist_ok=True)
         _format_table_for_csv(out).to_csv(tabs / "eda_paper_tables.csv", index=False)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Unadjusted OR forest (same numbers as the paper table)
+# ---------------------------------------------------------------------------
+
+_OR_CI_PAT = re.compile(
+    r"(?P<est>\d+\.?\d*)\s*\((?P<lo>\d+\.?\d*)\s*[–-]\s*(?P<hi>\d+\.?\d*)\)"
+)
+
+
+def parse_or_ci(text: Any) -> tuple[float, float, float] | None:
+    """Parse ``1.20 (1.00–1.45)`` from a paper-table effect cell."""
+    m = _OR_CI_PAT.search(str(text))
+    if m is None:
+        return None
+    return tuple(map(float, m.group("est", "lo", "hi")))
+
+
+def _forest_row_label(row: pd.Series, refs: pd.Series) -> str:
+    from plot_style import prettify_label, prettify_level
+
+    name = prettify_label(row["predictor"])
+    kind = str(row["table_kind"])
+    if kind == "continuous":
+        return f"{name} (per 1 SD)"
+    if kind in ("nominal", "ordinal"):
+        ref = refs.get(row["predictor"], "")
+        lvl = prettify_level(row["level"], row["predictor"])
+        ref_lab = prettify_level(ref, row["predictor"]) if str(ref) else ""
+        if ref_lab:
+            return f"{name}: {lvl} vs {ref_lab}"
+        return f"{name}: {lvl}"
+    return name
+
+
+def univariate_or_forest_data(
+    paper: pd.DataFrame,
+    *,
+    target: str | None = None,
+    excluded: frozenset[str] | set[str] | None = None,
+    include: frozenset[str] | set[str] | None = None,
+) -> pd.DataFrame:
+    """Rows with ``label`` / ``or`` / ``lo`` / ``hi`` / ``p_fdr`` for the forest.
+
+    ``p_fdr`` is numeric (``NaN`` when unknown) and is the predictor's
+    FDR-adjusted p, carried onto its level rows as well so every plotted row
+    can be marked significant or not.
+    """
+    empty = pd.DataFrame(
+        columns=["table_kind", "predictor", "level", "label", "or", "lo", "hi", "p_fdr"],
+    )
+    if paper is None or paper.empty:
+        return empty
+
+    sub = paper.copy()
+    if target is not None and "target" in sub.columns:
+        sub = sub[sub["target"].astype(str) == str(target)]
+    if excluded:
+        sub = sub[~sub["predictor"].astype(str).isin(excluded)]
+    if include is not None:
+        sub = sub[sub["predictor"].astype(str).isin(include)]
+    if sub.empty:
+        return empty
+
+    refs = (
+        sub.loc[sub["row_role"].astype(str).eq("reference"), ["predictor", "level"]]
+        .drop_duplicates("predictor")
+        .set_index("predictor")["level"]
+        if "row_role" in sub.columns
+        else pd.Series(dtype=object)
+    )
+
+    # ``sort_p`` is the predictor's numeric FDR-p repeated on its level rows;
+    # ``p_fdr`` is the formatted one and is blank on level rows.
+    q_by_pred = _forest_q_by_predictor(sub)
+
+    rows: list[dict[str, Any]] = []
+    for _, row in sub.iterrows():
+        parsed = parse_or_ci(row.get("effect"))
+        if parsed is None:
+            continue
+        est, lo, hi = parsed
+        rows.append({
+            "table_kind": row["table_kind"],
+            "predictor": row["predictor"],
+            "level": row["level"],
+            "label": _forest_row_label(row, refs),
+            "or": est,
+            "lo": lo,
+            "hi": hi,
+            "p_fdr": q_by_pred.get(str(row["predictor"]), np.nan),
+        })
+    return pd.DataFrame(rows)
+
+
+def _forest_q_by_predictor(sub: pd.DataFrame) -> dict[str, float]:
+    """Numeric FDR-p per predictor, read from ``sort_p`` or ``p_fdr``."""
+    out: dict[str, float] = {}
+    for pred, grp in sub.groupby(sub["predictor"].astype(str)):
+        vals = []
+        for col in ("sort_p", "p_fdr"):
+            if col not in grp.columns:
+                continue
+            for raw in grp[col]:
+                if raw is None or (isinstance(raw, float) and not np.isfinite(raw)):
+                    continue
+                if str(raw).strip() == "":
+                    continue
+                vals.append(_coerce_sort_p(raw))
+            if vals:
+                break
+        out[pred] = min(vals) if vals else np.nan
+    return out
+
+
+def draw_univariate_or_forest(plot_df: pd.DataFrame, *, fdr_alpha: float = 0.05):
+    """Forest of unadjusted ORs. Caller owns saving / closing the figure.
+
+    A row is drawn in full ink only when its FDR-p clears ``fdr_alpha`` **and**
+    its interval excludes 1; everything else is grey. Both conditions are
+    needed because the FDR-p comes from the screening test (a rank test for
+    continuous predictors) while the interval comes from a logistic fit, and on
+    a skewed predictor the two can disagree.
+    """
+    from plot_style import FIG_WIDTH_DOUBLE, apply_plot_style, forest_lr
+
+    apply_plot_style()
+    if "p_fdr" in plot_df.columns:
+        q = pd.to_numeric(plot_df["p_fdr"], errors="coerce").to_numpy(dtype=float)
+        ns = ~(q < fdr_alpha)  # NaN -> not significant
+    else:
+        ns = None
+    fig, ax = forest_lr(
+        plot_df["label"].tolist(),
+        plot_df["or"].to_numpy(dtype=float),
+        plot_df["lo"].to_numpy(dtype=float),
+        plot_df["hi"].to_numpy(dtype=float),
+        ref=1.0,
+        xlabel="Unadjusted odds ratio (95% CI)",
+        value_header="OR (95% CI)",
+        width=FIG_WIDTH_DOUBLE,
+        ns=ns,
+    )
+    return fig, ax

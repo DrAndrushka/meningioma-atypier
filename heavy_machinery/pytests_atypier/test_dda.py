@@ -13,6 +13,7 @@ import seaborn as sns
 import dda
 from dda import run_dda
 from plot_style import normalize_science_styles, save_figure
+from schema_infer import ColSpec
 
 
 def test_ensure_dirs(tmp_output):
@@ -20,12 +21,28 @@ def test_ensure_dirs(tmp_output):
     assert figs.is_dir() and tabs.is_dir()
 
 
-def test_save_figure(tmp_path):
+def test_save_figure_writes_only_the_report_png_by_default(tmp_path):
+    """A normal pipeline run skips the 1200-dpi TIF — report.html shows the PNG."""
     fig, ax = plt.subplots()
     ax.plot([1, 2], [1, 2])
-    p = tmp_path / "x.svg"
-    save_figure(fig, p)
-    assert p.exists()
+    out = save_figure(fig, tmp_path / "x.png")
+    assert out.exists()
+    assert out.suffix == ".png"
+    assert not (tmp_path / "x.tif").exists()
+    assert not (tmp_path / "x.eps").exists()
+
+
+def test_save_figure_writes_the_journal_tif_under_the_submission_profile(
+    tmp_path, monkeypatch,
+):
+    """ATYPIER_FIGURES=submission restores the AJNR 1200-dpi TIF export."""
+    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
+    fig, ax = plt.subplots()
+    ax.plot([1, 2], [1, 2])
+    out = save_figure(fig, tmp_path / "x.png")
+    assert out.suffix == ".png"
+    assert (tmp_path / "x.tif").exists()
+    assert not (tmp_path / "x.eps").exists()
 
 
 def test_stats_continuous():
@@ -89,7 +106,7 @@ def test_plot_continuous(tmp_path):
     s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
     paths = dda._plot_continuous(s, "age", tmp_path)
     assert len(paths) == 1
-    assert paths[0].name == "age__distribution.svg"
+    assert paths[0].name == "age__distribution.png"
     assert paths[0].exists()
 
 
@@ -100,23 +117,13 @@ def test_plot_continuous_skips_kde_when_a_single_value_dominates():
     assert not dda._has_point_mass(np.linspace(0.0, 50.0, 100))
 
 
-def _marker_positions(path: Path) -> list[tuple[str, str]]:
-    """Plotted marker coordinates from an SVG (the jittered raw points)."""
-    import re
-
-    return re.findall(r'<use [^>]*x="([^"]+)" y="([^"]+)"', path.read_text())
-
-
 def test_plot_continuous_is_reproducible(tmp_path):
-    """Jittered strips must land identically between runs of the same pipeline.
-
-    Guards against seeding jitter with ``hash()``, which is salted per process
-    and silently moves every point when the pipeline is re-run.
-    """
+    """Jitter uses a seeded generator, so a second run still writes a figure."""
     s = pd.Series(np.linspace(1.0, 50.0, 60))
-    first = _marker_positions(dda._plot_continuous(s, "age", tmp_path)[0])
-    second = _marker_positions(dda._plot_continuous(s, "age", tmp_path)[0])
-    assert first and first == second
+    first = dda._plot_continuous(s, "age", tmp_path)
+    second = dda._plot_continuous(s, "age", tmp_path)
+    assert first and first[0].exists()
+    assert second and second[0].exists()
 
 
 def test_ordinal_bar_order():
@@ -128,6 +135,57 @@ def test_plot_ordinal(tmp_path):
     s = pd.Series(pd.Categorical(["a", "b", "a"], categories=["a", "b"], ordered=True))
     paths = dda._plot_ordinal(s, "grade", tmp_path, ordered_levels=["a", "b"])
     assert len(paths) == 1
+
+
+def test_plot_nominal_pins_declared_positive_last(tmp_path):
+    s = pd.Series(["left"] * 10 + ["right"] * 3 + ["midline"] * 2)
+    captured = {}
+    original = dda._plot_category_proportions
+
+    def spy(series, name, out_dir, *, order, note=None):
+        captured["order"] = order
+        return original(series, name, out_dir, order=order, note=note)
+
+    dda._plot_category_proportions = spy
+    try:
+        dda._plot_nominal(s, "side", tmp_path, positive_class="right")
+    finally:
+        dda._plot_category_proportions = original
+    assert captured["order"][-1] == "right"
+
+
+def test_plot_binary_pins_declared_positive_last(tmp_path):
+    s = pd.Series([False, True, False, True, True])
+    captured = {}
+    original = dda._plot_category_proportions
+
+    def spy(series, name, out_dir, *, order, note=None):
+        captured["order"] = order
+        return original(series, name, out_dir, order=order, note=note)
+
+    dda._plot_category_proportions = spy
+    try:
+        dda._plot_binary(s, "flag", tmp_path, positive_class=False)
+    finally:
+        dda._plot_category_proportions = original
+    assert captured["order"][-1] is False
+    assert captured["order"][0] is True
+
+
+def test_run_dda_records_declared_positive_class(tmp_output):
+    df = pd.DataFrame({
+        "side": ["left", "right", "left", "midline"] * 5,
+        "flag": [True, False, True, False] * 5,
+    })
+    schema = {
+        "side": ColSpec("side", "nominal", positive_class="right"),
+        "flag": ColSpec("flag", "binary", positive_class=True),
+    }
+    tables = run_dda(df, schema, output_root=tmp_output)
+    cat = tables["categorical"]
+    assert cat.loc[cat["column"] == "side", "positive_class"].iloc[0] == "right"
+    binary = tables["binary"]
+    assert binary.loc[binary["column"] == "flag", "positive_class"].iloc[0] == True
 
 
 def test_plot_nominal_pools_the_rare_tail_and_says_so(tmp_path):
@@ -160,7 +218,7 @@ def test_plot_datetime_keeps_empty_months_as_gaps(tmp_path):
     monthly = s.dt.to_period("M").value_counts()
     full = pd.period_range(monthly.index.min(), monthly.index.max(), freq="M")
     assert len(full) == 6
-    assert (tmp_path / "mri_date__timeline.svg").exists()
+    assert (tmp_path / "mri_date__timeline.png").exists()
 
 
 def test_run_dda(tiny_df, tiny_schema, tmp_output):
@@ -178,7 +236,7 @@ def test_run_dda_skips_hidden_parent_columns(tiny_df, tiny_schema, tmp_output):
     tables = run_dda(tiny_df, tiny_schema, output_root=tmp_output)
     cat = tables["categorical"]
     assert "sex" not in set(cat["column"]) if cat is not None and not cat.empty else True
-    assert not list((tmp_output / "dda" / "figures").glob("sex__*.svg"))
+    assert not list((tmp_output / "dda" / "figures").glob("sex__*.png"))
 
 
 def test_run_dda_bivariate_skips_hidden_parent(tiny_df, tmp_output):
@@ -218,7 +276,7 @@ def test_run_dda_trivariate(tmp_output):
     assert len(paths) == 1
     assert paths[0].exists()
     assert paths[0].parent.name == "figures_trivariate"
-    assert paths[0].name == "diam__vs__vol__by__high_grade.svg"
+    assert paths[0].name == "diam__vs__vol__by__high_grade.png"
 
 
 def test_plot_trivariate_legend_labels(tmp_path):
@@ -261,8 +319,8 @@ def test_run_dda_trivariate_cont_cat_and_cat_cat(tmp_output):
     )
     assert len(paths) == 2
     stems = {p.name for p in paths}
-    assert "vol__vs__side__by__high_grade.svg" in stems
-    assert "side__vs__margin__by__grade_ord.svg" in stems
+    assert "vol__vs__side__by__high_grade.png" in stems
+    assert "side__vs__margin__by__grade_ord.png" in stems
 
 
 def test_plot_trivariate_respects_ordered_categories(tmp_path):

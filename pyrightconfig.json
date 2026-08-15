@@ -4,7 +4,7 @@
     "heavy_machinery",
     "heavy_machinery/cleaning_phase",
     "heavy_machinery/modelling_phase",
-    "heavy_machinery/threshold_phase",
+    "heavy_machinery/cutpoint_phase",
     "heavy_machinery/pytests_atypier"
   ]
 }

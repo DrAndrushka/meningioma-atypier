@@ -103,7 +103,7 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
         ax.set_xlabel("% missing"); ax.set_ylabel("")
         ax.bar_label(ax.containers[0], fmt="%.1f%%", fontsize=8.5, padding=3)
         ax.margins(x=0.12)
-        save_figure(fig, figs / "missing_per_column.svg")
+        save_figure(fig, figs / "missing_per_column")
 
     # Co-missingness heatmap (Jaccard over missing rows)
     cols_with_miss = per_col[per_col["pct_missing"] > 0]["column"].tolist()
@@ -132,7 +132,7 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
         ax.set_title("Co-missingness overlap (Jaccard)")
         plt.setp(ax.get_xticklabels(), rotation=40, ha="right")
         plt.setp(ax.get_yticklabels(), rotation=0)
-        save_figure(fig, figs / "co_missingness_heatmap.svg")
+        save_figure(fig, figs / "co_missingness_heatmap")
 
     return per_col
 

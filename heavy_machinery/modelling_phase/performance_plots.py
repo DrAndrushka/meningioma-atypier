@@ -31,13 +31,13 @@ from plot_style import (
     FIG_WIDTH_SINGLE,
     PALETTE,
     apply_plot_style,
-    errorbar_lengths,
+    calibration_plot,
+    decision_curve,
     figure_size,
     place_legend,
     prettify_label,
+    roc_panel,
     save_figure,
-    set_titles,
-    wilson_ci,
 )
 
 apply_plot_style()
@@ -88,38 +88,27 @@ def roc_figure(
     the corrected value shares the legend.
     """
     curves = (validation.get("roc_curves") or {}).get("curves") or []
-    drawn = False
-    fig, ax = plt.subplots(figsize=figure_size(width, aspect=1.0))
+    drawn: list[dict[str, Any]] = []
+    auc_corr = _metric_value(validation, "AUC", "optimism_corrected")
     for curve, color in zip(curves, CATEGORICAL_COLORS):
         fpr, tpr = curve.get("fpr"), curve.get("tpr")
         if not fpr or not tpr or len(fpr) != len(tpr):
             continue
-        label = str(curve.get("label", curve.get("series", "Model")))
-        if curve.get("auc") is not None:
-            label = f"{label} (AUC {float(curve['auc']):.3f})"
-        ax.plot(fpr, tpr, color=color, linewidth=1.8, zorder=3, label=label)
-        drawn = True
+        name = str(curve.get("label", curve.get("series", "Model")))
+        extra = ""
+        if np.isfinite(auc_corr):
+            extra = f"\nOptimism-corrected AUC {auc_corr:.3f}"
+        drawn.append({
+            "name": name + extra,
+            "fpr": fpr,
+            "tpr": tpr,
+            "auc": curve.get("auc"),
+            "color": color,
+        })
     if not drawn:
-        plt.close(fig)
         return None
-
-    auc_corr = _metric_value(validation, "AUC", "optimism_corrected")
-    if np.isfinite(auc_corr):
-        ax.plot(
-            [], [], linestyle="none",
-            label=f"Optimism-corrected AUC {auc_corr:.3f}",
-        )
-    ax.plot(
-        [0, 1], [0, 1], linestyle="--", color=REFERENCE_COLOR, linewidth=1.0,
-        zorder=1, label="No discrimination",
-    )
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.set_aspect("equal")
-    ax.set_xlabel("False-positive rate (1 − specificity)")
-    ax.set_ylabel("True-positive rate (sensitivity)")
-    place_legend(ax, loc="lower right", scale=0.78)
-    set_titles(ax, title or "Discrimination", _sample_note(validation))
+    fig, ax = roc_panel(drawn, title=title or None, figsize=(width, width))
+    del ax
     return fig
 
 
@@ -129,69 +118,29 @@ def calibration_figure(
     title: str = "",
     width: float = FIG_WIDTH_SINGLE,
 ) -> plt.Figure | None:
-    """Observed vs predicted risk, by risk decile, against the ideal diagonal.
-
-    The question a clinician actually asks of a risk calculator: when it says
-    30%, is it 30%? Bin points carry Wilson intervals and their denominators,
-    and the subtitle reports the optimism-corrected slope — the apparent slope
-    is 1.0 by construction on the development sample and means nothing alone.
-    """
+    """Observed vs predicted risk, by risk decile, against the ideal diagonal."""
     cal = validation.get("calibration") or {}
     bins = cal.get("bins") or []
     if not bins:
         return None
-
-    pred = np.array([float(b["predicted"]) for b in bins])
-    obs = np.array([float(b["observed"]) for b in bins])
-    counts = np.array([int(b["n"]) for b in bins], dtype=float)
-    events = np.array([int(b["events"]) for b in bins], dtype=float)
-    lo, hi = wilson_ci(events, counts)
-
-    fig, ax = plt.subplots(figsize=figure_size(width, aspect=1.0))
-    upper = float(max(pred.max(), obs.max(), float(np.nanmax(hi)))) * 1.1
-    upper = float(np.clip(upper, 0.2, 1.0))
-    ax.plot(
-        [0, upper], [0, upper], linestyle="--", color=REFERENCE_COLOR,
-        linewidth=1.0, zorder=1, label="Perfect calibration",
-    )
-
-    smooth = cal.get("smooth") or {}
-    if smooth.get("predicted"):
-        ax.plot(
-            smooth["predicted"], smooth["observed"], color=PALETTE["accent"],
-            linewidth=1.6, zorder=2, label="Smoothed (LOESS)",
-        )
-    ax.errorbar(
-        pred, obs, yerr=errorbar_lengths(obs, lo, hi),
-        fmt="o", color=CORRECTED_COLOR, markersize=5, capsize=2.5,
-        linestyle="none", elinewidth=1.0,
-        markeredgecolor="white", markeredgewidth=0.8, zorder=3,
-        label="Risk decile (95% CI)",
-    )
-    ax.set_xlim(0, upper)
-    ax.set_ylim(0, upper)
-    ax.set_aspect("equal")
-    ax.set_xlabel("Predicted risk")
-    ax.set_ylabel("Observed proportion")
-    place_legend(ax, loc="upper left", scale=0.78)
-
     slope = cal.get("slope_corrected")
-    # Prefer the corrected intercept now that validation produces one; older
-    # artifacts carry only the apparent value, and those still render.
     intercept = cal.get("intercept_corrected")
-    intercept_label = "corrected intercept"
     if intercept is None or not np.isfinite(float(intercept)):
-        intercept, intercept_label = cal.get("intercept_apparent"), "apparent intercept"
-    parts = [_sample_note(validation)]
-    if slope is not None:
-        parts.append(f"corrected slope {float(slope):.2f}")
-    if intercept is not None:
-        # Three decimals: calibration-in-the-large is anchored to the sample's
-        # event rate and lands within a few thousandths of zero, so two decimals
-        # round -0.005 to "-0.01" and read as ten times the real value.
-        # ``or 0.0`` collapses -0.0 so a null intercept never prints as "-0.000".
-        parts.append(f"{intercept_label} {round(float(intercept), 3) or 0.0:+.3f}")
-    set_titles(ax, title or "Calibration", " · ".join(parts))
+        intercept = cal.get("intercept_apparent")
+    metrics = {
+        "slope": slope,
+        "intercept": intercept,
+        "brier": _metric_value(validation, "Brier score", "optimism_corrected"),
+    }
+    fig, ax = calibration_plot(
+        bins=bins,
+        smooth=cal.get("smooth") or {},
+        metrics=metrics,
+        title=title or None,
+        figsize=(width, width + 0.4),
+        show_hist=False,
+    )
+    del ax
     return fig
 
 
@@ -201,49 +150,26 @@ def decision_curve_figure(
     title: str = "",
     width: float = FIG_WIDTH_MEDIUM,
 ) -> plt.Figure | None:
-    """Net benefit of using the model versus treating everyone or no one.
-
-    The model is only worth acting on where its curve sits above both
-    references; discrimination and calibration cannot show that.
-    """
+    """Net benefit of using the model versus treating everyone or no one."""
     dca = validation.get("decision_curve") or {}
     thresholds = dca.get("thresholds") or []
     model_nb = dca.get("model") or []
     all_nb = dca.get("treat_all") or []
     if not thresholds or len(thresholds) != len(model_nb):
         return None
-
     t = np.asarray(thresholds, dtype=float)
-    nb = np.asarray(model_nb, dtype=float)
-    nb_all = np.asarray(all_nb, dtype=float)
-
-    fig, ax = plt.subplots(figsize=figure_size(width, aspect=0.62))
-    ax.plot(t, nb, color=CORRECTED_COLOR, linewidth=1.8, zorder=3, label="Model")
-    ax.plot(
-        t, nb_all, color=PALETTE["accent"], linewidth=1.3, linestyle="-.",
-        zorder=2, label="Treat all",
+    series = {
+        "Model": (t, np.asarray(model_nb, dtype=float)),
+        "Treat all": (t, np.asarray(all_nb, dtype=float) if all_nb else t * 0),
+        "Treat none": (t, np.zeros_like(t)),
+    }
+    fig, ax = decision_curve(
+        series=series,
+        title=title or None,
+        figsize=(width, width * 0.62),
+        prevalence=dca.get("prevalence"),
     )
-    ax.axhline(
-        0.0, color=REFERENCE_COLOR, linestyle="--", linewidth=1.0,
-        zorder=1, label="Treat none",
-    )
-
-    # Show only the range where a decision is still meaningful.
-    useful = t[(nb > 0) & (nb >= nb_all)]
-    x_hi = float(min(t.max(), (useful.max() + 0.1) if useful.size else 0.5))
-    ax.set_xlim(float(t.min()), max(x_hi, 0.2))
-    top = float(np.nanmax(nb)) if np.isfinite(nb).any() else 0.1
-    ax.set_ylim(min(-0.02, float(np.nanmin(nb)) * 0.2), max(top * 1.25, 0.05))
-    ax.set_xlabel("Risk threshold for acting")
-    ax.set_ylabel("Net benefit")
-    place_legend(ax, loc="upper right", scale=0.78)
-
-    prevalence = dca.get("prevalence")
-    extra = (
-        f"outcome rate {float(prevalence):.1%}" if prevalence is not None else None
-    )
-    parts = [_sample_note(validation)] + ([extra] if extra else [])
-    set_titles(ax, title or "Clinical usefulness", " · ".join(parts))
+    del ax
     return fig
 
 
@@ -367,7 +293,7 @@ def write_performance_figures(
         fig = builder(validation, title=title)
         if fig is None:
             continue
-        written.append(save_figure(fig, figs_dir / f"{stem}__{suffix}.svg"))
+        written.append(save_figure(fig, figs_dir / f"{stem}__{suffix}"))
     return written
 
 
@@ -382,5 +308,5 @@ def write_model_comparison_figure(
     if fig is None:
         return None
     return save_figure(
-        fig, Path(figs_dir) / f"{target}__model_comparison.svg", tight_layout=False,
+        fig, Path(figs_dir) / f"{target}__model_comparison", tight_layout=False,
     )

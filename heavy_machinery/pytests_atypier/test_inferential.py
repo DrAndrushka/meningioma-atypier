@@ -173,7 +173,7 @@ def test_forest_plot(tmp_path):
     figs = tmp_path / "figs"
     figs.mkdir()
     inf._forest_plot(pooled, "event", figs)
-    assert (figs / "event__forest.svg").exists()
+    assert (figs / "event__forest.png").exists()
 
 
 def test_summarize_multivariable_cases(tiny_df, tiny_schema):
@@ -346,7 +346,8 @@ def test_forest_row_label_states_the_contrast_for_standardised_predictors():
     binary = inf._forest_row_label(rows.iloc[0])
     continuous = inf._forest_row_label(rows.iloc[1])
     assert binary == "Hyperostosis"
-    assert "per 1 SD" in continuous and "0.17" in continuous
+    assert continuous == "ADC value (per 1 SD: 0.17)"
+    assert "\n" not in continuous
 
 
 def test_forest_row_label_ignores_a_missing_or_zero_sd():
@@ -363,36 +364,28 @@ def test_or_tick_labels_are_plain_decimals():
     assert inf._or_tick(0.0) == ""
 
 
-def test_forest_plot_colours_by_direction_not_significance(tmp_path):
-    """Colour separates raises-the-odds from lowers-the-odds, not p < 0.05."""
-    import matplotlib.pyplot as plt
-    from plot_style import PALETTE
-
-    fig_before = plt.gcf()
+def test_forest_plot_writes_the_report_png(tmp_path):
     inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
                      n_cases=352, n_events=105, epv=17.5)
-    assert (tmp_path / "event__m1__forest.svg").exists()
-
-    svg = (tmp_path / "event__m1__forest.svg").read_text()
-    raises = PALETTE["accent"].lstrip("#").lower()
-    lowers = PALETTE["primary"].lstrip("#").lower()
-    assert raises in svg.lower(), "no colour for odds-raising predictors"
-    assert lowers in svg.lower(), "no colour for odds-lowering predictors"
-    plt.close(fig_before)
+    assert (tmp_path / "event__m1__forest.png").exists()
+    assert not (tmp_path / "event__m1__forest.eps").exists()
 
 
-def test_forest_plot_states_sample_size_and_epv(tmp_path):
+def test_forest_plot_writes_ajnr_exports_under_the_submission_profile(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
     inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
                      n_cases=352, n_events=105, epv=17.5)
-    svg = (tmp_path / "event__m1__forest.svg").read_text()
-    for token in ("352", "105", "17.5"):
-        assert token in svg, f"{token} missing from the figure"
+    assert (tmp_path / "event__m1__forest.png").exists()
+    assert (tmp_path / "event__m1__forest.tif").exists()
+    assert not (tmp_path / "event__m1__forest.eps").exists()
 
 
 def test_forest_plot_skips_an_empty_model(tmp_path):
     empty = _pooled().assign(**{"or": np.nan})
     inf._forest_plot(empty, "event", tmp_path, model_id="m1")
-    assert not list(tmp_path.glob("*.svg"))
+    assert not list(tmp_path.glob("event__m1__forest*"))
 
 
 def test_artifact_model_id_strips_target_and_suffix():

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 import pandas as pd
 from IPython.display import display
@@ -47,6 +47,7 @@ class BinNumeric:
     dda_in_derived: bool = False  # True → DDA report "Derived" table
     eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
+    positive_class: Any = None  # index / present class copied onto ColSpec
 
 
 @dataclass
@@ -64,6 +65,7 @@ class Apply:
     dda_in_derived: bool = False  # True → DDA report "Derived" table
     eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
+    positive_class: Any = None  # index / present class copied onto ColSpec
 
 
 @dataclass
@@ -81,6 +83,7 @@ class Compute:
     dda_in_derived: bool = False  # True → DDA report "Derived" table
     eda_in_derived: bool | None = False  # True→Derived, False→Native, None→omit from EDA
     hide_parent: bool = False  # True → parent stays in df, omitted from EDA/DDA/modelling show
+    positive_class: Any = None  # index / present class copied onto ColSpec
 
 
 def derived_dependencies_from(derivations: Sequence) -> dict[str, list[str]]:
@@ -247,6 +250,7 @@ def _set_schema_col(
     *,
     ordered_levels: list | None = None,
     reason: str = "",
+    positive_class: Any = None,
 ) -> str:
     existed = name in schema
     schema[name] = ColSpec(
@@ -254,6 +258,7 @@ def _set_schema_col(
         kind=kind,
         ordered_levels=ordered_levels,
         note=reason,
+        positive_class=positive_class,
     )
     verb = "updated" if existed else "added"
     return f"{verb} ColSpec ({kind}) for {name}"
@@ -332,6 +337,7 @@ def _apply_bin_numeric(
         spec.kind,
         ordered_levels=levels,
         reason=spec.reason,
+        positive_class=spec.positive_class,
     )
     log.append(_log_entry(
         **_base_log(spec, type_name),
@@ -365,6 +371,7 @@ def _apply_apply(
         spec.kind,
         ordered_levels=spec.ordered_levels if spec.kind == "ordinal" else None,
         reason=spec.reason,
+        positive_class=spec.positive_class,
     )
     log.append(_log_entry(
         **_base_log(spec, type_name),
@@ -418,6 +425,7 @@ def _apply_compute(
         spec.kind,
         ordered_levels=spec.ordered_levels if spec.kind == "ordinal" else None,
         reason=spec.reason,
+        positive_class=spec.positive_class,
     )
     log.append(_log_entry(
         **base,

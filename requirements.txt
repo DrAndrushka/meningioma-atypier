@@ -91,6 +91,12 @@ pandera>=0.20
 # Schema validation (dtypes, categories, ranges) of the cleaned cohort and of
 # every MICE-imputed frame. Uses the `pandera.pandas` namespace (added in 0.20).
 
+python-docx>=1.1
+# Submission-ready Word tables from the cut-point phase. The journal's rules are
+# enforced in code rather than by eye: every border element stripped from the
+# table XML, total width asserted under 6.5 in so the table cannot be set
+# broadside, and a `Note:—` footnote written directly beneath each table.
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 🌐 Streamlit clinical calculator (app.py)

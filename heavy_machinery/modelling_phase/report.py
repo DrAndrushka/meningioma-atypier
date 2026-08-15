@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import functools
 import html as _html
 import importlib
 import importlib.metadata
@@ -17,7 +18,6 @@ import json
 import math
 import os
 import platform
-import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -41,6 +41,12 @@ from cleaning import (
     format_table_for_display,
 )
 from plot_style import prettify_caption, prettify_label
+from scales import LOG1P_COLUMNS, scale_footnote
+
+# The multivariable section lists no predictors of its own — the model decides
+# which survive VIF pruning — so its note names the whole declared set rather
+# than the columns that happen to appear in one variant.
+_MULTIVARIABLE_SCALE_NOTE = scale_footnote(sorted(LOG1P_COLUMNS))
 
 from heavy_machinery.config import load
 
@@ -252,13 +258,14 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 /* Small print under a table or card — caveats, not the main point */
 .footnote { font-size: 12px; color: var(--muted); margin: 4px 0 10px; }
 
-/* Figure grid */
-.figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr));
+/* Figure grid — display size only. Submission TIF/PNG files are untouched. */
+img { max-width: 100%; height: auto; }
+.figure-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px,1fr));
                gap: 14px; margin: 12px 0 18px; }
 .figure-card { border: 1px solid var(--border); border-radius: 8px;
                padding: 8px; background: #fff; }
 .figure-card img, .figure-card object {
-    width: 100%; height: auto; display: block;
+    width: 100%; max-width: 36rem; height: auto; display: block; margin: 0 auto;
 }
 .figure-card .caption { font-size: 12px; color: var(--muted);
                         margin-top: 4px; text-align: center;
@@ -266,12 +273,11 @@ tr.schema-skip td   { color: var(--muted); opacity: 0.6; font-style: italic; }
 .figure-card.eda-heatmap-overview {
     max-width: 100%;
     margin: 8px 0 4px;
-    overflow-x: auto;
 }
 .figure-card.eda-heatmap-overview img {
-    width: auto;
-    min-width: 100%;
-    max-width: none;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
 }
 
 /* Collapsible details */
@@ -279,45 +285,6 @@ details.collapsible { margin: 8px 0 14px; }
 details.collapsible > summary {
     cursor: pointer; font-weight: 600; padding: 6px 0;
     color: var(--accent);
-}
-details.collapsible.glossary-block {
-    margin: 24px 0 8px;
-    padding: 10px 14px 6px;
-    border: none;
-    border-top: 1px dashed var(--border);
-    border-radius: 0;
-    background: transparent;
-}
-details.collapsible.glossary-block > summary {
-    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
-    font-size: 13px;
-    font-weight: 500;
-    font-style: italic;
-    letter-spacing: 0.01em;
-    padding: 4px 0 6px;
-    color: #5b6b7c;
-}
-details.collapsible.glossary-block[open] > summary {
-    color: #4a5568;
-}
-details.collapsible.glossary-block h4 {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--muted);
-    margin: 14px 0 6px;
-}
-details.collapsible.glossary-block .stat-decoder dt {
-    font-size: 12px;
-    font-weight: 600;
-    margin-top: 10px;
-    color: #4b5563;
-}
-details.collapsible.glossary-block .stat-decoder dd {
-    font-size: 12.5px;
-    color: #6b7280;
-    line-height: 1.45;
 }
 
 /* Major report sections (top-level dropdowns) */
@@ -361,26 +328,26 @@ details.section-collapsible > .section-body {
     padding: 4px 24px 28px;
 }
 /* Nested model-group dropdowns inside major sections */
-details.section-collapsible .section-body > details.collapsible:not(.glossary-block) {
+details.section-collapsible .section-body > details.collapsible {
     margin: 12px 0 16px;
     padding: 12px 16px 4px;
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--card);
 }
-details.section-collapsible .section-body > details.collapsible:not(.glossary-block) > summary {
+details.section-collapsible .section-body > details.collapsible > summary {
     font-size: 15px;
     padding: 4px 0 8px;
 }
 /* Bivariate / trivariate key dividers nested under 2️⃣ / 3️⃣ DDA */
-details.section-collapsible .section-body > details.collapsible details.collapsible:not(.glossary-block) {
+details.section-collapsible .section-body > details.collapsible details.collapsible {
     margin: 8px 0 12px;
     padding: 8px 12px 2px;
     border: 1px dashed var(--border);
     border-radius: 6px;
     background: #fafafa;
 }
-details.section-collapsible .section-body > details.collapsible details.collapsible:not(.glossary-block) > summary {
+details.section-collapsible .section-body > details.collapsible details.collapsible > summary {
     font-size: 14px;
     font-weight: 600;
     padding: 2px 0 6px;
@@ -394,10 +361,6 @@ details.section-collapsible > .section-body > p:first-child {
 .tldr-list { padding-left: 22px; }
 .tldr-list li { margin: 4px 0; }
 
-/* Glossary dropdowns (DDA / EDA / missingness / inferential) */
-.stat-decoder dt { font-weight: 600; margin-top: 12px; }
-.stat-decoder dd { margin-left: 0; color: #374151; }
-
 /* Footer */
 .footer { color: var(--muted); font-size: 12px; margin-top: 60px;
           border-top: 1px solid var(--border); padding-top: 12px; }
@@ -408,8 +371,8 @@ details.section-collapsible > .section-body > p:first-child {
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _embed_svg_src(path: Path) -> str | None:
-    """Return a ``data:image/svg+xml;base64,...`` URI for embedding in ``<img src>``."""
+def _embed_png_src(path: Path) -> str | None:
+    """Return a ``data:image/png;base64,...`` URI for embedding in ``<img src>``."""
     try:
         data = path.read_bytes()
     except OSError:
@@ -417,12 +380,23 @@ def _embed_svg_src(path: Path) -> str | None:
     if not data.strip():
         return None
     encoded = base64.standard_b64encode(data).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+    return f"data:image/png;base64,{encoded}"
+
+
+def _png_bytes_img_html(data: bytes, alt: str) -> str:
+    """``<img>`` tag from in-memory PNG bytes."""
+    if not data:
+        return ""
+    encoded = base64.standard_b64encode(data).decode("ascii")
+    return (
+        f'<img src="data:image/png;base64,{encoded}" '
+        f'alt="{_esc(alt)}" loading="lazy"/>'
+    )
 
 
 def _figure_img_html(path: Path) -> str:
-    """``<img>`` tag with the SVG inlined as a data URI (self-contained HTML)."""
-    src = _embed_svg_src(path)
+    """``<img>`` tag with the PNG inlined as a data URI (self-contained HTML)."""
+    src = _embed_png_src(path)
     if src is None:
         return ""
     return f'<img src="{src}" alt="{_esc(prettify_caption(path.stem))}" loading="lazy"/>'
@@ -693,16 +667,6 @@ def details_block(summary: str, inner_html: str, *, open: bool = False) -> str:
             f'<summary>{_esc(summary)}</summary>{inner_html}</details>')
 
 
-def glossary_block(inner_html: str, *, open: bool = False) -> str:
-    """Section-end metrics glossary (DDA / EDA / missingness / inferential)."""
-    open_attr = " open" if open else ""
-    return (
-        f'<details class="collapsible glossary-block"{open_attr}>'
-        f'<summary>{_esc("📖 What do these metrics mean?")}</summary>'
-        f'{inner_html}</details>'
-    )
-
-
 def section_block(title: str, inner_html: str, *, open: bool = False) -> str:
     """Wrap a major report section in a top-level collapsible dropdown."""
     open_attr = " open" if open else ""
@@ -777,15 +741,6 @@ class Artifacts:
     # Marker panel
     panel_marker: pd.DataFrame | None = None
     panel_marker_reading_view: pd.DataFrame | None = None
-    panel_shared_cohort: pd.DataFrame | None = None
-    panel_rule_reading_view: pd.DataFrame | None = None
-    panel_count_score: pd.DataFrame | None = None
-    panel_count_headline: pd.DataFrame | None = None
-    panel_selection_correction: pd.DataFrame | None = None
-    panel_model_vs_single: pd.DataFrame | None = None
-    panel_model_reading_view: pd.DataFrame | None = None
-    panel_imputation_stability: pd.DataFrame | None = None
-    panel_stability_reading_view: pd.DataFrame | None = None
     panel_figures: list[Path] = field(default_factory=list)
 
     # Warnings accumulated during load (rendered in appendix)
@@ -867,13 +822,13 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     art.dda_id_text     = _maybe_read_csv(dda_tab / "dda_id_text.csv", art.warnings)
     dda_fig = root / "dda" / "figures"
     if dda_fig.exists():
-        art.dda_figures = sorted(dda_fig.glob("*.svg"))
+        art.dda_figures = sorted(dda_fig.glob("*.png"))
     dda_biv = root / "dda" / "figures_bivariate"
     if dda_biv.exists():
-        art.dda_bivariate_figures = sorted(dda_biv.glob("*.svg"))
+        art.dda_bivariate_figures = sorted(dda_biv.glob("*.png"))
     dda_tri = root / "dda" / "figures_trivariate"
     if dda_tri.exists():
-        art.dda_trivariate_figures = sorted(dda_tri.glob("*.svg"))
+        art.dda_trivariate_figures = sorted(dda_tri.glob("*.png"))
 
     # Missingness
     miss_tab = root / "missingness" / "tables"
@@ -884,12 +839,12 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
         art.missingness_summary = _maybe_read_csv(root / "missingness" / "missing_per_column.csv", art.warnings)
     miss_fig = root / "missingness" / "figures"
     if miss_fig.exists():
-        art.missingness_figures = sorted(miss_fig.glob("*.svg"))
+        art.missingness_figures = sorted(miss_fig.glob("*.png"))
     else:
         # Older layout: figures dropped directly in missingness/
         flat = root / "missingness"
         if flat.exists():
-            art.missingness_figures = sorted(flat.glob("*.svg"))
+            art.missingness_figures = sorted(flat.glob("*.png"))
     # Formal-MICE manifest (engine + R/package versions, m, max_iter, seed).
     mice_manifest_path = root / "missingness" / "mice" / "manifest.json"
     if mice_manifest_path.exists():
@@ -908,7 +863,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     )
     eda_fig = root / "eda" / "figures"
     if eda_fig.exists():
-        art.eda_figures = sorted(eda_fig.glob("*.svg"))
+        art.eda_figures = sorted(eda_fig.glob("*.png"))
 
     # Inferential
     inf_tab = root / "inferential" / "tables"
@@ -945,7 +900,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
             art.inferential_vif[key] = pd.read_csv(f)
     inf_fig = root / "inferential" / "figures"
     if inf_fig.exists():
-        art.inferential_figures = sorted(inf_fig.glob("*.svg"))
+        art.inferential_figures = sorted(inf_fig.glob("*.png"))
 
     # Marker panel
     panel_tab = root / "panel" / "tables"
@@ -953,36 +908,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     art.panel_marker_reading_view = _maybe_read_csv(
         panel_tab / "02_marker_panel_reading_view.csv", art.warnings,
     )
-    art.panel_shared_cohort = _maybe_read_csv(
-        panel_tab / "03_shared_cohort.csv", art.warnings,
-    )
-    art.panel_rule_reading_view = _maybe_read_csv(
-        panel_tab / "06_rule_reading_view.csv", art.warnings,
-    )
-    art.panel_count_score = _maybe_read_csv(
-        panel_tab / "07_count_score.csv", art.warnings,
-    )
-    art.panel_selection_correction = _maybe_read_csv(
-        panel_tab / "09_selection_correction.csv", art.warnings,
-    )
-    art.panel_model_vs_single = _maybe_read_csv(
-        panel_tab / "10_model_vs_single.csv", art.warnings,
-    )
-    art.panel_imputation_stability = _maybe_read_csv(
-        panel_tab / "11_imputation_stability.csv", art.warnings,
-    )
-    art.panel_count_headline = _maybe_read_csv(
-        panel_tab / "12_count_headline.csv", art.warnings,
-    )
-    art.panel_model_reading_view = _maybe_read_csv(
-        panel_tab / "13_model_reading_view.csv", art.warnings,
-    )
-    art.panel_stability_reading_view = _maybe_read_csv(
-        panel_tab / "14_stability_reading_view.csv", art.warnings,
-    )
     panel_fig = root / "panel" / "figures"
     if panel_fig.exists():
-        art.panel_figures = sorted(panel_fig.glob("*.svg"))
+        art.panel_figures = sorted(panel_fig.glob("*.png"))
 
     return art
 
@@ -1278,47 +1206,6 @@ def _format_count_cols(df: pd.DataFrame, cols: Iterable[str]) -> pd.DataFrame:
     return df
 
 
-# Per-operation column layout for the cleaning log. Each `step` is rendered as
-# its own table showing only the columns relevant to that operation.
-_CLEANING_LOG_GROUPS = [
-    ("apply_schema", "Schema coercions",
-     ["column", "action", "kind", "reason"]),
-    ("drop_rows", "Dropped rows",
-     ["reason", "criterion", "n_before", "n_dropped", "n_remaining"]),
-]
-
-
-def _render_cleaning_log_tables(log: pd.DataFrame) -> str:
-    """Split the cleaning log by `step` into separate per-operation tables."""
-    if "step" not in log.columns:
-        return table_to_html(log, max_rows=200)
-
-    def _drop_blank_cols(df: pd.DataFrame) -> pd.DataFrame:
-        keep = [c for c in df.columns
-                if not df[c].isna().all()
-                and not (df[c].astype(str).str.strip() == "").all()]
-        return df[keep]
-
-    parts: list[str] = []
-    handled: set[str] = set()
-    for step_val, label, cols in _CLEANING_LOG_GROUPS:
-        sub = log[log["step"] == step_val]
-        if sub.empty:
-            continue
-        handled.add(step_val)
-        sub = _drop_blank_cols(sub[[c for c in cols if c in sub.columns]])
-        sub = _format_count_cols(sub, ["n_before", "n_dropped", "n_remaining"])
-        parts.append(f"<h4>{_esc(label)}</h4>")
-        parts.append(table_to_html(sub, max_rows=200))
-
-    others = log[~log["step"].isin(handled)]
-    if not others.empty:
-        parts.append("<h4>Other steps</h4>")
-        parts.append(table_to_html(_drop_blank_cols(others), max_rows=200))
-
-    return "".join(parts) if parts else table_to_html(log, max_rows=200)
-
-
 def _cleaning_provenance(art: Artifacts) -> str:
     """Provenance strip: dataset shape at each hand-off point."""
     summary = art.cleaning_summary
@@ -1516,85 +1403,7 @@ def render_cleaning(cfg: ReportConfig, art: Artifacts) -> str:
             + table_to_html(coer, max_rows=500),
         ))
 
-    has_log = art.cleaning_log is not None and not art.cleaning_log.empty
-    has_deriv = art.derivation_log is not None and not art.derivation_log.empty
-    if has_log or has_deriv:
-        log_html = (_render_cleaning_log_tables(art.cleaning_log) if has_log else "")
-        if has_deriv:
-            log_html += (
-                "<h4>Derivation log (raw)</h4>"
-                "<p>Every declared derivation, including entries that were "
-                "skipped as inactive or because their source was missing — "
-                "those do not appear in the tables above.</p>"
-                + table_to_html(art.derivation_log, max_rows=200)
-            )
-        body.append(details_block("📜 Full cleaning log", log_html))
     return section_block("🧹 Cleaning story", "".join(body))
-
-
-def render_schema(cfg: ReportConfig, art: Artifacts) -> str:
-    """🧬 Schema story with kind badges."""
-    blurb = ("Variables were classified by analytical role. Continuous/count "
-             "variables were treated numerically, ordinal variables preserved "
-             "ordering, nominal variables were treated as unordered categories, "
-             "and ID/text/skip variables were excluded from statistical "
-             "screening where appropriate.")
-    body = [f'<p>{blurb}</p>']
-
-    if art.schema_summary is None or art.schema_summary.empty:
-        body.append(warning_box("No schema artifact was found."))
-        return section_block("🧬 Schema story", "".join(body))
-
-    sch = art.schema_summary.copy()
-
-    # Mark targets visually
-    target_set = set(cfg.targets)
-    if "column" in sch.columns:
-        sch["role"] = sch["column"].apply(
-            lambda c: "🎯 target" if c in target_set else "")
-
-    # Kind -> emoji
-    kind_emoji = {
-        "continuous": "🔵 continuous", "count": "🔵 count",
-        "ordinal": "🟣 ordinal", "binary": "🟢 binary",
-        "nominal": "🟡 nominal", "datetime": "🕒 datetime",
-        "id": "⚪ id", "text": "⚪ text", "skip": "⚪ skip",
-    }
-    if "kind" in sch.columns:
-        sch["kind"] = sch["kind"].map(lambda k: kind_emoji.get(str(k), str(k)))
-
-    # Collapse long level lists (> 10 values) behind a small expander.
-    if "levels" in sch.columns:
-        sch["levels"] = sch["levels"].map(_format_levels_cell)
-
-    def _schema_row_cls(r) -> str:
-        return "schema-skip" if str(r.get("keep")).strip().lower() in (
-            "false", "0") else ""
-
-    body.append(table_to_html(
-        sch, max_rows=400, row_class_fn=_schema_row_cls,
-        safe_html_cols=["levels"]))
-    return section_block("🧬 Schema story", "".join(body))
-
-
-def _format_levels_cell(v: Any) -> str:
-    """Comma-join level lists; collapse behind an expander when > 10 values."""
-    if v is None or (isinstance(v, float) and math.isnan(v)) or str(v).strip() == "":
-        return ""
-    levels = v
-    if isinstance(v, str):
-        try:
-            levels = ast.literal_eval(v)
-        except (ValueError, SyntaxError):
-            return _esc(v)
-    if not isinstance(levels, (list, tuple)):
-        return _esc(str(v))
-    text = ", ".join(str(x) for x in levels)
-    if len(levels) > 10:
-        preview = ", ".join(str(x) for x in levels[:3])
-        return (f'<details class="collapsible"><summary>{_esc(preview)} … '
-                f'({len(levels)} values)</summary>{_esc(text)}</details>')
-    return _esc(text)
 
 
 _DDA_KIND_DISPLAY = {
@@ -1766,8 +1575,6 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
             svg_grid(figs),
         ))
 
-    uni.append(glossary_block(_dda_glossary()))
-
     body.append(details_block(
         "1️⃣ DDA - univariate",
         "".join(uni),
@@ -1852,318 +1659,6 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
     return section_block("📊 Descriptive Data Analysis (DDA)", "".join(body))
 
 
-# Every metric emitted across the DDA tables, grouped by where it appears.
-_DDA_GLOSSARY_GROUPS = [
-    ("Shared across tables", [
-        ("column", "Variable name."),
-        ("kind", "Variable type (continuous, count, ordinal, nominal, binary, "
-                 "datetime, id, text)."),
-        ("ordered", "Whether the categories have a meaningful order "
-                    "(ordinal = yes, nominal = no)."),
-        ("n", "Number of non-missing observations."),
-        ("n_unique", "Number of distinct values."),
-        ("missing_pct", "Percentage of missing values for this variable."),
-    ]),
-    ("Continuous / count variables", [
-        ("min", "Smallest observed value."),
-        ("max", "Largest observed value."),
-        ("p_5th", "5th percentile — 5% of values fall below this."),
-        ("p_95th", "95th percentile — 5% of values fall above this."),
-        ("median", "Middle value (50th percentile); robust to outliers."),
-        ("mean", "Arithmetic average."),
-        ("trimmed_mean",
-         "Average after removing the lowest 5% and highest 5% of values "
-         "(10% symmetric trim). 📐 One giant tumor can't drag the number up — "
-         "you still use most of the cohort. Compare to mean to see outlier pull."),
-        ("mode", "Most frequent value."),
-        ("std",
-         "Typical distance from the average. 📏 Large std = values spread wide; "
-         "near zero = everyone clustered together. Shows how much patients differ "
-         "on this variable."),
-        ("cv",
-         "Relative spread: std ÷ |mean| (think of it as a %). 📊 Compares "
-         "variability across columns with different units — e.g. age vs tumor "
-         "volume. High cv = values bounce around a lot vs the typical level."),
-        ("iqr", "Interquartile range (Q3 − Q1); middle-50% spread."),
-        ("skewness",
-         "Which way the long tail points. 0 ≈ symmetric. ➡️ Positive = a few "
-         "very high values (mean often above median). ⬅️ Negative = a few very "
-         "low values. Flags when the average is a poor 'typical patient' summary."),
-        ("kurtosis",
-         "How heavy the tails are vs a normal bell curve (0 = normal-like). "
-         "📈 High = more extreme outliers than expected; low = flatter, fewer "
-         "surprises. Early heads-up before choosing parametric vs non-parametric tests."),
-    ]),
-    ("Categorical / ordinal variables", [
-        ("first_mode", "Most common category."),
-        ("first_mode_pct", "Share of the most common category."),
-        ("second_mode", "Second most common category."),
-        ("second_mode_pct", "Share of the second most common category."),
-        ("rarest", "Least common category."),
-        ("rarest_pct", "Share of the least common category."),
-        ("max_class_imbalance",
-         "How lopsided categories are: most-common count ÷ rarest count. "
-         "⚖️ 1 = perfectly even; 10 = the biggest group is 10× the smallest. "
-         "High values warn that one category may dominate plots and models."),
-        ("median_category", "Middle category by rank order (ordinal only)."),
-        ("balance", "Normalized Shannon entropy (0–1). Closer to 1 = more "
-                    "evenly distributed."),
-        ("entropy_bin",
-         "Shannon entropy in bits — how mixed the categories are. 🎲 0 = "
-         "everyone in one bucket; higher = more categories contributing roughly "
-         "evenly. Helps spot variables with rich variety vs near-constant labels."),
-    ]),
-    ("Binary variables", [
-        ("mode", "More common of the two values."),
-        ("mode_pct", "Share of the more common value."),
-        ("rarest", "Less common of the two values."),
-        ("rarest_pct", "Share of the less common value."),
-    ]),
-    ("Datetime variables", [
-        ("min", "Earliest timestamp."),
-        ("max", "Latest timestamp."),
-        ("span_days", "Number of days between the earliest and latest value."),
-    ]),
-]
-
-
-def _dda_glossary() -> str:
-    parts: list[str] = []
-    for title, items in _DDA_GLOSSARY_GROUPS:
-        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
-                     for k, v in items)
-        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
-    return "".join(parts)
-
-
-# Every metric shown in EDA association + diagnostic-accuracy tables.
-_EDA_GLOSSARY_GROUPS = [
-    ("Association table columns", [
-        ("predictor",
-         "The MRI or clinical variable being screened against the target."),
-        ("kind",
-         "Predictor type from the schema (continuous, count, binary, ordinal, "
-         "nominal, etc.). The test is picked to match this type."),
-        ("n_used",
-         "Patients with both target and predictor recorded for this test. 📏 "
-         "Low n_used = shakier result; missing data shrinks the sample."),
-    ]),
-    ("Statistical tests", [
-        ("mann_whitney_u",
-         "Compares a numeric predictor between outcome-present vs outcome-absent "
-         "groups using ranks, not raw values. 🔬 Chosen over a t-test because "
-         "tumor size, ADC, etc. are often skewed with outliers — ranks are more "
-         "trustworthy."),
-        ("mann_whitney_u_days",
-         "Same Mann–Whitney idea applied to time gaps (days since earliest MRI "
-         "date). Used when the predictor is a date."),
-        ("spearman",
-         "Measures whether higher values of one variable tend to pair with higher "
-         "(or lower) values of another, using ranks. 📈 Chosen over Pearson "
-         "correlation because it does not assume a straight-line relationship "
-         "or a bell-curve shape."),
-        ("chi2",
-         "Tests whether category counts differ across outcome groups (e.g. skull "
-         "base vs convex location by grade). 🗂️ Standard for larger tables. "
-         "We switch to Fisher's exact when a 2×2 table has very small expected "
-         "counts (< 5)."),
-        ("fisher_exact",
-         "Exact test for 2×2 category tables with sparse cells. 🎯 More reliable "
-         "than χ² when few patients fall in a box — common for rare imaging "
-         "findings."),
-        ("kruskal_wallis",
-         "Checks whether a numeric predictor differs across several outcome "
-         "groups. 📊 Non-parametric alternative to one-way ANOVA — we use it "
-         "when the outcome has 3+ categories and the predictor is not normally "
-         "distributed."),
-    ]),
-    ("Effect sizes", [
-        ("rank_biserial_r",
-         "Signed rank difference between two groups (−1 to +1). ➡️ Positive = "
-         "higher values in the outcome-present group; negative = lower. Shows "
-         "direction and strength beyond the p-value."),
-        ("spearman_rho",
-         "Spearman correlation (−1 to +1). ➡️ Positive = both variables rise "
-         "together; negative = one rises as the other falls. 0 ≈ no monotonic "
-         "link."),
-        ("phi",
-         "Signed 2×2 association (−1 to +1), equal to Pearson r on 0/1 codes. "
-         "➡️ Positive = feature-present co-occurs with the outcome; negative = "
-         "protective / inverse. |ϕ| equals Cramér's V on the same table."),
-        ("cramers_v",
-         "How tightly two categorical variables are linked (0 = none, 1 = perfect). "
-         "🔗 Unsigned — used when there are 3+ categories (no single direction). "
-         "Helps judge whether a location or margin category meaningfully "
-         "tracks the outcome, not just whether χ² is significant."),
-        ("epsilon_sq",
-         "Kruskal–Wallis effect size — share of overall spread explained by "
-         "group membership. 📐 Small ε² = groups overlap a lot; larger = clearer "
-         "separation."),
-        ("effect",
-         "The numeric effect size for that row (one of the labels above). Separate "
-         "from p: a big sample can make a tiny effect 'significant.'"),
-    ]),
-    ("P-values and significance", [
-        ("p",
-         "Nominal p-value — surprise if there were truly no association. ⚠️ "
-         "Screening dozens of predictors inflates false positives; do not rely "
-         "on raw p alone."),
-        ("p_fdr",
-         "FDR-adjusted p (Benjamini–Hochberg), recalculated within each target. "
-         "🎲 Without correction, screening dozens of predictors at p<0.05 means "
-         "you expect several false positives by luck alone — 'significant' rows "
-         "that are not real associations. "
-         "📐 Strict alternative (Bonferroni): divide α by the number of tests "
-         "(e.g. 0.05 ÷ 30 ≈ 0.0017) or multiply each p by 30 — very conservative, "
-         "but here it would often wipe out every hit and miss real MRI signals "
-         "in an exploratory screen. "
-         "🛡️ FDR is the middle path: among the predictors you flag, it caps "
-         "the expected share that are false discoveries — shortlist candidates "
-         "without treating every nominal p as trustworthy."),
-        ("significance",
-         "Row badge: 🟢 FDR-significant, 🟡 nominally significant only, ⚪ not "
-         "significant. Green rows survived multiple-testing correction."),
-        ("auc_univariate",
-         "One-predictor discrimination for binary targets (0.5 = coin flip, "
-         "1.0 = perfect). 🎯 Only for binary/continuous/count predictors. If "
-         "raw AUC < 0.5 we report 1 − AUC so direction does not hide strength."),
-    ]),
-    ("Diagnostic accuracy table", [
-        ("Sensitivity",
-         "Among patients with the outcome, what share had the imaging feature "
-         "present? 🔍 High = few false negatives. Low = the feature often misses "
-         "cases."),
-        ("Specificity",
-         "Among patients without the outcome, what share did not have the feature? "
-         "✅ High = few false positives. Low = the feature flags many healthy "
-         "patients."),
-        ("PPV",
-         "Positive predictive value — if the feature is present, what share "
-         "actually have the outcome? 🎯 Tells you how much to trust a positive "
-         "finding (depends on how common the outcome is)."),
-        ("NPV",
-         "Negative predictive value — if the feature is absent, what share truly "
-         "lack the outcome? 🛡️ High NPV = a negative finding is reassuring."),
-        ("Accuracy",
-         "Overall correct calls (present/absent vs outcome) as a %. 📊 Easy to "
-         "read but misleading when the outcome is rare — check sensitivity and "
-         "specificity too."),
-        ("AUC (binary)",
-         "(sensitivity + specificity) / 2 for a yes/no variable — balanced "
-         "accuracy. 📐 Not a ROC-AUC: the multivariable section reports a true "
-         "ROC-AUC under headings that say <em>Model AUC</em>. Matches the "
-         "Upreti et al. Table 3 style."),
-        ("Wilson 95% CI",
-         "Confidence interval for each % in brackets. 📏 Narrow = precise; wide "
-         "= few events or small sample — interpret cautiously."),
-    ]),
-]
-
-
-def _eda_glossary() -> str:
-    parts: list[str] = []
-    for title, items in _EDA_GLOSSARY_GROUPS:
-        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
-                     for k, v in items)
-        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
-    return "".join(parts)
-
-
-# Missingness audit + formal MICE imputation (missingness_resolution.py).
-_MICE_GLOSSARY_GROUPS = [
-    ("Missingness audit", [
-        ("missing_pct / pct_missing",
-         "Share of empty cells per column. High values flag variables that may "
-         "be unreliable in screening or models."),
-        ("co-missingness (Jaccard)",
-         "How often two columns are missing on the same patients (0 = never "
-         "together, 1 = always together). Reveals structural gaps — e.g. ADC "
-         "missing when DWI was not performed."),
-    ]),
-    ("Formal MICE settings (R mice)", [
-        ("m",
-         "Number of completed datasets (20 for publication; 3 for fast "
-         "iteration). All m share one mice() chain so uncertainty is preserved."),
-        ("max_iter (maxit)",
-         "Fully-conditional-specification cycles through the incomplete "
-         "variables until the chain stabilises (20 publication; 5 quick)."),
-        ("seed",
-         "Single RNG seed passed to mice() for reproducible draws."),
-        ("method by variable type",
-         "continuous/count → pmm, binary → logreg, nominal → polyreg, "
-         "ordinal → polr. Each incomplete variable gets a model matched to its "
-         "declared kind — recorded in methods.csv."),
-        ("analysis_outcome",
-         "The observed outcome (e.g. high_grade) predicts missing predictors "
-         "but is never imputed; its source column is excluded as a duplicate. "
-         "Not valid for deployment where the outcome is unknown."),
-        ("derived_dependencies",
-         "Parent→child map (e.g. multiple_meningiomas←meningioma_count). "
-         "Non-outcome derived columns are dropped before R and recreated from "
-         "their imputed sources to avoid contradictions."),
-    ]),
-    ("Imputation engine", [
-        ("R mice via subprocess",
-         "proper_mice_impute() writes input.csv + mice_spec.json, calls "
-         "Rscript scripts/run_mice.R, then reloads the completed datasets. No "
-         "rpy2; the notebook experience is unchanged."),
-        ("predictor matrix",
-         "Built explicitly in R (predictor_matrix.csv): row id, IDs, text, "
-         "datetime, skipped, derived, and excluded columns are zeroed so they "
-         "never silently drive imputations."),
-        ("proper multiple imputation",
-         "The manifest marks proper_multiple_imputation=True and "
-         "rubin_pooling_supported=True only when the R run and all validation "
-         "succeed — required before Rubin pooling."),
-        ("dtype restoration + validation",
-         "Each completed frame is recast to the original cohort (Categorical "
-         "levels/order, nullable Float64/Int64/boolean), then checked for row "
-         "identity, unchanged observed cells, filled missing cells, legal "
-         "categories, and derived consistency. Pandera runs on every frame."),
-        ("imputed_cell_variation.csv",
-         "Per originally-missing cell, how the imputed value varies across the "
-         "m draws (mean/sd or level counts). A diagnostic, not a confidence "
-         "interval."),
-    ]),
-    ("Sensitivity method — RF chained (not formal MICE)", [
-        ("rf_chained_impute()",
-         "Random-forest IterativeImputer with post-hoc Bernoulli sampling for "
-         "binary cells (legacy alias: mice_impute). Manifest marks "
-         "proper_multiple_imputation=False — Rubin pooling is NOT supported."),
-        ("joblib parallel / OS-aware",
-         "RF draws run in parallel (loky), capped per OS/CPU and macOS "
-         "battery. Used only for the optional sensitivity analysis."),
-    ]),
-    ("Python / R modules", [
-        ("missingness_resolution.py",
-         "Project module: missingness audit, formal R-mice orchestration, RF "
-         "sensitivity, simple_impute screening, structural-missing handling."),
-        ("R: mice / jsonlite",
-         "mice runs the mixed-type FCS chain; jsonlite reads the spec. "
-         "Install once: install.packages(c(\"mice\", \"jsonlite\"))."),
-        ("pandas / numpy",
-         "Exchange-file I/O, missing-cell counts, dtype restoration, "
-         "cell-variation diagnostics."),
-        ("scikit-learn / joblib",
-         "IterativeImputer + RandomForestRegressor for the RF sensitivity "
-         "method only (parallel via loky)."),
-        ("matplotlib / seaborn",
-         "Missing-% bar chart and co-missingness heatmap figures."),
-        ("subprocess / hashlib / shutil (stdlib)",
-         "Launch Rscript, hash the exchange input, manage the run directory."),
-    ]),
-]
-
-
-def _missingness_glossary() -> str:
-    parts: list[str] = []
-    for title, items in _MICE_GLOSSARY_GROUPS:
-        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
-                     for k, v in items)
-        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
-    return "".join(parts)
-
-
 def _mice_engine_block(art: Artifacts) -> str:
     """Compact table of the imputation engine + R / package versions.
 
@@ -2225,7 +1720,6 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     body.append(_mice_engine_block(art))
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
-        body.append(glossary_block(_missingness_glossary()))
         return section_block("🕳️ Missingness story", "".join(body))
 
     if art.missingness_summary is not None and not art.missingness_summary.empty:
@@ -2248,8 +1742,6 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     if art.missingness_figures:
         body.append("<h3>Patterns</h3>")
         body.append(svg_grid(art.missingness_figures))
-
-    body.append(glossary_block(_missingness_glossary()))
 
     return section_block("🕳️ Missingness story", "".join(body))
 
@@ -2288,7 +1780,7 @@ def _render_eda_heatmap_overview(
                     f"<ul class='muted'>{items}</ul>"
                 )
             return warning_box("Not enough association data for a heatmap overview.")
-        src = f"data:image/svg+xml;base64,{base64.b64encode(data).decode('ascii')}"
+        src = f"data:image/png;base64,{base64.b64encode(data).decode('ascii')}"
         img = (
             '<img src="'
             f'{src}" alt="EDA target × predictor heatmap overview" loading="lazy"/>'
@@ -2371,15 +1863,14 @@ def _eda_paper_display_table(
                 f"{g1} n/N (%)": _eda_cell(r.get("grade1")),
                 f"{g23} n/N (%)": _eda_cell(r.get("grade23")),
                 "OR (95% CI)": _eda_cell(r.get("effect")),
-                "AUC": _eda_cell(r.get("auc")),
                 "FDR-p": _eda_cell(r.get("p_fdr")),
             })
         elif family == "categorical":
             p_cell = _eda_cell(r.get("p_fdr")) or _eda_cell(r.get("p_level"))
             out_rows.append({
                 "Variable": label,
-                f"{g1} n (%)": _eda_cell(r.get("grade1")),
-                f"{g23} n (%)": _eda_cell(r.get("grade23")),
+                f"{g1} n/N (%)": _eda_cell(r.get("grade1")),
+                f"{g23} n/N (%)": _eda_cell(r.get("grade23")),
                 "OR (95% CI)": _eda_cell(r.get("effect")),
                 "FDR-p": p_cell,
             })
@@ -2457,6 +1948,7 @@ def _render_eda_native_derived_block(
     target: str,
     derived_cols: frozenset[str],
     n_fdr_family: int,
+    n_derived_family: int = 0,
     excluded_cols: frozenset[str] = frozenset(),
 ) -> str:
     """Native and Derived stay separate; each origin = one stacked datatype table."""
@@ -2494,15 +1986,61 @@ def _render_eda_native_derived_block(
             open=title.startswith("🌱"),
         ))
 
+    # Named here rather than left implicit: a per-SD odds ratio means nothing
+    # until the reader knows which scale that SD is measured on.
+    scale_note = scale_footnote(sorted(set(sub["predictor"].astype(str))))
     footnote = (
         "<p class='muted'><small>"
-        "P values corrected for multiple comparisons using the "
-        "Benjamini–Hochberg procedure across all "
-        f"{n_fdr_family} candidate variables (binary, categorical, and "
-        "continuous) tested in this screening pass."
-        "</small></p>"
+        "Native FDR-p: Benjamini–Hochberg across "
+        f"{n_fdr_family} native candidate variables. "
+        "Derived FDR-p: a separate Benjamini–Hochberg across "
+        f"{n_derived_family} derived variables "
+        "(derived flags do not enter the native multiplicity family)."
+        + (f" {_esc(scale_note)}" if scale_note else "")
+        + "</small></p>"
     )
     return "".join(blocks) + footnote
+
+
+def _render_univariate_or_forest(
+    paper: pd.DataFrame,
+    *,
+    target: str,
+    excluded_cols: frozenset[str] | set[str] = frozenset(),
+    include: frozenset[str] | set[str] | None = None,
+    caption: str = "Unadjusted odds ratios (95% CI)",
+    alt: str | None = None,
+) -> str:
+    """Embed the unadjusted-OR forest built from the paper-table effect column."""
+    if paper is None or paper.empty:
+        return ""
+    try:
+        from eda_paper_tables import (
+            draw_univariate_or_forest,
+            univariate_or_forest_data,
+        )
+        from plot_style import figure_to_png_bytes
+    except Exception:
+        return ""
+
+    plot_df = univariate_or_forest_data(
+        paper, target=target, excluded=excluded_cols, include=include,
+    )
+    if plot_df.empty:
+        return ""
+    try:
+        fig, _ax = draw_univariate_or_forest(plot_df)
+        png = figure_to_png_bytes(fig, tight_layout=False, kind="halftone")
+    except Exception:
+        return ""
+    img = _png_bytes_img_html(png, alt or f"{target} univariate forest")
+    if not img:
+        return ""
+    return (
+        f'<div class="figure-card">{img}'
+        f'<div class="caption">{_esc(caption)}</div>'
+        f'</div>'
+    )
 
 
 def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
@@ -2510,7 +2048,6 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
     body: list[str] = []
     if art.associations is None or art.associations.empty:
         body.append(warning_box("No EDA associations table was found."))
-        body.append(glossary_block(_eda_glossary()))
         return section_block("🔍 Exploratory association screening (EDA)", "".join(body))
 
     body.append(
@@ -2548,50 +2085,107 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             continue
 
         target_body: list[str] = []
+        pred = sub["predictor"].astype(str)
+        is_derived = pred.isin(derived_cols)
         if "in_fdr_family" in sub.columns:
-            n_fdr_family = int(sub["in_fdr_family"].fillna(True).astype(bool).sum())
+            n_fdr_family = int(
+                (sub["in_fdr_family"].fillna(True).astype(bool) & ~is_derived).sum()
+            )
         else:
-            n_fdr_family = len(sub)
+            n_fdr_family = int((~is_derived).sum())
+        n_derived_family = int(is_derived.sum())
 
-        sub["_p_num"] = sub["p_fdr"].apply(_coerce_p)
-        sub["_eff_abs"] = sub["effect"].apply(
+        native_sub = sub.loc[~is_derived].copy()
+        native_sub["_p_num"] = native_sub["p_fdr"].apply(_coerce_p)
+        native_sub["_eff_abs"] = native_sub["effect"].apply(
             lambda v: abs(_coerce_float(v)) if _coerce_float(v) is not None else -1)
-        sub = sub.sort_values(["_p_num", "_eff_abs"],
-                              ascending=[True, False], na_position="last")
-        n_fdr = int(sub.apply(
+        native_sub = native_sub.sort_values(
+            ["_p_num", "_eff_abs"], ascending=[True, False], na_position="last",
+        )
+        n_fdr = int(native_sub.apply(
             lambda r: classify_significance(
                 r.get("p"), r.get("p_fdr"),
                 fdr_alpha=cfg.fdr_alpha, nominal_alpha=cfg.nominal_alpha,
             ) == "sig-fdr",
             axis=1,
-        ).sum())
+        ).sum()) if not native_sub.empty else 0
         if n_fdr > 0:
-            top = sub.iloc[0]
+            top = native_sub.iloc[0]
             line = (f"For target <code>{_esc(target)}</code>, "
-                    f"<strong>{n_fdr}</strong> predictor"
+                    f"<strong>{n_fdr}</strong> native predictor"
                     f"{'s' if n_fdr > 1 else ''} survived FDR correction. "
                     f"Strongest exploratory association: "
                     f"<code>{_esc(top['predictor'])}</code> "
                     f"({_esc(top['effect_label'])} = {_esc(top['effect'])}, "
                     f"FDR p = {_esc(human_p(top['p_fdr']))}).")
         else:
-            line = (f"No predictors survived FDR correction for "
+            line = (f"No native predictors survived FDR correction for "
                     f"<code>{_esc(target)}</code>.")
         target_body.append(f"<p>{line}</p>")
 
-        target_body.append(_render_eda_native_derived_block(
-            paper if paper is not None else pd.DataFrame(),
+        paper_df = paper if paper is not None else pd.DataFrame()
+        table_html = _render_eda_native_derived_block(
+            paper_df,
             target=str(target),
             derived_cols=derived_cols,
             n_fdr_family=n_fdr_family,
+            n_derived_family=n_derived_family,
             excluded_cols=excluded_cols,
-        ))
+        )
+        target_body.append(details_block("📊 Paper-style table", table_html))
+
+        # output/panel/ carries no target column — it is built for the primary
+        # target, so it hangs under that target and no other.
+        if target == order[0]:
+            binary_block = _binary_marker_block(art)
+            if binary_block:
+                target_body.append(binary_block)
+
+        if paper_df.empty or "predictor" not in paper_df.columns:
+            paper_preds: set[str] = set()
+        elif "target" in paper_df.columns:
+            tmask = paper_df["target"].astype(str) == str(target)
+            paper_preds = set(paper_df.loc[tmask, "predictor"].astype(str))
+        else:
+            paper_preds = set(paper_df["predictor"].astype(str))
+        native_preds = paper_preds - set(derived_cols)
+        derived_preds = paper_preds & set(derived_cols)
+
+        native_forest = _render_univariate_or_forest(
+            paper_df,
+            target=str(target),
+            excluded_cols=excluded_cols,
+            include=native_preds,
+            caption="Native unadjusted odds ratios (95% CI)",
+            alt=f"{target} native univariate forest",
+        )
+        if native_forest:
+            target_body.append(details_block(
+                "🌲 Native forest",
+                native_forest,
+            ))
+        derived_forest = _render_univariate_or_forest(
+            paper_df,
+            target=str(target),
+            excluded_cols=excluded_cols,
+            include=derived_preds,
+            caption="Derived unadjusted odds ratios (95% CI)",
+            alt=f"{target} derived univariate forest",
+        )
+        if derived_forest:
+            target_body.append(details_block(
+                "🌲 Derived forest",
+                derived_forest,
+            ))
 
         prefix = f"{target}__"
         figs = [
             p for p in art.eda_figures
             if p.stem.startswith(prefix)
             and p.stem[len(prefix):] not in excluded_cols
+            and p.stem[len(prefix):] not in {
+                "univariate_forest", "univariate_forest_derived",
+            }
         ]
         if figs:
             target_body.append(details_block(
@@ -2604,119 +2198,7 @@ def render_eda(cfg: ReportConfig, art: Artifacts) -> str:
             f'{"".join(target_body)}</details>'
         )
 
-    body.append(glossary_block(_eda_glossary()))
-
     return section_block("🔍 Exploratory association screening (EDA)", "".join(body))
-
-
-# Every metric shown in multivariable tables, EPV gauge, VIF, and forest plots.
-_INFERENTIAL_GLOSSARY_GROUPS = [
-    ("Sample size & power", [
-        ("epv",
-         "Events per variable: outcome events ÷ model parameters. 📏 Rule of thumb "
-         "≥ 10 = stable; 5–10 = borderline; < 5 = underpowered. Flags when too many "
-         "predictors chase too few high-grade cases."),
-        ("n_complete_cases",
-         "Patients available to the model. 🧩 After formal MICE every retained "
-         "predictor is filled, so this is effectively the full cohort; the "
-         "complete-case preview (pre-imputation) is shown only as a stability "
-         "sanity check."),
-        ("n_outcome_events",
-         "Count of the rarer outcome class among those patients. 🎯 Drives EPV and how "
-         "trustworthy each adjusted OR is."),
-        ("n_design_columns",
-         "Predictor columns in the final design matrix after encoding and VIF pruning. "
-         "📐 Nominal variables expand to several columns; each counts toward EPV."),
-    ]),
-    ("Adjusted OR table", [
-        ("predictor_col",
-         "Predictor name in the fitted model (one-hot levels show as "
-         "variable__category)."),
-        ("risk",
-         "% with the outcome. Ex: 20 high-grade / 100 patients → 20% risk. 🏥"),
-        ("odds",
-         "Cases ÷ non-cases. Ex: 20 high-grade / 80 not → 0.25. 🎲 Models use "
-         "odds, not %."),
-        ("or",
-         "Odds in one group ÷ odds in another (others held fixed). Ex: edema "
-         "12/18 = 0.67 vs no edema 8/62 = 0.13 → OR ≈ 5. 🔢 OR 2 = odds double; "
-         "not always risk double when outcome is common."),
-        ("or_ci_lo / or_ci_hi",
-         "95% confidence interval for the OR. 📏 CI entirely above 1 → likely risk "
-         "factor; entirely below 1 → likely protective; crossing 1 → not clearly "
-         "different from no effect."),
-        ("coef",
-         "Log-odds coefficient before exponentiating. Used internally; OR is the "
-         "clinician-facing scale."),
-        ("se",
-         "Standard error of the pooled coefficient. Smaller = more precise estimate."),
-        ("p",
-         "Two-sided p-value from the pooled estimate (Rubin + Barnard–Rubin df). ⚠️ "
-         "Use with the CI — a small p with a wide CI still means uncertainty."),
-        ("df",
-         "Pooled degrees of freedom for the t-test (Barnard–Rubin). Corrects for "
-         "multiple imputation; large values shown as ∞."),
-        ("n_models",
-         "Imputed datasets where this coefficient converged. Lower than m = 10 means "
-         "some fits failed — interpret that row cautiously."),
-        ("model_id",
-         "Short label for this literature or custom predictor-set variant."),
-    ]),
-    ("Collinearity (VIF)", [
-        ("vif",
-         "Variance inflation factor = 1 / (1 − R²). 🔗 VIF > 5 means the predictor "
-         "overlaps heavily with others (e.g. necrosis + heterogeneous enhancement). "
-         "Highest-VIF columns are dropped iteratively until all ≤ 5 — clearer ORs than "
-         "keeping redundant MRI signs."),
-        ("predictor",
-         "Design-matrix column checked for VIF (in the VIF diagnostics dropdown)."),
-    ]),
-    ("Forest plot", [
-        ("Adjusted OR (log scale)",
-         "Dot = pooled OR; whiskers = 95% CI. 📊 Log axis keeps large and small ORs "
-         "readable on one chart. Vertical dashed line at OR = 1 is the null — no "
-         "independent association."),
-    ]),
-    ("Encoding & pooling methods", [
-        ("z-score",
-         "Continuous/count predictors rescaled to (x − mean) / SD. 📐 OR becomes 'per "
-         "1 SD increase' — comparable across tumor volume, ADC, etc. Raw units would "
-         "mix incomparable scales on one forest plot."),
-        ("one-hot (drop-first)",
-         "Nominal categories → 0/1 columns vs a reference level. 🗂️ Avoids treating "
-         "location labels as ordered numbers."),
-        ("ordinal codes",
-         "Ordered categories kept as numeric ranks (not one-hot). Preserves "
-         "grade-like ordering without exploding column count."),
-        ("logistic regression (Logit)",
-         "Binary outcome model: linear combination of predictors → probability via "
-         "logistic curve. 📈 Standard for adjusted ORs in clinical papers — transparent "
-         "vs black-box ML that hides independent effects."),
-        ("formal MICE + Rubin pooling",
-         "Model fit on each of m datasets from one mixed-type mice() chain "
-         "(proper_mice_impute); coefficients averaged and SEs combined (within "
-         "+ between imputation variance). 🎲 Valid inference with missing data — "
-         "single imputation or complete-case-only would ignore uncertainty or "
-         "drop patients."),
-        ("Barnard–Rubin df",
-         "Small-sample correction for pooled p-values and CIs when m is modest. "
-         "Preferable to a plain z-test after MI, which can be anti-conservative."),
-        ("binary imaging signs (logreg)",
-         "Missing binary MRI signs are imputed by logistic regression within the "
-         "MICE chain (MAR conditional on the other predictors), so patients are "
-         "not dropped. 🛡️ Imputation uncertainty propagates through Rubin pooling; "
-         "if missingness is informative (MNAR), add a sensitivity analysis."),
-    ]),
-]
-
-
-def _inferential_glossary() -> str:
-    parts: list[str] = []
-    for title, items in _INFERENTIAL_GLOSSARY_GROUPS:
-        dt = "".join(f"<dt><code>{_esc(k)}</code></dt><dd>{_esc(v)}</dd>"
-                     for k, v in items)
-        parts.append(f"<h4>{_esc(title)}</h4><dl class=\"stat-decoder\">{dt}</dl>")
-    return "".join(parts)
 
 
 def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
@@ -2725,16 +2207,17 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
     if not art.inferential_multivariable and (art.inferential_summary is None
                                                or art.inferential_summary.empty):
         body.append(warning_box("No multivariable model artifacts were found."))
-        body.append(glossary_block(_inferential_glossary()))
         return section_block("🧮 Multivariable modelling", "".join(body))
 
     body.append(
         '<p>Multivariable logistic regression was fitted for each target and '
         'each predictor-set variant you defined. Predictors were encoded '
-        'according to schema type, continuous/count variables were standardized, '
+        'according to schema type, continuous/count variables were standardized '
+        'so their odds ratios are per 1 SD, '
         'nominal variables were one-hot encoded, and high-VIF predictors were '
         'pruned. Estimates were pooled across the formal mixed-type MICE '
         'datasets with Rubin\u2019s rules.</p>'
+        f'<p>{_esc(_MULTIVARIABLE_SCALE_NOTE)}</p>'
         '<p>Missing values — including binary imaging signs — were imputed '
         'within the MICE chain (binary signs via logistic regression) under a '
         'MAR assumption conditional on the included predictors, so patients '
@@ -2846,8 +2329,6 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                 _render_model_blocks(experimental_keys),
             ))
 
-    body.append(glossary_block(_inferential_glossary()))
-
     return section_block("🧮 Multivariable modelling", "".join(body))
 
 
@@ -2864,16 +2345,6 @@ def _num(value: Any, digits: int = 2) -> str:
     return "—" if v is None else f"{v:.{digits}f}"
 
 
-def _signed(value: Any, digits: int = 3) -> str:
-    v = _coerce_float(value)
-    return "—" if v is None else f"{v:+.{digits}f}"
-
-
-def _pct(value: Any) -> str:
-    v = _coerce_float(value)
-    return "—" if v is None else f"{v * 100:.1f}%"
-
-
 def _int(value: Any) -> str:
     v = _coerce_float(value)
     return "—" if v is None else f"{int(round(v))}"
@@ -2883,52 +2354,13 @@ def _table(df: pd.DataFrame) -> str:
     return table_to_html(df)
 
 
-_URL_IN_NOTE = re.compile(r"https?://\S+")
-
-
-def _linked_model_notes(view: pd.DataFrame) -> pd.DataFrame:
-    """Turn the bare paper URL in ``Note`` into an anchor, escaping the rest.
-
-    The panel writes the URL as plain text so the CSV stays openable in a
-    spreadsheet. Here it becomes a link, and the anchor text is "Paper" rather
-    than the URL itself — the Cureus one is 110 characters and would set the
-    column width for the whole table. Everything around it is escaped by hand,
-    because the column is handed to ``table_to_html`` as safe HTML.
-    """
-    if "Note" not in view.columns:
-        return view
-
-    def render(cell) -> str:
-        text = str(cell or "")
-        match = _URL_IN_NOTE.search(text)
-        if not match:
-            return _esc(text)
-        url = match.group(0)
-        rest = _esc((text[:match.start()] + text[match.end():]).strip())
-        anchor = (f'<a href="{_esc(url)}" target="_blank" '
-                  f'rel="noopener noreferrer">Paper&nbsp;↗</a>')
-        return f"{rest} {anchor}".strip() if rest else anchor
-
-    out = view.copy()
-    out["Note"] = [render(c) for c in out["Note"]]
-    return out
-
-
 def _panel_figure(art: Artifacts, stem: str) -> str:
-    """One panel SVG by filename stem, or nothing if it was not written."""
+    """One panel figure by filename stem, or nothing if it was not written."""
     for path in art.panel_figures:
         if path.stem == stem:
-            return _figure_img_html(path)
+            img = _figure_img_html(path)
+            return f'<div class="figure-card">{img}</div>' if img else ""
     return ""
-
-
-def _panel_shared_n(art: Artifacts) -> str:
-    """The denominator the head-to-head was run on, quoted from its own table."""
-    table = art.panel_shared_cohort
-    if table is None or table.empty:
-        return "—"
-    row = table[table["item"].astype(str) == "Patients in the shared set"]
-    return _int(row["value"].iloc[0]) if len(row) else "—"
 
 
 def _panel_aim_one(art: Artifacts) -> str:
@@ -3029,16 +2461,18 @@ def _panel_table_footnotes(art: Artifacts) -> str:
         rate, events, n = prev
         lines.append(
             f"Cohort prevalence of WHO grade 2–3 is {rate:.1%} ({events}/{n}). "
-            "LR+, sensitivity and specificity do not depend on it; predictive "
-            "values would, and are reported in the univariate accuracy table "
-            "rather than here."
+            "LR+, sensitivity and specificity do not depend on it; PPV and NPV "
+            "do, and apply only to a population with this grade 2–3 rate."
         )
     lines.append(
         "n/N (%) = patients with the finding present / patients assessed for "
         "it (percentage); each variable is scored on its own complete cases, "
         "so denominators differ between rows. LR+ = positive likelihood ratio, "
         "the number of times more often a finding is present in a WHO grade "
-        "2–3 tumour than in a grade 1 one."
+        "2–3 tumour than in a grade 1 one. NPV = negative predictive value, "
+        "the proportion of tumours without the finding that are grade 1; "
+        "PPV = positive predictive value, the proportion of tumours with the "
+        "finding that are grade 2–3."
     )
     if corrected:
         lines.append(
@@ -3047,6 +2481,7 @@ def _panel_table_footnotes(art: Artifacts) -> str:
     lines.append(
         "ADC = apparent diffusion coefficient; CI = confidence interval; "
         "DWI = diffusion-weighted imaging; LR+ = positive likelihood ratio; "
+        "NPV = negative predictive value; PPV = positive predictive value; "
         "Sens = sensitivity; Spec = specificity; T1/T2 = T1- and T2-weighted "
         "imaging.")
     return ("<p class='muted'><small>"
@@ -3054,240 +2489,17 @@ def _panel_table_footnotes(art: Artifacts) -> str:
             + "</small></p>")
 
 
-_COUNT_LEAD_TEMPLATES = {
-    "rises": (
-        "Risk rises from {low_risk} among the {low_n} patients with "
-        "{low_count} of the {k} signs present to {high_risk} among the "
-        "{high_n} with {high_count}."
-    ),
-    "falls": (
-        "Risk falls from {low_risk} among the {low_n} patients with "
-        "{low_count} of the {k} signs present to {high_risk} among the "
-        "{high_n} with {high_count}."
-    ),
-    "flat": (
-        "Risk is {low_risk} at both ends of the usable range — {low_count} "
-        "of the {k} signs present ({low_n} patients) and {high_count} "
-        "({high_n})."
-    ),
-}
+def _binary_marker_block(art: Artifacts) -> str:
+    """The binary-marker panel, as one dropdown inside its EDA target.
 
-
-def _panel_count_lead(art: Artifacts) -> str:
-    """The aim-2 headline sentence, wording and all, taken from its own table.
-
-    ``12_count_headline.csv`` decided which two counts have enough patients
-    behind them to quote and which way the risk went; this only chooses the
-    phrasing that matches. Nothing here compares two risks, which is the point:
-    a hard-coded "rises" is a claim the renderer cannot check.
+    Returns "" when ``output/panel/`` was never written: the target body then
+    simply has one dropdown fewer, rather than a warning about artifacts the
+    reader did not ask for.
     """
-    head = art.panel_count_headline
-    if head is None or head.empty:
+    view = art.panel_marker_reading_view
+    if art.panel_marker is None or view is None or view.empty:
         return ""
-    row = head.iloc[0]
-    template = _COUNT_LEAD_TEMPLATES.get(str(row.get("direction")))
-    if template is None:
-        return ""
-    sentence = template.format(
-        low_risk=_pct(row["low_risk"]), low_n=_int(row["low_n"]),
-        low_count=_int(row["low_count"]), k=_int(row["k_markers"]),
-        high_risk=_pct(row["high_risk"]), high_n=_int(row["high_n"]),
-        high_count=_int(row["high_count"]),
-    )
-    floor = _coerce_float(row.get("min_n"))
-    if floor is not None and floor > 1:
-        sentence += (
-            f" Counts held by fewer than {int(floor)} patients are left out of "
-            "this sentence; they are still in the figure."
-        )
-    note = str(row.get("note") or "").strip()
-    if note and note.lower() != "nan":
-        sentence += f" ({_esc(note)}.)"
-    return _lead(sentence)
-
-
-_CORRECTION_TEMPLATES = {
-    "widens": (
-        "Uncorrected the gap is {apparent}; paying for the selection on both "
-        "sides <strong>widens</strong> it to {corrected}, because choosing the "
-        "best of the single signs cost more than choosing the best combination "
-        "({single_cost} against {combo_cost} of Youden J)."
-    ),
-    "narrows": (
-        "Uncorrected the gap is {apparent}; paying for the selection on both "
-        "sides <strong>narrows</strong> it to {corrected}, so part of the raw "
-        "advantage was the benefit of having chosen the winner on these same "
-        "patients (selection cost {single_cost} for the single sign, "
-        "{combo_cost} for the combination)."
-    ),
-    "unchanged": (
-        "Uncorrected the gap is {apparent}, and correcting both sides leaves "
-        "it there: the two sides cost the same to choose ({single_cost} and "
-        "{combo_cost} of Youden J)."
-    ),
-}
-
-
-def _panel_correction_effect(single: pd.Series, combo: pd.Series) -> str:
-    """What correction did to the gap — read from the table, not asserted.
-
-    Correcting usually shrinks a winner's advantage, and the temptation is to
-    say so in prose. On this cohort it does the opposite: the best-of-sixteen
-    single side carries more selection optimism than the best-of-many
-    combination side, so the corrected gap is the larger one. Which way it went
-    is a column in ``09_selection_correction.csv``.
-    """
-    effect = str(combo.get("correction_effect") or "").strip()
-    template = _CORRECTION_TEMPLATES.get(effect)
-    if template is None:
-        return ""
-    return template.format(
-        apparent=_signed(combo.get("gain_apparent")),
-        corrected=_signed(combo.get("gain_corrected")),
-        single_cost=_num(single.get("optimism"), 3),
-        combo_cost=_num(combo.get("optimism"), 3),
-    )
-
-
-def _panel_model_prose(art: Artifacts) -> str:
-    """Which model column compares with which, and on whose patients."""
-    table = art.panel_model_vs_single
-    n_text, denominator, single_n = "", "", ""
-    if table is not None and not table.empty:
-        if "n_scored" in table.columns:
-            scored = sorted({_to_int_or_none(v) for v in table["n_scored"]} - {None, 0})
-            if len(scored) == 1:
-                n_text = f"one shared set of {scored[0]} patients"
-        if "denominator" in table.columns:
-            values = {str(v).strip() for v in table["denominator"]
-                      if str(v).strip() and str(v).strip().lower() != "nan"}
-            if len(values) == 1:
-                denominator = values.pop()
-        if "n_best_single" in table.columns:
-            single_n = _int(table["n_best_single"].iloc[0])
-
-    if n_text and denominator:
-        where = (f"<strong>Model AUC here</strong> is each model re-scored on "
-                 f"{n_text} — {_esc(denominator)} — so the models are "
-                 "comparable with one another as well as with the signs.")
-    else:
-        where = ("<strong>Model AUC here</strong> is each model re-scored on "
-                 "its own complete cases, so the models are <em>not</em> "
-                 "directly comparable with one another; the "
-                 "<em>Patients scored</em> column gives each one's "
-                 "denominator.")
-    subset = (
-        f" The single-sign columns are scored on the {single_n} patients with "
-        "every marker observed, which the models' set is drawn from."
-        if single_n and single_n != "—" else ""
-    )
-    return (
-        "<p>" + where + " It is <em>apparent</em> — correcting it would mean "
-        "re-running the bootstrap here, which is refitting — so it is "
-        "optimistic, and the gap between the two <em>own patients</em> columns "
-        "bounds by how much." + subset + " The column it should be read "
-        "against is <strong>Best single AUC (corrected)</strong>: both are "
-        "areas under the curve, where 0.5 is a coin toss. The Youden J beside "
-        "it is the same single sign on a different scale (0 is useless, and "
-        "<em>AUC = (J + 1) / 2</em> for a yes/no rule), so it compares with the "
-        "rule table below, never with an AUC.</p>"
-    )
-
-
-def _panel_aim_two(art: Artifacts) -> str:
-    counts = art.panel_count_score
-    if counts is None or counts.empty:
-        return "<h3>Does a combination beat one sign?</h3>" + info_box(
-            "A combination needs at least two usable markers on a shared set of "
-            "patients; this run did not have them."
-        )
-
-    lead = _panel_count_lead(art)
-
-    corr = art.panel_selection_correction
-    correction_html = ""
-    if corr is not None and not corr.empty:
-        single = corr[corr["side"] == "best single"]
-        combo = corr[corr["side"] == "best combination"]
-        if len(single) and len(combo):
-            s, c = single.iloc[0], combo.iloc[0]
-            correction_html = (
-                "<p>Head-to-head on the same "
-                f"{_panel_shared_n(art)} patients, both sides corrected for "
-                "having been picked here: the best single sign "
-                f"(<em>{_esc(s['best_rule'])}</em>) scores "
-                f"{_num(s['J_corrected'])}, the best combination "
-                f"(<em>{_esc(c['best_rule'])}</em>) scores "
-                f"{_num(c['J_corrected'])} — a gain of "
-                f"<strong>{_signed(c['gain_corrected'])}</strong>. "
-                + _panel_correction_effect(s, c) + "</p>"
-            )
-
-    model_html = ""
-    model_view = art.panel_model_reading_view
-    if model_view is not None and not model_view.empty:
-        model_html = (
-            "<h4>Against the multivariable models</h4>"
-            + _panel_model_prose(art)
-            + table_to_html(_linked_model_notes(model_view),
-                            safe_html_cols=("Note",))
-        )
-
-    stability_html = ""
-    stability_view = art.panel_stability_reading_view
-    if stability_view is not None and not stability_view.empty:
-        stability_html = details_block(
-            "🎲 Does filling in the missing scans change this?",
-            "<p>Every headline above is computed on patients whose markers were "
-            "actually recorded. Re-running across the MICE draws asks whether "
-            "the same answers come back. Reported as reproduction rates rather "
-            "than pooled estimates: averaging works for an estimate, not for a "
-            "choice, and 'which rule wins' is a choice.</p>"
-            + _table(stability_view),
-        )
-
-    rules_html = ""
-    if art.panel_rule_reading_view is not None and \
-            not art.panel_rule_reading_view.empty:
-        rules_html = details_block(
-            "📋 Every rule, ranked",
-            "<p>Singles, AND/OR pairs and count rules on one patient set, "
-            "ranked by Youden J (sensitivity + specificity − 1).</p>"
-            + _table(art.panel_rule_reading_view)
-            + _panel_figure(art, "rule_space"),
-        )
-
-    return (
-        "<h3>Does a combination beat one sign?</h3>"
-        + lead
-        + _panel_figure(art, "count_score")
-        + correction_html
-        + model_html
-        + rules_html
-        + stability_html
-    )
-
-
-def render_marker_panel(cfg: ReportConfig, art: Artifacts) -> str:
-    """🎯 The two study aims, answered on one cohort.
-
-    Everything here is read from ``output/panel/``. The section is the last
-    substantive one because it depends on every section above it: the markers
-    come from the EDA screen, the models from multivariable modelling, and the
-    cut-points baked into the derived flags from the threshold notebook.
-    """
-    if art.panel_marker is None and art.panel_count_score is None:
-        return section_block(
-            "🎯 Which MRI markers, and do they combine?",
-            warning_box(
-                "No marker panel was found under output/panel/. "
-                "Run the marker panel cell in the modelling notebook."
-            ),
-        )
-    return section_block(
-        "🎯 Which MRI markers, and do they combine?",
-        _panel_aim_one(art) + _panel_aim_two(art),
-    )
+    return details_block("⋈ Binary", _panel_aim_one(art))
 
 
 def _to_int_or_none(x: Any) -> int | None:
@@ -3410,9 +2622,22 @@ def _parse_requirements_packages(requirements_path: Path) -> set[str]:
     return names
 
 
+@functools.lru_cache(maxsize=1)
+def _packages_distributions() -> dict[str, list[str]]:
+    """Import-name -> distribution map, built once.
+
+    ``importlib.metadata.packages_distributions()`` walks every path entry and
+    reads the metadata of every installed distribution — about half a second in
+    this environment. It was being rebuilt from scratch for each import name the
+    appendix looked up, which is where the environment table spent its time.
+    The interpreter's installed set cannot change mid-run, so one build is enough.
+    """
+    return importlib.metadata.packages_distributions()
+
+
 def _distribution_name(import_name: str) -> str:
     """Map a top-level import name to its PyPI distribution name."""
-    mapped = importlib.metadata.packages_distributions().get(import_name)
+    mapped = _packages_distributions().get(import_name)
     if mapped:
         return mapped[0]
     return _IMPORT_TO_DIST.get(import_name, import_name)
@@ -3788,12 +3013,10 @@ def build_report(cfg: ReportConfig) -> str:
     sections = [
         render_header(cfg, art),
         render_cleaning(cfg, art),
-        render_schema(cfg, art),
         render_dda(cfg, art),
         render_missingness(cfg, art),
         render_eda(cfg, art),
         render_inferential(cfg, art),
-        render_marker_panel(cfg, art),
         render_appendix(cfg, art),
     ]
 

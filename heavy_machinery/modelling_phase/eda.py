@@ -17,10 +17,12 @@ import seaborn as sns
 from scipy.stats import (
     mannwhitneyu, spearmanr, chi2_contingency, fisher_exact, kruskal,
 )
+# ``_chi2_row`` binds a local named ``chi2``; alias the distribution to keep it clear.
+from scipy.stats import chi2 as chi2_dist
 from sklearn.metrics import roc_auc_score
 from statsmodels.stats.proportion import proportion_confint
 
-from schema_infer import ColSpec
+from schema_infer import ColSpec, pin_positive_last
 from cleaning import format_table_for_csv as _format_table_for_csv  # CSV display-only rounding
 from plot_style import (
     FIG_WIDTH_MEDIUM,
@@ -30,7 +32,7 @@ from plot_style import (
     deterministic_rng,
     errorbar_lengths,
     figure_size,
-    figure_to_svg_bytes,
+    figure_to_png_bytes,
     format_p,
     level_tick_labels,
     lowess_curve,
@@ -51,6 +53,7 @@ _TEST_LABELS = {
     "mann_whitney_u": "Mann–Whitney U",
     "mann_whitney_u_days": "Mann–Whitney U",
     "spearman": "Spearman",
+    "cochran_armitage": "Cochran–Armitage trend",
     "chi2": "χ²",
     "fisher_exact": "Fisher exact",
     "kruskal_wallis": "Kruskal–Wallis",
@@ -58,6 +61,7 @@ _TEST_LABELS = {
 _EFFECT_SYMBOLS = {
     "rank_biserial_r": "r",
     "spearman_rho": "ρ",
+    "trend_r": "r",
     "phi": "φ",
     "cramers_v": "V",
     "epsilon_sq": "ε²",
@@ -104,12 +108,66 @@ def _load_hidden_parent_columns(output_root: Path | str) -> frozenset[str]:
     return frozenset(str(c) for c in tbl["column"].dropna().tolist())
 
 
+def _load_eda_derived_columns(output_root: Path | str) -> frozenset[str]:
+    """Columns with ``eda_in_derived=True`` (EDA Derived table / own BH family)."""
+    path = Path(output_root) / "cleaning" / "eda_derived_columns.csv"
+    if not path.exists():
+        return frozenset()
+    try:
+        tbl = pd.read_csv(path)
+    except Exception:
+        return frozenset()
+    if "column" not in tbl.columns:
+        return frozenset()
+    return frozenset(str(c) for c in tbl["column"].dropna().tolist())
+
+
+def apply_native_and_derived_fdr(
+    out: pd.DataFrame,
+    *,
+    derived_cols: frozenset[str] | set[str] = frozenset(),
+    fdr_family: Sequence[str] | None = None,
+    fdr_alpha: float = 0.05,
+) -> pd.DataFrame:
+    """BH within native and derived families separately.
+
+    Derived columns never enter the native multiplicity family. They still
+    get an FDR-p from a second BH run among derived predictors only.
+    """
+    out = out.copy()
+    derived = {str(c) for c in derived_cols}
+    preds = out["predictor"].astype(str)
+    if fdr_family is not None:
+        family = {str(p) for p in fdr_family} - derived
+    else:
+        family = set(preds) - derived
+    native = preds.isin(family)
+    is_derived = preds.isin(derived)
+    out["in_fdr_family"] = native
+    out["p_fdr"] = np.nan
+    for t in out["target"].unique():
+        tmask = out["target"] == t
+        nmask = tmask & native
+        if nmask.any():
+            out.loc[nmask, "p_fdr"] = benjamini_hochberg(out.loc[nmask, "p"]).values
+        dmask = tmask & is_derived
+        if dmask.any():
+            out.loc[dmask, "p_fdr"] = benjamini_hochberg(out.loc[dmask, "p"]).values
+    out["fdr_significant"] = out["p_fdr"] < fdr_alpha
+    return out
+
+
 def benjamini_hochberg(p: pd.Series) -> pd.Series:
     """
     Benjamini–Hochberg FDR-adjusted p-values (q-values).
     Implements the step-up procedure: q_i = min over k>=i of p_(k) * m / k.
     """
-    p = pd.Series(p).astype(float)
+    raw = pd.Series(p)
+    if pd.api.types.is_numeric_dtype(raw):
+        p = raw.astype(float)
+    else:
+        s = raw.astype(str).str.strip().str.replace(r"^<\s*", "", regex=True)
+        p = pd.to_numeric(s, errors="coerce")
     valid = p.notna()
     pv = p[valid].values
     m = len(pv)
@@ -345,6 +403,39 @@ def _chi2_row(table: np.ndarray) -> dict:
             "effect": _cramers_v(table), "effect_label": "cramers_v"}
 
 
+def _cochran_armitage_row(y: np.ndarray, x: np.ndarray) -> dict:
+    """Cochran–Armitage test for trend across an ordered predictor.
+
+    Scores the levels 0, 1, 2, … — one step of the scale is one step of the
+    score — and tests ``M² = (n − 1)·r²`` against χ² with one degree of
+    freedom. Equal spacing is what makes it a trend test rather than a rank
+    correlation: Spearman would weight each level by how many patients sit in
+    it, which dilutes a small extreme category exactly when that category is
+    the one carrying the signal.
+
+    ``x`` holds the level codes (``NaN`` for a value outside the declared
+    order) and ``y`` the 0/1 outcome. The effect is the signed correlation
+    behind ``M²``; positive means the outcome gets more common as the level
+    rises, in the order declared by the schema.
+    """
+    y = np.asarray(y, dtype=float)
+    x = np.asarray(x, dtype=float)
+    keep = np.isfinite(y) & np.isfinite(x)
+    y, x = y[keep], x[keep]
+    n = len(y)
+    empty = {"test": "cochran_armitage", "stat": np.nan, "p": np.nan,
+             "effect": np.nan, "effect_label": "trend_r"}
+    if n < 3 or np.std(y) == 0 or np.std(x) == 0:
+        return empty
+    r = float(np.corrcoef(x, y)[0, 1])
+    if not np.isfinite(r):
+        return empty
+    m_sq = (n - 1) * r * r
+    return {"test": "cochran_armitage", "stat": m_sq,
+            "p": float(chi2_dist.sf(m_sq, 1)),
+            "effect": r, "effect_label": "trend_r"}
+
+
 def _spearman_row(y: np.ndarray, x: np.ndarray) -> dict:
     if np.nanstd(y) == 0 or np.nanstd(x) == 0:
         return {"test": "spearman", "stat": np.nan, "p": np.nan,
@@ -374,8 +465,10 @@ def _association_test(
             return {"test": "mann_whitney_u", "stat": stat, "p": p,
                     "effect": eff, "effect_label": "rank_biserial_r"}
         if pred_kind == "ordinal":
+            # Ordered levels against a yes/no outcome: test for a trend across
+            # the steps, not for an any-difference-anywhere omnibus effect.
             x, _ = _predictor_values(pair, pred, pred_spec)
-            return _spearman_row(y_arr, x.values)
+            return _cochran_armitage_row(y_arr, x.values)
         if pred_kind == "datetime":
             x, _ = _predictor_values(pair, pred, pred_spec)
             # Fixed order: outcome==1 first, outcome==0 second (locks sign).
@@ -520,19 +613,27 @@ def _plot_groups_raincloud(
 
 
 def _level_order(s: pd.Series, spec: ColSpec | None) -> list:
-    """Observed levels in schema / categorical order (not alphabetical)."""
+    """Observed levels in schema / categorical order (not alphabetical).
+
+    Ordinal keeps clinical ``ordered_levels``. Nominal / binary pin a declared
+    ``positive_class`` last so graphs match the table contrast (baseline → index).
+    """
     if not isinstance(s, pd.Series):
         s = pd.Series(s)
     obs = set(s.dropna())
     if not obs:
         return []
     if isinstance(s.dtype, pd.CategoricalDtype):
-        return [c for c in s.cat.categories if c in obs]
-    if spec and spec.ordered_levels:
+        base = [c for c in s.cat.categories if c in obs]
+    elif spec and spec.ordered_levels:
         ordered = [lv for lv in spec.ordered_levels if lv in obs]
         extras = sorted((x for x in obs if x not in spec.ordered_levels), key=str)
-        return ordered + extras
-    return sorted(obs, key=str)
+        base = ordered + extras
+    else:
+        base = sorted(obs, key=str)
+    if spec is not None and spec.kind != "ordinal":
+        return pin_positive_last(base, spec.positive_class)
+    return base
 
 
 def _annotate_above(
@@ -747,7 +848,7 @@ def _plot_pair(
         return
 
     set_titles(ax, title, _result_subtitle(result, len(sub), fdr_alpha=fdr_alpha))
-    save_figure(fig, figs_dir / f"{safe}.svg")
+    save_figure(fig, figs_dir / safe)
 
 
 def _plot_pairs(
@@ -789,7 +890,7 @@ def _plot_pairs(
 
 # Effect sizes that carry a direction; everything else is magnitude-only and is
 # marked on the heatmap so a red cell is never read as "positive association".
-_SIGNED_EFFECTS = frozenset({"spearman_rho", "rank_biserial_r", "phi"})
+_SIGNED_EFFECTS = frozenset({"spearman_rho", "rank_biserial_r", "phi", "trend_r"})
 _UNSIGNED_EFFECTS = frozenset({"cramers_v", "epsilon_sq"})
 
 
@@ -1081,7 +1182,7 @@ def association_heatmap_svg(
     bottom = 0.30 if n_p > 12 else 0.22
     fig.subplots_adjust(left=left, bottom=bottom, right=0.90, top=0.90)
 
-    return figure_to_svg_bytes(fig, pad_inches=0.35, tight_layout=False)
+    return figure_to_png_bytes(fig, pad_inches=0.35, tight_layout=False)
 
 
 def plot_association_heatmap(
@@ -1091,13 +1192,13 @@ def plot_association_heatmap(
     figs_dir: Path,
     fdr_alpha: float = 0.05,
 ) -> None:
-    """Write ``association_heatmap.svg`` under ``figs_dir`` using seaborn."""
+    """Write ``association_heatmap.png`` under ``figs_dir`` using seaborn."""
     data = association_heatmap_svg(
         out, target_order=targets, fdr_alpha=fdr_alpha,
     )
     if data:
         figs_dir.mkdir(parents=True, exist_ok=True)
-        (figs_dir / "association_heatmap.svg").write_bytes(data)
+        (figs_dir / "association_heatmap.png").write_bytes(data)
 
 
 # ---------------------------------------------------------------------------
@@ -1222,14 +1323,14 @@ def screen_associations(
         _format_table_for_csv(out).to_csv(tabs_dir / "associations.csv", index=False)
         return out
 
-    # FDR per target, restricted to the declared multiplicity family
-    family = set(fdr_family) if fdr_family is not None else set(out["predictor"])
-    out["in_fdr_family"] = out["predictor"].isin(family)
-    out["p_fdr"] = np.nan
-    for t in out["target"].unique():
-        mask = (out["target"] == t) & out["in_fdr_family"]
-        out.loc[mask, "p_fdr"] = benjamini_hochberg(out.loc[mask, "p"]).values
-    out["fdr_significant"] = out["p_fdr"] < fdr_alpha
+    # Native BH family excludes derived columns; derived get their own BH.
+    derived_cols = _load_eda_derived_columns(output_root)
+    out = apply_native_and_derived_fdr(
+        out,
+        derived_cols=derived_cols,
+        fdr_family=fdr_family,
+        fdr_alpha=fdr_alpha,
+    )
 
     if "auc_univariate" not in out.columns:
         out["auc_univariate"] = np.nan

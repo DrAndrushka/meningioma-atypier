@@ -101,11 +101,11 @@ def print_output_summary(output_root: Path | str) -> None:
         print(f"  • {rel} ({_human_bytes(artifact.stat().st_size)})")
 
     print("\n── 🖼️ Figure counts ──")
-    figure_dirs = sorted({artifact.parent for artifact in files if artifact.suffix.lower() == ".svg"})
+    figure_dirs = sorted({artifact.parent for artifact in files if artifact.suffix.lower() == ".png"})
     for fig_dir in figure_dirs:
-        figs = sorted(fig_dir.glob("*.svg"))
+        figs = sorted(fig_dir.glob("*.png"))
         print(
-            f"  • {fig_dir.relative_to(root)} — {len(figs)} svg · "
+            f"  • {fig_dir.relative_to(root)} — {len(figs)} png · "
             f"{_human_bytes(sum(p.stat().st_size for p in figs))}"
         )
 
