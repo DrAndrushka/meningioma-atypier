@@ -2135,18 +2135,64 @@ def _render_eda_native_derived_block(
         )
 
     scale_note = scale_footnote(sorted(set(sub["predictor"].astype(str))))
+    has_auc = ("auc" in sub.columns
+               and sub["auc"].astype("string").fillna("").str.strip().ne("").any())
+
+    # AJNR house style: one "Note:—" paragraph, then the abbreviation list.
+    # Written out rather than carried over from the previous version, because
+    # three things it described have changed — continuous odds ratios are now
+    # standardised on a declared scale, the AUC interval is DeLong rather than
+    # a bootstrap, and native and derived variables are corrected in separate
+    # families instead of one.
+    note = [
+        "<strong>Note:&mdash;</strong>Data are median [IQR] for continuous "
+        "variables and n/N (%) for binary variables. Odds ratios for "
+        "continuous variables are per 1-SD increase; for binary variables they "
+        "compare the finding present against absent."
+    ]
+    if scale_note:
+        note.append(_esc(scale_note))
+    if has_auc:
+        note.append(
+            "AUC is reported for continuous variables only, as the DeLong "
+            "estimate with a 95% CI computed on the logit scale."
+        )
+    note.append(
+        "P values are corrected for multiple comparisons by the "
+        "Benjamini&ndash;Hochberg false discovery rate procedure. "
+        "<strong>Native and derived variables form separate families</strong>: "
+        f"{n_fdr_family} native variables in this table and "
+        f"{n_derived_family} derived variables in the Derived table, corrected "
+        "independently. A derived variable is a measurement already in the "
+        "native family with a cut-point applied to it, so correcting the two "
+        "together would test the same information twice and shift every native "
+        "value."
+    )
+    if level_note:
+        note.append(level_note.strip())
+    if dropped_note:
+        note.append(dropped_note.strip())
+    if uncorrected_note:
+        note.append(uncorrected_note.strip())
+    note.append(
+        "Denominators vary because of missing data; each variable is analysed "
+        "on its own complete cases. Blank cells indicate not applicable."
+    )
+    note.append(
+        "<strong>These values are not portable: adding or removing any "
+        "variable requires the whole of its table to be recomputed.</strong> A "
+        "Benjamini&ndash;Hochberg value is the raw P multiplied by the family "
+        "size over the variable's rank, so it depends on which other variables "
+        "share its table and is not a per-variable constant."
+    )
+    abbreviations = (
+        "AUC indicates area under the receiver operating characteristic curve; "
+        "CI, confidence interval; FDR, false discovery rate; IQR, "
+        "interquartile range; SD, standard deviation."
+    )
     footnote = (
-        "<p class='muted'><small>"
-        "Native FDR-p: Benjamini–Hochberg across "
-        f"{n_fdr_family} native candidate variables. "
-        "Derived FDR-p: a separate Benjamini–Hochberg across "
-        f"{n_derived_family} derived variables "
-        "(derived flags do not enter the native multiplicity family)."
-        + level_note
-        + uncorrected_note
-        + dropped_note
-        + (f" {_esc(scale_note)}" if scale_note else "")
-        + "</small></p>"
+        "<p class='muted'><small>" + " ".join(note) + "</small></p>"
+        "<p class='muted'><small>" + abbreviations + "</small></p>"
     )
     return "".join(blocks) + footnote
 

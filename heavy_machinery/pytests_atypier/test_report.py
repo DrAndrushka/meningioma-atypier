@@ -561,7 +561,12 @@ def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
     assert "eda-kind-divider" in html
     assert "eda-col-header" in html
     assert "eda-paper-stack" in html
-    assert "Benjamini–Hochberg across" in html
+    # The AJNR footnote: one Note:— paragraph, then the abbreviation list.
+    assert "Note:&mdash;" in html
+    assert "Benjamini&ndash;Hochberg false discovery rate procedure" in html
+    assert "Native and derived variables form separate families" in html
+    assert "not portable" in html
+    assert "AUC indicates area under the receiver operating characteristic" in html
     assert "Full Sweep" not in html
     assert "Like in that research" not in html
     # One fold per origin, each holding that origin's table AND its forest.
