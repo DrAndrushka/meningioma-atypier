@@ -51,6 +51,7 @@ _MULTIVARIABLE_SCALE_NOTE = scale_footnote(sorted(LOG1P_COLUMNS))
 from heavy_machinery.config import load
 
 analysis = load("analysis")
+published_models = load("published_models")
 
 
 # ---------------------------------------------------------------------------
@@ -1044,6 +1045,66 @@ def _inferential_model_heading(
     if model_id:
         return f"<h4>📐 Model <code>{_esc(model_id)}</code></h4>"
     return ""
+
+
+def _published_or(term: dict) -> str:
+    """``2.94 (1.15–7.48)``, or as much of it as the paper printed."""
+    o, lo, hi = (_coerce_float(term.get(k)) for k in ("or", "ci_lo", "ci_hi"))
+    if o is None:
+        return ""
+    if lo is None or hi is None:
+        return f"{o:.2f}"
+    return f"{o:.2f} ({lo:.2f}–{hi:.2f})"
+
+
+def _published_model_block(model_id: str) -> str:
+    """The source paper's own multivariable model, above the one we fitted.
+
+    Reproducing a published model is only meaningful if the reader can see what
+    was published. Without this the report shows our odds ratios for predictors
+    the paper chose, with no way to tell whether we agreed with it.
+    """
+    published = published_models.published_model(model_id)
+    if not published:
+        return ""
+    terms = published.get("terms") or []
+    if not terms:
+        return ""
+
+    table = table_to_html(pd.DataFrame([
+        {
+            "Variable in the paper": t.get("variable", ""),
+            "What it means": t.get("meaning", ""),
+            "Published aOR (95% CI)": _published_or(t),
+            "p": human_p(t.get("p")),
+            "Column used here": t.get("column", ""),
+        }
+        for t in terms
+    ]), nowrap_cols=("Published aOR (95% CI)", "p"))
+
+    notes: list[str] = []
+    for key, label in (("citation", ""), ("outcome", "Outcome"), ("cohort", "Source cohort")):
+        val = str(published.get(key) or "").strip()
+        if not val:
+            continue
+        notes.append(_esc(val) if not label else f"<strong>{label}:</strong> {_esc(val)}")
+    perf = str(published.get("performance") or "").strip()
+    notes.append(
+        f"<strong>Reported performance:</strong> {_esc(perf)}" if perf
+        else "<strong>Reported performance:</strong> none — the paper publishes no "
+             "AUC or c-statistic for this model, so there is nothing to compare our "
+             "validated AUC against."
+    )
+    note_html = "".join(f'<p class="muted">{n}</p>' for n in notes)
+
+    return details_block(
+        "📖 The published model",
+        "<p>What the source paper actually fitted, quoted as printed. Odds ratios "
+        "below are theirs, not ours — read them against the forest plot further "
+        "down, which is the same model refitted on this cohort.</p>"
+        + table + note_html,
+        open=True,
+    )
 
 
 # Per-variant performance figures, in the order a reader should meet them:
@@ -2459,6 +2520,8 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                 heading = _inferential_model_heading(title, link=link, model_id=model_id)
                 if heading:
                     blocks.append(heading)
+
+                blocks.append(_published_model_block(model_id))
 
                 meta = _inferential_target_meta(art, target, model_key_name=mkey)
                 if meta:

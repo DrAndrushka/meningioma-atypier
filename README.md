@@ -194,7 +194,7 @@ Each variant gets its own:
 
 Re-running §06 **clears stale per-variant inferential files** (tables, forest plots, and Streamlit JSON) before writing new ones — renamed or removed models no longer appear in the report or calculator.
 
-Built-in literature examples mirror published meningioma grading models (Yao et al. 2022, Amano et al. 2021, Radeesri & Lekhavat 2020, Azeemuddin et al. 2018, Peng et al. 2021).
+The built-in literature example is the published meningioma grading model of Radeesri & Lekhavat 2023 (Asian Pacific J Cancer Prev 24(3):819–825), reproduced with its three retained MRI features.
 
 ---
 

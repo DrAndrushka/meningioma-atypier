@@ -539,15 +539,6 @@ def fit_multivariable_logistic(
 # Forest plot
 # ---------------------------------------------------------------------------
 
-def _or_tick(value: float, _pos: int | None = None) -> str:
-    """Log-axis tick as a plain odds ratio (0.5, 1, 2, 5) with no exponents."""
-    if value <= 0:
-        return ""
-    if value >= 1:
-        return f"{value:g}"
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
 def _forest_row_label(row: pd.Series) -> str:
     """Predictor name plus the contrast its odds ratio actually describes.
 
@@ -580,17 +571,14 @@ def _forest_plot(
     figs_dir: Path,
     *,
     model_id: str = "",
-    model_title: str = "",
-    n_cases: int | None = None,
-    n_events: int | None = None,
-    epv: float | None = None,
 ) -> None:
     """Rubin-pooled adjusted odds ratios for one model variant.
 
     Rows whose CI crosses 1 are drawn grey. All rows sort together by the
-    odds ratio, largest first.
+    odds ratio, largest first. Sample size, event count and EPV are not
+    written onto the figure — the report states them once, in the EPV gauge
+    above it, from ``multivariable_cases.csv``.
     """
-    del model_title, n_cases, n_events, epv
     plot_df = pooled.dropna(subset=["or"]).copy()
     if plot_df.empty:
         return
@@ -613,32 +601,6 @@ def _forest_plot(
 # ---------------------------------------------------------------------------
 # Performance figures (built from the validated Streamlit artifacts)
 # ---------------------------------------------------------------------------
-
-def _case_counts(cases_df: pd.DataFrame, target: str, model_id: str) -> dict:
-    """``n_cases`` / ``n_events`` / ``epv`` for one target × variant, if known."""
-    empty = {"n_cases": None, "n_events": None, "epv": None}
-    if cases_df is None or cases_df.empty or "target" not in cases_df.columns:
-        return empty
-    hit = cases_df.loc[cases_df["target"].astype(str) == str(target)]
-    if "model_id" in cases_df.columns:
-        hit = hit.loc[hit["model_id"].astype(str).fillna("") == str(model_id or "")]
-    if hit.empty:
-        return empty
-    row = hit.iloc[0]
-
-    def _num(key):
-        val = row.get(key)
-        return None if pd.isna(val) else float(val)
-
-    n_cases, n_events, epv = (
-        _num("n_complete_cases"), _num("n_outcome_events"), _num("epv"),
-    )
-    return {
-        "n_cases": int(n_cases) if n_cases is not None else None,
-        "n_events": int(n_events) if n_events is not None else None,
-        "epv": epv,
-    }
-
 
 def _artifact_model_id(stem: str, target: str) -> str:
     """``high_grade_yao_et_al_2022_model`` → ``yao_et_al_2022``.
@@ -918,8 +880,9 @@ def run_inferential(
     positive_class = positive_class or {}
     model_variants = normalize_inferential_variants(predictors, variants)
 
-    # Computed before fitting so each forest plot can state the sample size,
-    # event count, and EPV it was built on.
+    # Complete-case counts and EPV per variant. Written to
+    # ``multivariable_cases.csv`` (the report's EPV gauge) and handed to
+    # ``write_streamlit_artifacts`` so each calculator carries its own n/events.
     cases_df = summarize_multivariable_cases(
         imputed_frames[0], schema,
         targets=targets,
@@ -969,13 +932,7 @@ def run_inferential(
             (tabs_dir / f"{stem}__calculator.json").write_text(
                 json.dumps(meta, indent=2), encoding="utf-8",
             )
-            case_row = _case_counts(cases_df, target, variant.model_id)
-            _forest_plot(
-                pooled_df, target, figs_dir,
-                model_id=variant.model_id,
-                model_title=variant.title,
-                **case_row,
-            )
+            _forest_plot(pooled_df, target, figs_dir, model_id=variant.model_id)
             all_rows.append(pooled_df)
 
     if not all_rows:

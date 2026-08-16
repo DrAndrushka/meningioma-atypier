@@ -65,13 +65,6 @@ def _metric_value(validation: dict[str, Any], name: str, field: str) -> float:
         return float("nan")
 
 
-def _sample_note(validation: dict[str, Any]) -> str:
-    n_boot = validation.get("successful_bootstraps") or validation.get(
-        "bootstrap_resamples"
-    )
-    return f"apparent fit, {int(n_boot)} bootstrap resamples" if n_boot else "apparent fit"
-
-
 # ---------------------------------------------------------------------------
 # Per-model figures
 # ---------------------------------------------------------------------------
