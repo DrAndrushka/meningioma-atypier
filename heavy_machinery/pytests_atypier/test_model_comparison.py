@@ -27,3 +27,24 @@ def test_paired_delta_auc_ci_excludes_zero_when_one_model_always_wins():
 def test_paired_delta_auc_rejects_unpaired_vectors():
     with pytest.raises(ValueError, match="same number of resamples"):
         mc.paired_delta_auc([0.7, 0.8], [0.7])
+
+
+def test_d2_pool_returns_a_p_value_between_zero_and_one():
+    out = mc.d2_pool([8.0, 9.0, 7.5, 8.5], k=2)
+    assert 0.0 <= out["p"] <= 1.0
+    assert out["df_num"] == 2
+
+
+def test_d2_pool_is_significant_for_large_consistent_chi_squares():
+    out = mc.d2_pool([30.0] * 20, k=1)
+    assert out["p"] < 0.001
+
+
+def test_d2_pool_is_not_significant_for_small_chi_squares():
+    out = mc.d2_pool([0.1] * 20, k=1)
+    assert out["p"] > 0.5
+
+
+def test_d2_pool_rejects_an_empty_set():
+    with pytest.raises(ValueError, match="at least one"):
+        mc.d2_pool([], k=1)
