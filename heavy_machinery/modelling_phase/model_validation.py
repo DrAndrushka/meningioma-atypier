@@ -268,6 +268,11 @@ def bootstrap_internal_validation(
             cols_i = select(boot_frame, y_boot)
             if not cols_i:
                 continue
+            # Tallied on *attempt*, before the fit `try` below: a variable
+            # this resample chose is counted here even if the subsequent fit
+            # then fails and the resample is skipped. So sum(selection_counts
+            # .values()) counts attempted selections, not successful ones —
+            # it is not, in general, successful_bootstraps * k.
             for c in cols_i:
                 selection_counts[c] = selection_counts.get(c, 0) + 1
             X_boot = np.column_stack(
@@ -390,6 +395,8 @@ def bootstrap_internal_validation(
         # model's resample_aucs, and 3 decimals would quantise the difference.
         result["resample_aucs"] = resample_aucs
     if select is not None:
+        # How many resamples *attempted* each variable — see the tally site
+        # above for why a resample whose fit later fails is still counted.
         result["selection_counts"] = selection_counts
     return result
 

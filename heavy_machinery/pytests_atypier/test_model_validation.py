@@ -277,12 +277,20 @@ def test_select_hook_accepts_a_callable_that_always_agrees():
         "event": rng.integers(0, 2, n),
         "age": rng.normal(60, 10, n),
     })
-    out = bootstrap_internal_validation(
-        df, "event", ["age"], {"const": -0.5, "age": 0.05},
-        n_bootstrap=20, select=lambda frame, y: ["age"],
+    common = dict(n_bootstrap=20, return_resample_aucs=True)
+    out_fixed = bootstrap_internal_validation(
+        df, "event", ["age"], {"const": -0.5, "age": 0.05}, **common,
     )
-    assert out["method"] == "bootstrap internal validation"
-    assert out["selection_counts"] == {"age": 20}
+    out_select = bootstrap_internal_validation(
+        df, "event", ["age"], {"const": -0.5, "age": 0.05},
+        select=lambda frame, y: ["age"], **common,
+    )
+    assert out_select["method"] == "bootstrap internal validation"
+    assert out_select["selection_counts"] == {"age": 20}
+    # The identity selector must reproduce the fixed-column path exactly —
+    # this is the assertion the docstring promised but the original version
+    # of this test never wrote.
+    assert out_select["resample_aucs"] == out_fixed["resample_aucs"]
 
 
 def test_select_hook_reselects_per_resample_and_counts_choices():
@@ -313,6 +321,73 @@ def test_select_hook_reselects_per_resample_and_counts_choices():
     assert sum(counts.values()) == 40
     assert counts["strong"] > counts.get("noise", 0)
     assert len(out["resample_aucs"]) == 40
+
+
+def test_select_hook_resample_aucs_match_hand_computed_values_when_selection_varies():
+    """The test above is degenerate: with ``RandomState(3)`` its selector picks
+    ``strong`` in all 40 resamples, so the chosen column never changes and
+    ``X_score`` is always structurally identical to ``X_orig`` — a bug that
+    scores against the full-cohort design matrix instead of this resample's
+    own columns is invisible to it, and that test still passes against such
+    a bug.
+
+    This test uses a selector that genuinely alternates between two DISJOINT
+    single-column selections, ``pos`` and ``neg``, whose associations with the
+    outcome run in opposite directions. ``resample_aucs`` is checked against
+    values hand-computed the way the function is specified to compute them:
+    fit on the chosen column over the RESAMPLED rows, predict on that same
+    column over the ORIGINAL rows, AUC against the original y.
+    ``mv._resample_indices`` is called directly so the hand computation uses
+    the exact index sets the function itself draws.
+    """
+    import model_validation as mv
+    import statsmodels.api as sm
+    from plot_style import roc_auc as _auc
+
+    rng = np.random.RandomState(11)
+    n = 150
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "y": y.astype(float),
+        "pos": y * 1.4 + rng.normal(size=n),      # positively associated
+        "neg": -(y * 1.4) + rng.normal(size=n),   # negatively associated
+    })
+    y_arr = df["y"].astype(int).to_numpy()
+
+    n_bootstrap = 10
+    call_count = {"i": 0}
+
+    def alternating_select(frame, y_boot):
+        col = "pos" if call_count["i"] % 2 == 0 else "neg"
+        call_count["i"] += 1
+        return [col]
+
+    out = mv.bootstrap_internal_validation(
+        df, "y", ["pos"], {"const": 0.0, "pos": 1.0},
+        n_bootstrap=n_bootstrap, return_resample_aucs=True,
+        select=alternating_select,
+    )
+
+    idx_matrix = mv._resample_indices(n, n_bootstrap)
+    expected = []
+    for i in range(n_bootstrap):
+        col = "pos" if i % 2 == 0 else "neg"
+        idx = idx_matrix[i]
+        boot_frame = df.iloc[idx].reset_index(drop=True)
+        y_boot = y_arr[idx]
+        X_boot = np.column_stack(
+            [np.ones(n), boot_frame[col].astype(float).to_numpy()])
+        X_score = np.column_stack(
+            [np.ones(n), df[col].astype(float).to_numpy()])
+        fit = sm.Logit(y_boot, X_boot).fit(disp=False)
+        pred_orig = np.asarray(fit.predict(X_score), dtype=float)
+        expected.append(round(float(_auc(y_arr, pred_orig)), 6))
+
+    assert out["resample_aucs"] == expected
+    assert out["selection_counts"] == {"pos": 5, "neg": 5}
+    # The chosen column really varied resample to resample — otherwise this
+    # test would be exactly as degenerate as the one it was written to fix.
+    assert len(set(expected)) > 1
 
 
 def test_resample_aucs_absent_unless_requested():
