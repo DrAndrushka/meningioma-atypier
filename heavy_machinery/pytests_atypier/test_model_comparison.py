@@ -48,3 +48,14 @@ def test_d2_pool_is_not_significant_for_small_chi_squares():
 def test_d2_pool_rejects_an_empty_set():
     with pytest.raises(ValueError, match="at least one"):
         mc.d2_pool([], k=1)
+
+
+def test_d2_pool_matches_the_r_reference_implementation():
+    """Pins the formula against miceadds::micombine.chisquare (R), which
+    implements Li, Meng, Raghunathan & Rubin 1991 directly. These numbers
+    are external ground truth — if this test fails, the formula changed,
+    not the reference."""
+    out = mc.d2_pool([5.0, 12.0, 3.0, 20.0, 7.0], k=3)
+    assert out["statistic"] == pytest.approx(0.4324380610, rel=1e-6)
+    assert out["df_den"] == pytest.approx(6.089180, rel=1e-6)
+    assert out["p"] == pytest.approx(0.7374592858, rel=1e-6)
