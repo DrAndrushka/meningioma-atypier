@@ -21,6 +21,15 @@ Two guards, in order:
 
 Every skip is recorded with its reason. A selection nobody can see is a
 selection nobody can check.
+
+A candidate that cannot be coerced to a single numeric vector — a categorical
+column such as ``tumor_location`` or ``sex`` — is set aside before ranking even
+starts, rather than crashing the whole selection. This is a real modelling
+limit, not just a type mismatch: a multi-level nominal variable has no single
+AUC to rank on, and giving it one would mean one-hot encoding it first, which is
+out of scope here. It still gets its own audit row, because a reader who knows
+the column exists should be able to see why it never competed, not just that it
+is absent from the results.
 """
 from __future__ import annotations
 
@@ -33,13 +42,25 @@ from sklearn.metrics import roc_auc_score
 from scales import is_log_scaled
 
 
+class _NotNumeric(Exception):
+    """Internal signal: a candidate column could not be coerced to float.
+
+    Caught wherever it matters — ``rank_candidates`` treats it as a reason to
+    leave the column out of the ranking, and ``select_variables`` treats it as
+    a reason to write an audit row explaining why.
+    """
+
+
 def discrimination(auc: float) -> float:
     """How well a variable separates, regardless of direction."""
     return float(max(auc, 1.0 - auc))
 
 
 def _column_vector(df: pd.DataFrame, col: str) -> np.ndarray:
-    x = df[col].astype(float).to_numpy()
+    try:
+        x = df[col].astype(float).to_numpy()
+    except (TypeError, ValueError) as exc:
+        raise _NotNumeric(col) from exc
     return np.log1p(np.clip(x, 0.0, None)) if is_log_scaled(col) else x
 
 
@@ -54,7 +75,13 @@ def rank_candidates(
     for col in candidates:
         if col not in df.columns:
             continue
-        x = _column_vector(df, col)
+        try:
+            x = _column_vector(df, col)
+        except _NotNumeric:
+            # Categorical/text candidates get their own audit row from
+            # select_variables; here they are simply left out of the ranking,
+            # the same way an absent or constant column already is.
+            continue
         if np.unique(x).size < 2 or np.unique(y_arr).size < 2:
             continue
         scored.append((col, float(roc_auc_score(y_arr, x))))
@@ -73,7 +100,11 @@ def select_variables(
     """Pick ``k`` variables by discrimination, applying both guards.
 
     Returns the picked columns and one audit row per candidate considered.
-    Candidates after the k-th pick are not examined and do not appear.
+    Candidates after the k-th pick are not examined and do not appear. A
+    candidate that cannot be coerced to numeric is a separate case: it never
+    entered the ranking at all, but it is still audited, unconditionally,
+    because it is a real modelling limit rather than a competitor that simply
+    lost.
     """
     cutpoint_parent = cutpoint_parent or {}
     ranked = rank_candidates(df, y, candidates)
@@ -107,4 +138,20 @@ def select_variables(
         audit.append({"variable": col, "auc": auc,
                       "discrimination": discrimination(auc),
                       "kept": True, "reason": ""})
+
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        try:
+            _column_vector(df, col)
+        except _NotNumeric:
+            audit.append({
+                "variable": col, "auc": float("nan"),
+                "discrimination": float("nan"), "kept": False,
+                "reason": (
+                    "not numeric — selection ranks one AUC per variable; a "
+                    "multi-level categorical has no single AUC without "
+                    "one-hot encoding, which is out of scope here"
+                ),
+            })
     return picked, audit
