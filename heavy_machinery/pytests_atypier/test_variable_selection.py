@@ -149,3 +149,17 @@ def test_log_scaled_column_feeds_its_transformed_vector_to_the_collinearity_guar
     )
     assert reported_rho == pytest.approx(round(rho_if_transformed, 2))
     assert reported_rho != pytest.approx(round(rho_if_raw, 2))
+
+
+def test_assert_reference_passes_when_the_declared_variable_is_the_top_pick():
+    vs.assert_reference(["tumor_volume", "adc_value", "edema_volume_cm3"])
+
+
+def test_assert_reference_raises_when_something_else_is_picked_first():
+    with pytest.raises(ValueError, match="reference variable"):
+        vs.assert_reference(["max_diameter_cm", "tumor_volume"])
+
+
+def test_assert_reference_raises_on_an_empty_pick():
+    with pytest.raises(ValueError, match="reference variable"):
+        vs.assert_reference([])

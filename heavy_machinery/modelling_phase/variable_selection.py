@@ -155,3 +155,27 @@ def select_variables(
                 ),
             })
     return picked, audit
+
+
+def assert_reference(picked: Sequence[str]) -> None:
+    """Raise unless the declared reference variable is the first kept pick.
+
+    Checks the list *after* both guards, not the raw ranking. A derived
+    cut-point can top the raw ranking and still be dropped by guard 1, and the
+    reference has to be a variable the pipeline would actually fit.
+    """
+    from heavy_machinery.config import load
+
+    declared = load("analysis").REFERENCE_VARIABLE
+    if not picked:
+        raise ValueError(
+            "No variable survived selection, so there is no reference variable."
+        )
+    if picked[0] != declared:
+        raise ValueError(
+            f"The declared reference variable {declared!r} is no longer the top "
+            f"pick: {picked[0]!r} now leads. Every delta-AUC in the report is "
+            f"measured against the reference, so update "
+            f"analysis.REFERENCE_VARIABLE deliberately rather than letting the "
+            f"denominator move on its own."
+        )

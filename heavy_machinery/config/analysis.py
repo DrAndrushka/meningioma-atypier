@@ -33,6 +33,14 @@ CUTPOINT_PARENT: dict[str, str] = {
     "tumor_volume_ge15.1": "tumor_volume",
 }
 
+# The single predictor every delta-AUC is measured against. Declared rather than
+# taken silently from whatever wins, because max_diameter_cm scores 0.675 to
+# tumor_volume's 0.679 and the two correlate at ~0.92: a trivial data change
+# would otherwise flip the denominator under the manuscript with nothing in the
+# output saying so. The run recomputes the ranking and raises on disagreement.
+REFERENCE_VARIABLE: str = "tumor_volume"
+REFERENCE_VARIABLE_DISCRIMINATION: float = 0.679
+
 
 def _load_hidden_parent_columns(output_root: Path | str | None) -> frozenset[str]:
     """Load ``cleaning/hidden_parent_columns.csv``; empty if missing."""
