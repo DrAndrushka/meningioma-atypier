@@ -90,3 +90,55 @@ def d2_pool(chi2_stats: Sequence[float], k: int) -> dict[str, Any]:
         "m": int(m),
         "method": "D2 (Li, Meng, Raghunathan & Rubin 1991)",
     }
+
+
+def fit_single_predictors(
+    cohort_df,
+    schema,
+    predictors: Sequence[str],
+    target: str,
+    *,
+    n_bootstrap: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Fit and bootstrap-validate each predictor on its own.
+
+    These exist only to supply the yardstick a combined model is measured
+    against, so they emit AUC and nothing else — no forest plot, no VIF table,
+    no calculator artifact, no report fold of their own.
+    """
+    import statsmodels.api as sm
+    from heavy_machinery.config import load
+    from model_validation import (
+        build_complete_case_frame,
+        bootstrap_internal_validation,
+    )
+
+    if n_bootstrap is None:
+        n_bootstrap = load("analysis").BOOTSTRAP_RESAMPLES
+
+    out: dict[str, dict[str, Any]] = {}
+    for pred in predictors:
+        if pred not in cohort_df.columns:
+            continue
+        try:
+            model_df, design_cols = build_complete_case_frame(
+                cohort_df, schema, [pred], target)
+        except (ValueError, RuntimeError):
+            continue
+        y = model_df[target].astype(int).to_numpy()
+        X = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
+        fit = sm.Logit(y, X).fit(disp=False)
+        coefs = {"const": float(fit.params["const"])}
+        coefs.update({c: float(fit.params[c]) for c in design_cols})
+        val = bootstrap_internal_validation(
+            model_df, target, design_cols, coefs,
+            n_bootstrap=n_bootstrap, return_resample_aucs=True)
+        auc_row = next(m for m in val["metrics"] if m["metric"] == "AUC")
+        out[pred] = {
+            "auc_apparent": float(auc_row["apparent"]),
+            "auc_corrected": float(auc_row["optimism_corrected"]),
+            "n": int(len(model_df)),
+            "events": int(y.sum()),
+            "resample_aucs": val["resample_aucs"],
+        }
+    return out

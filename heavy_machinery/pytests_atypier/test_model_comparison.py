@@ -59,3 +59,23 @@ def test_d2_pool_matches_the_r_reference_implementation():
     assert out["statistic"] == pytest.approx(0.4324380610, rel=1e-6)
     assert out["df_den"] == pytest.approx(6.089180, rel=1e-6)
     assert out["p"] == pytest.approx(0.7374592858, rel=1e-6)
+
+
+def test_fit_single_predictors_returns_one_entry_per_predictor(tiny_schema):
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(11)
+    n = 200
+    y = rng.binomial(1, 0.35, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.1 + rng.normal(size=n),
+        "b": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              "a": ColSpec("a", "continuous"), "b": ColSpec("b", "continuous")}
+    out = mc.fit_single_predictors(df, schema, ["a", "b"], "event", n_bootstrap=30)
+    assert set(out) == {"a", "b"}
+    assert out["a"]["auc_corrected"] > out["b"]["auc_corrected"]
+    assert len(out["a"]["resample_aucs"]) == 30
+    assert out["a"]["n"] == n
