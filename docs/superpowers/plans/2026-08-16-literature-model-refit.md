@@ -826,18 +826,23 @@ git commit -m "feat: re-run variable selection inside each bootstrap resample"
 
 **Interfaces:**
 - Consumes: `rank_candidates` (Task 5).
-- Produces: `analysis.REFERENCE_VARIABLE: str`, `analysis.REFERENCE_VARIABLE_DISCRIMINATION: float`, and `variable_selection.assert_reference(ranked) -> None`, which raises `ValueError` when the top-ranked variable is not the declared one.
+- Produces: `analysis.REFERENCE_VARIABLE: str`, `analysis.REFERENCE_VARIABLE_DISCRIMINATION: float`, and `variable_selection.assert_reference(picked) -> None`, which raises `ValueError` when the first **kept** variable is not the declared one. It checks the post-guard pick, not the raw ranking: a cut-point child can top the raw ranking and still be dropped by guard 1, and the reference must be a variable we would actually fit.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-def test_assert_reference_passes_when_the_declared_variable_still_wins():
-    vs.assert_reference([("tumor_volume", 0.679), ("max_diameter_cm", 0.675)])
+def test_assert_reference_passes_when_the_declared_variable_is_the_top_pick():
+    vs.assert_reference(["tumor_volume", "adc_value", "edema_volume_cm3"])
 
 
-def test_assert_reference_raises_when_something_else_takes_first_place():
+def test_assert_reference_raises_when_something_else_is_picked_first():
     with pytest.raises(ValueError, match="reference variable"):
-        vs.assert_reference([("max_diameter_cm", 0.700), ("tumor_volume", 0.679)])
+        vs.assert_reference(["max_diameter_cm", "tumor_volume"])
+
+
+def test_assert_reference_raises_on_an_empty_pick():
+    with pytest.raises(ValueError, match="reference variable"):
+        vs.assert_reference([])
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -862,19 +867,24 @@ REFERENCE_VARIABLE_DISCRIMINATION: float = 0.679
 Add to `variable_selection.py`:
 
 ```python
-def assert_reference(ranked: Sequence[tuple[str, float]]) -> None:
-    """Raise unless the declared reference variable still ranks first."""
+def assert_reference(picked: Sequence[str]) -> None:
+    """Raise unless the declared reference variable is the first kept pick.
+
+    Checks the list *after* both guards, not the raw ranking. A derived
+    cut-point can top the raw ranking and still be dropped by guard 1, and the
+    reference has to be a variable the pipeline would actually fit.
+    """
     from heavy_machinery.config import load
 
     declared = load("analysis").REFERENCE_VARIABLE
-    if not ranked:
-        raise ValueError("No candidates were ranked, so no reference variable.")
-    winner, auc = ranked[0]
-    if winner != declared:
+    if not picked:
         raise ValueError(
-            f"The declared reference variable {declared!r} no longer ranks "
-            f"first: {winner!r} now leads with discrimination "
-            f"{discrimination(auc):.3f}. Every delta-AUC in the report is "
+            "No variable survived selection, so there is no reference variable."
+        )
+    if picked[0] != declared:
+        raise ValueError(
+            f"The declared reference variable {declared!r} is no longer the top "
+            f"pick: {picked[0]!r} now leads. Every delta-AUC in the report is "
             f"measured against the reference, so update "
             f"analysis.REFERENCE_VARIABLE deliberately rather than letting the "
             f"denominator move on its own."
@@ -1393,6 +1403,7 @@ def run_comparison_stage(
     k_top: int = 6,
     frames: Sequence[Any] | None = None,
     assert_reference: bool = True,
+    selected_model_ids: set[str] | None = None,
 ):
     """Fit the singles, difference every model against its own, write 3 tables."""
     from pathlib import Path
@@ -1419,6 +1430,9 @@ def run_comparison_stage(
         return str(v["model_id"] if isinstance(v, dict) else v.model_id)
 
     singles = sorted({p for v in variants for p in _pred(v)})
+    # ``candidates`` is the selection pool and is NOT the literature union: the
+    # six that win include adc_value and cystic_component, which appear in no
+    # literature model. The notebook passes its EDA predictor list.
     fitted = fit_single_predictors(
         cohort_df, schema, singles, target, n_bootstrap=n_bootstrap)
 
@@ -1432,12 +1446,11 @@ def run_comparison_stage(
 
     y_all = cohort_df[target].astype(int).to_numpy()
     cand = list(candidates) if candidates is not None else singles
-    ranked = vs.rank_candidates(cohort_df, y_all, cand)
-    if assert_reference:
-        vs.assert_reference(ranked)
     picked, audit = vs.select_variables(
         cohort_df, y_all, cand, k=k_top,
         rho_max=0.8, cutpoint_parent=analysis.CUTPOINT_PARENT)
+    if assert_reference:
+        vs.assert_reference(picked)
     sel_tbl = pd.DataFrame(audit)
     sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
 
@@ -1455,9 +1468,19 @@ def run_comparison_stage(
         fit = sm.Logit(y, X).fit(disp=False)
         coefs = {"const": float(fit.params.iloc[0])}
         coefs.update({c: float(fit.params[c]) for c in design_cols})
+        # The one data-selected model re-runs its own selection inside every
+        # resample, so its optimism covers the picking and not just the fitting.
+        selector = None
+        if selected_model_ids and mid in selected_model_ids:
+            def selector(frame, y_boot, _cand=cand, _k=k_top):
+                sub, _ = vs.select_variables(
+                    frame, y_boot, [c for c in _cand if c in frame.columns],
+                    k=_k, rho_max=0.8,
+                    cutpoint_parent=analysis.CUTPOINT_PARENT)
+                return sub
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
-            n_bootstrap=n_bootstrap, return_resample_aucs=True)
+            n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
         combined_auc = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["optimism_corrected"]
         for single in preds:
@@ -1491,7 +1514,9 @@ In `inferential.run_inferential`, after `_write_performance_figures(...)`:
 
     run_comparison_stage(
         imputed_frames[0], schema, model_variants, targets[0], tabs_dir,
-        vif_threshold=vif_threshold, frames=imputed_frames,
+        frames=imputed_frames,
+        candidates=selection_candidates,   # EDA predictor pool, from the notebook
+        selected_model_ids={"top_6_variables"},
     )
 ```
 
@@ -1509,7 +1534,161 @@ git commit -m "feat: write the single-predictor, delta-AUC and selection-audit t
 
 ---
 
-### Task 12: Slim the odds-ratio table to four columns
+### Task 12: Replace the frozen top-N lists with the computed selection
+
+**Files:**
+- Modify: `heavy_machinery/modelling_phase/inferential.py` (`run_inferential`, `run_inferential_stage` — thread `selection_candidates`)
+- Modify: `meningioma-modelling.ipynb` (`EXPERIMENTAL_MODEL_VARIANTS` cell, and the `run_inferential_stage` call)
+- Test: `heavy_machinery/pytests_atypier/test_inferential.py`
+
+**Interfaces:**
+- Consumes: `variable_selection.select_variables` and `assert_reference` (Tasks 5, 7); `run_comparison_stage(..., candidates=, selected_model_ids=)` (Task 11).
+- Produces: variants `top_6_variables` and `top_1_variable` built at runtime from the selection, and `run_inferential_stage(..., selection_candidates=Sequence[str])`.
+
+Without this task the machinery from Tasks 5, 6, 7 and 11 exists and never runs
+on a real model: the notebook still fits the frozen LR+ lists `top_6_signs` and
+`top_1_sign`, and no model passes `select=` into its validation. This is the task
+that makes the selection real.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_run_inferential_stage_threads_selection_candidates(tiny_df, tiny_schema, tmp_output):
+    """The selection pool is the EDA predictor list, not the literature union —
+    the variables that win include ones no literature model uses."""
+    import inspect
+    sig = inspect.signature(inf.run_inferential_stage)
+    assert "selection_candidates" in sig.parameters
+    sig2 = inspect.signature(inf.run_inferential)
+    assert "selection_candidates" in sig2.parameters
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_inferential.py -k selection_candidates -q`
+Expected: FAIL — `AssertionError`
+
+- [ ] **Step 3: Thread the parameter**
+
+Add `selection_candidates: Sequence[str] | None = None` to both
+`run_inferential` and `run_inferential_stage` (keyword-only, after
+`vif_threshold`), pass it straight through from the stage wrapper, and forward it
+into the `run_comparison_stage` call added in Task 11 as `candidates=`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_inferential.py -q`
+Expected: PASS
+
+- [ ] **Step 5: Compute the two variants in the notebook**
+
+In `meningioma-modelling.ipynb`, replace the two frozen tuples at the end of
+`EXPERIMENTAL_MODEL_VARIANTS` — the ones with ids `top_6_signs` and
+`top_1_sign`, together with the ⚠️ comment block above them — with a computed
+block. It must run *after* `EDA_PREDICTORS` is resolved, so put it in the cell
+that already calls `_analysis.resolve_eda`, immediately after
+`INFERENTIAL_MODEL_VARIANTS` is built:
+
+```python
+# 🔎 top_6_variables / top_1_variable — computed, never a frozen list.
+#
+# Ranked by discrimination, max(AUC, 1-AUC), so a protective variable is not
+# thrown away for scoring below 0.5: ADC is 0.370 here, which is 0.630 the
+# other way and the second-strongest variable available.
+#
+# Two guards, in order: skip a derived cut-point when its continuous parent is
+# a candidate, and skip anything correlated above rho 0.8 with something
+# already picked, taking the next candidate that clears. Without the second,
+# the best six are four tumour-size measurements at rho up to 0.91.
+#
+# ⚠️ These two are chosen from the same 352 patients they are then fitted on.
+# The bootstrap re-runs this selection inside every resample so the optimism
+# correction covers the choosing, but they are still not comparable to the
+# literature models, whose predictors were fixed by other people years ago.
+from heavy_machinery.modelling_phase import variable_selection as _vs
+
+_y = df[EDA_TARGETS[0]].astype("boolean").fillna(False).astype(int).to_numpy()
+TOP_VARIABLES, TOP_SELECTION_AUDIT = _vs.select_variables(
+    df, _y, EDA_PREDICTORS, k=6, rho_max=0.8,
+    cutpoint_parent=load("analysis").CUTPOINT_PARENT,
+)
+_vs.assert_reference(TOP_VARIABLES)
+
+INFERENTIAL_MODEL_VARIANTS = list(INFERENTIAL_MODEL_VARIANTS) + [
+    _analysis.InferentialModelVariant(
+        model_id="top_1_variable",
+        title="Top 1 variable by discrimination | high grade",
+        link="", target=EDA_TARGETS[0],
+        predictors=(TOP_VARIABLES[0],), experimental=True,
+    ),
+    _analysis.InferentialModelVariant(
+        model_id="top_6_variables",
+        title="Top 6 variables by discrimination | high grade",
+        link="", target=EDA_TARGETS[0],
+        predictors=tuple(TOP_VARIABLES), experimental=True,
+    ),
+]
+print(f"🔎 top 6: {TOP_VARIABLES}")
+```
+
+`_analysis.InferentialModelVariant` is re-exported by `config/analysis.py`,
+which already imports it from `inferential`. Delete the two frozen tuples from
+`EXPERIMENTAL_MODEL_VARIANTS` so the ids cannot collide.
+
+- [ ] **Step 6: Pass the pool into the stage call**
+
+In the `run_inferential_stage(...)` call, add:
+
+```python
+    selection_candidates=EDA_PREDICTORS,
+```
+
+- [ ] **Step 7: Verify on real data that the six match the spec**
+
+```bash
+python3 - <<'PY'
+import sys, json
+from pathlib import Path
+sys.path[:0] = [str(Path('heavy_machinery')/d) for d in
+                ('modelling_phase','cleaning_phase','config')]
+sys.path.insert(0, '.')
+import missingness_resolution as mr
+import variable_selection as vs
+from heavy_machinery.config import load
+d = mr.load_modeling_frames(Path('output'))[0]
+cells = [''.join(c['source']) for c in
+         json.loads(Path('meningioma-modelling.ipynb').read_text())['cells']
+         if c['cell_type'] == 'code']
+ns = {}
+exec(next(s for s in cells if 'EDA_PREDICTORS = [' in s).split('EDA_REDUNDANT')[0], ns)
+cand = [c for c in ns['EDA_PREDICTORS'] if c in d.columns]
+y = d['high_grade'].astype(int).to_numpy()
+picked, audit = vs.select_variables(
+    d, y, cand, k=6, rho_max=0.8,
+    cutpoint_parent=load("analysis").CUTPOINT_PARENT)
+print("picked:", picked)
+assert picked == ["tumor_volume", "adc_value", "edema_volume_cm3",
+                  "irregular_tumor_margin", "skull_base_location",
+                  "cystic_component"], picked
+vs.assert_reference(picked)
+print("dropped:", [(r['variable'], r['reason']) for r in audit if not r['kept']])
+PY
+```
+
+Expected: the six from the spec, in that order, and six dropped candidates each
+with a reason.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add heavy_machinery/modelling_phase/inferential.py meningioma-modelling.ipynb \
+        heavy_machinery/pytests_atypier/test_inferential.py
+git commit -m "feat: compute top_6_variables and top_1_variable instead of freezing them"
+```
+
+---
+
+### Task 13: Slim the odds-ratio table to four columns
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/inferential.py` (rename `_forest_row_label` → `predictor_label`)
@@ -1719,7 +1898,7 @@ git commit -m "refactor: odds-ratio table down to Predictor, beta (SE), OR (95% 
 
 ---
 
-### Task 13: Render the comparison tables and the direction column
+### Task 14: Render the comparison tables and the direction column
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/report.py` (`Artifacts`, `load_artifacts`, `render_inferential`)
@@ -1858,7 +2037,7 @@ git commit -m "feat: render combined-vs-single tables and the selection audit"
 
 ---
 
-### Task 14: Full clean pipeline run and verification
+### Task 15: Full clean pipeline run and verification
 
 **Files:**
 - Modify: none (verification only)
@@ -1936,8 +2115,8 @@ git add -A && git commit -m "chore: full clean pipeline run with the literature 
 
 ## Self-Review
 
-**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 11; reference declaration → Task 7; lightweight singles → Task 8; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; table slimmed to four columns → Task 12; direction column → Task 13; `age_ge75` → Task 1; six literature models + `published_models` → Task 9; `NOT_FITTED` and `surrogate_note` → Tasks 9, 10; three CSV artifacts → Task 11; report blocks → Tasks 10, 12, 13; clean run → Task 14.
+**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 11; reference declaration → Task 7; lightweight singles → Task 8; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; top-N lists computed → Task 12; table slimmed to four columns → Task 13; direction column → Task 14; `age_ge75` → Task 1; six literature models + `published_models` → Task 9; `NOT_FITTED` and `surrogate_note` → Tasks 9, 10; three CSV artifacts → Task 11; report blocks → Tasks 10, 13, 14; clean run → Task 15.
 
 **Gap found and closed:** the spec's comparison-figure change (11 rows, reference row distinguished) has no task. `model_comparison_figure` already takes whatever entries it is handed, so the row count follows automatically from the model list — but the reference-row styling does not. Deferred deliberately: it is cosmetic, and `_COMPARISON_METRICS` is untouched by this plan. Recorded here rather than silently dropped.
 
-**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8, 11). `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 11's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 11 and 13. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
+**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8, 11). `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 11's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 11, 12 and 14. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
