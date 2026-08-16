@@ -21,6 +21,18 @@ from inferential import InferentialModelVariant, normalize_inferential_variants
 # number, printed once per report in the Methods block.
 BOOTSTRAP_RESAMPLES: int = 1000
 
+# Derived cut-point column -> the continuous column it dichotomises. Selection
+# skips the child whenever the parent is also a candidate: the parent carries
+# more information, and the child would stack the cut-point search's own
+# optimism on top of the model's.
+CUTPOINT_PARENT: dict[str, str] = {
+    "adc_value_le0.72": "adc_value",
+    "edema_index_ge0.0617": "edema_index",
+    "edema_volume_ge4.76": "edema_volume_cm3",
+    "max_diameter_cm_ge3.81": "max_diameter_cm",
+    "tumor_volume_ge15.1": "tumor_volume",
+}
+
 
 def _load_hidden_parent_columns(output_root: Path | str | None) -> frozenset[str]:
     """Load ``cleaning/hidden_parent_columns.csv``; empty if missing."""
