@@ -1509,7 +1509,217 @@ git commit -m "feat: write the single-predictor, delta-AUC and selection-audit t
 
 ---
 
-### Task 12: Render the comparison tables and the direction column
+### Task 12: Slim the odds-ratio table to four columns
+
+**Files:**
+- Modify: `heavy_machinery/modelling_phase/inferential.py` (rename `_forest_row_label` → `predictor_label`)
+- Modify: `heavy_machinery/modelling_phase/report.py` (`render_inferential`'s per-model table)
+- Test: `heavy_machinery/pytests_atypier/test_report.py`, `heavy_machinery/pytests_atypier/test_inferential.py`
+
+**Interfaces:**
+- Consumes: nothing from earlier tasks.
+- Produces: `report._beta_se(coef, se) -> str`, `report._or_ci(o, lo, hi) -> str`, `report._model_level_line(tbl) -> str`, and `inferential.predictor_label(row) -> str` (public rename, same behaviour). Task 13 renders alongside these.
+
+The table currently shows 18 columns of which **seven are identical on every row**
+(`target`, `model_id`, `experimental`, `n_models`, `intercept_coef`,
+`intercept_or`, `df`) and two more are blank for every binary predictor
+(`z_mu`, `z_sd`). The published-model table directly above renders
+`Variable | … | Published aOR (95% CI) | p`, so matching that shape lets a reader
+read the two against each other line by line. The CSV keeps every column.
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `heavy_machinery/pytests_atypier/test_report.py`:
+
+```python
+def test_beta_se_and_or_ci_formatting():
+    import report as rp
+    assert rp._beta_se(0.96, 0.37) == "0.96 (0.37)"
+    assert rp._beta_se(None, 0.37) == ""
+    assert rp._or_ci(2.60, 1.26, 5.38) == "2.60 (1.26–5.38)"
+    assert rp._or_ci(2.60, None, None) == "2.60"
+
+
+def test_model_level_line_states_intercept_and_imputations():
+    import pandas as pd, report as rp
+    tbl = pd.DataFrame({"intercept_coef": [-1.16, -1.16], "intercept_or": [0.312, 0.312],
+                        "n_models": [20, 20], "df": ["∞", "∞"]})
+    line = rp._model_level_line(tbl)
+    assert "-1.16" in line and "0.312" in line and "20" in line and "∞" in line
+
+
+def test_multivariable_table_shows_four_columns_only(report_cfg, report_art):
+    import pandas as pd, report as rp
+    report_art.inferential_multivariable = {
+        "high_grade::m1": pd.DataFrame({
+            "predictor_col": ["age", "male"],
+            "coef": [0.13, 0.72], "se": [0.13, 0.27],
+            "or": [1.14, 2.05], "or_ci_lo": [0.88, 1.22], "or_ci_hi": [1.46, 3.46],
+            "p": [0.315, 0.007], "df": ["∞", "∞"], "n_models": [20, 20],
+            "intercept_coef": [-1.16, -1.16], "intercept_or": [0.312, 0.312],
+            "z_mu": [63.1, None], "z_sd": [12.68, None],
+            "target": ["high_grade"] * 2, "model_id": ["m1"] * 2,
+            "experimental": [True, True],
+        })
+    }
+    html = rp.render_inferential(report_cfg, report_art)
+    for gone in ("model_id", "experimental", "intercept_coef", "n_models", "z_sd"):
+        assert f"<th>{gone}</th>" not in html
+    assert "β (SE)" in html and "OR (95% CI)" in html
+    assert "per 1 SD: 12.68" in html          # z_sd folded into the predictor name
+```
+
+Add to `heavy_machinery/pytests_atypier/test_inferential.py`, replacing the two
+`inf._forest_row_label` references:
+
+```python
+def test_predictor_label_names_the_sd_for_a_continuous_predictor():
+    row = _pooled().iloc[1].copy()          # adc_value, z_sd = 0.17
+    assert "per 1 SD: 0.17" in inf.predictor_label(row)
+
+
+def test_predictor_label_ignores_a_missing_or_zero_sd():
+    row = _pooled().iloc[0].copy()
+    row["z_sd"] = 0.0
+    assert "per 1 SD" not in inf.predictor_label(row)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_report.py -k "beta_se or model_level or four_columns" heavy_machinery/pytests_atypier/test_inferential.py -k predictor_label -q`
+Expected: FAIL — `AttributeError: module 'report' has no attribute '_beta_se'`
+
+- [ ] **Step 3: Make the label helper public**
+
+In `heavy_machinery/modelling_phase/inferential.py`, rename `_forest_row_label` to
+`predictor_label` (definition and its one call inside `_forest_plot`). The
+docstring already explains why the SD is named; leave it. Making it public is the
+point — the table and the forest plot must label a predictor identically or the
+reader sees "per 1 SD: 12.68" in one and a bare name in the other.
+
+- [ ] **Step 4: Add the formatters and rebuild the display table**
+
+In `report.py`, add beside `_published_or`:
+
+```python
+def _beta_se(coef: Any, se: Any) -> str:
+    """``0.96 (0.37)`` — the log-odds coefficient with its standard error."""
+    c, s = _coerce_float(coef), _coerce_float(se)
+    if c is None:
+        return ""
+    return f"{c:.2f} ({s:.2f})" if s is not None else f"{c:.2f}"
+
+
+def _or_ci(o: Any, lo: Any, hi: Any) -> str:
+    """``2.60 (1.26–5.38)`` — same shape as the published table above it."""
+    ov, l, h = (_coerce_float(x) for x in (o, lo, hi))
+    if ov is None:
+        return ""
+    return f"{ov:.2f} ({l:.2f}–{h:.2f})" if l is not None and h is not None else f"{ov:.2f}"
+
+
+def _model_level_line(tbl: pd.DataFrame) -> str:
+    """Facts that were repeated on every row, stated once.
+
+    The intercept, the imputation count and the pooled degrees of freedom are
+    properties of the model, not of any predictor. As columns they cost seven
+    cells per row and told the reader nothing new after the first one.
+    """
+    bits: list[str] = []
+    if "intercept_coef" in tbl.columns and len(tbl):
+        ic = _coerce_float(tbl["intercept_coef"].iloc[0])
+        io = _coerce_float(tbl["intercept_or"].iloc[0]) if "intercept_or" in tbl.columns else None
+        if ic is not None:
+            bits.append(f"Intercept {ic:.2f}" + (f" (OR {io:.3f})" if io is not None else ""))
+    if "n_models" in tbl.columns and len(tbl):
+        n = _to_int_or_none(tbl["n_models"].iloc[0])
+        if n:
+            bits.append(f"pooled across {n} imputations")
+    if "df" in tbl.columns and len(tbl):
+        dfs = {human_pool_df(v) for v in tbl["df"] if str(v).strip()}
+        if len(dfs) == 1:
+            bits.append(f"Rubin df {dfs.pop()}")
+    return f'<p class="muted">{" &middot; ".join(_esc(b) for b in bits)}</p>' if bits else ""
+```
+
+In `render_inferential`, replace the block from `nowrap = ("model_id",) …` through
+the `table_to_html(...)` append with:
+
+```python
+                # The numeric ``tbl`` stays as-is for the interpretation block
+                # below; the display copy is what the reader sees.
+                display = pd.DataFrame({
+                    "Predictor": [predictor_label(r) for _, r in tbl.iterrows()],
+                    "β (SE)": [_beta_se(r.get("coef"), r.get("se"))
+                               for _, r in tbl.iterrows()],
+                    "OR (95% CI)": [_or_ci(r.get(col_or), r.get(col_lo), r.get(col_hi))
+                                    for _, r in tbl.iterrows()],
+                    "P": [human_p(r.get(col_p)) for _, r in tbl.iterrows()],
+                })
+                blocks.append(_model_level_line(tbl))
+                blocks.append(table_to_html(
+                    display, row_class_fn=_row_cls,
+                    nowrap_cols=("β (SE)", "OR (95% CI)", "P")))
+```
+
+Delete the two lines that pre-format `tbl[col_p]` and `tbl["df"]` for display —
+`human_p` is now applied when building `display`, and `df` is no longer a column.
+`_row_cls` still reads `col_or`/`col_lo`/`col_hi` from the numeric row, so pass
+`tbl` rows to it unchanged.
+
+Import the renamed helper at the top of `report.py`:
+
+```python
+from inferential import (
+    artifact_base,
+    model_key,
+    parse_artifact_base,
+    parse_model_key,
+    predictor_label,
+)
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_report.py heavy_machinery/pytests_atypier/test_inferential.py -q`
+Expected: PASS
+
+- [ ] **Step 6: Rebuild the report and eyeball one table**
+
+```bash
+python3 - <<'PY'
+import re, sys
+from pathlib import Path
+sys.path[:0] = [str(Path('heavy_machinery')/d) for d in
+                ('modelling_phase','cleaning_phase','cutpoint_phase','config')]
+sys.path.insert(0, '.')
+from heavy_machinery.config import load
+load("report_settings").run_report(
+    output_root=Path("output"), report_title="t", report_author="a",
+    report_path=Path("output/report/report.html"), analysis_years=None,
+    eda_targets=["high_grade"])
+h = re.sub(r'data:image/[a-z]+;base64,[A-Za-z0-9+/=]+','[IMG]',
+           Path('output/report/report.html').read_text())
+i = h.index('🧮 Multivariable modelling')
+hdrs = re.findall(r'<thead>(.*?)</thead>', h[i:i+60000], re.S)
+for k in hdrs[:4]:
+    print([re.sub('<[^>]+>','',c).strip() for c in re.findall(r'<th[^>]*>(.*?)</th>', k, re.S)])
+PY
+```
+
+Expected: the odds-ratio tables print `['Predictor', 'β (SE)', 'OR (95% CI)', 'P']`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add heavy_machinery/modelling_phase/inferential.py heavy_machinery/modelling_phase/report.py \
+        heavy_machinery/pytests_atypier/test_report.py heavy_machinery/pytests_atypier/test_inferential.py
+git commit -m "refactor: odds-ratio table down to Predictor, beta (SE), OR (95% CI), P"
+```
+
+---
+
+### Task 13: Render the comparison tables and the direction column
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/report.py` (`Artifacts`, `load_artifacts`, `render_inferential`)
@@ -1648,7 +1858,7 @@ git commit -m "feat: render combined-vs-single tables and the selection audit"
 
 ---
 
-### Task 13: Full clean pipeline run and verification
+### Task 14: Full clean pipeline run and verification
 
 **Files:**
 - Modify: none (verification only)
@@ -1726,8 +1936,8 @@ git add -A && git commit -m "chore: full clean pipeline run with the literature 
 
 ## Self-Review
 
-**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 11; reference declaration → Task 7; lightweight singles → Task 8; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; direction column → Task 12; `age_ge75` → Task 1; six literature models + `published_models` → Task 9; `NOT_FITTED` and `surrogate_note` → Tasks 9, 10; three CSV artifacts → Task 11; report blocks → Tasks 10, 12; clean run → Task 13.
+**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 11; reference declaration → Task 7; lightweight singles → Task 8; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; table slimmed to four columns → Task 12; direction column → Task 13; `age_ge75` → Task 1; six literature models + `published_models` → Task 9; `NOT_FITTED` and `surrogate_note` → Tasks 9, 10; three CSV artifacts → Task 11; report blocks → Tasks 10, 12, 13; clean run → Task 14.
 
 **Gap found and closed:** the spec's comparison-figure change (11 rows, reference row distinguished) has no task. `model_comparison_figure` already takes whatever entries it is handed, so the row count follows automatically from the model list — but the reference-row styling does not. Deferred deliberately: it is cosmetic, and `_COMPARISON_METRICS` is untouched by this plan. Recorded here rather than silently dropped.
 
-**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8, 11). `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 11's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 11 and 12. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
+**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8, 11). `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 11's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 11 and 13. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
