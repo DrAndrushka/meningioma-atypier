@@ -35,6 +35,9 @@ it reaches the report without depending on anyone remembering it.
 | ΔAUC scale | **Optimism-corrected**, differenced within resamples | Combined models have more parameters, so apparent ΔAUC overstates the very effect being claimed. |
 | Nested test | **D2 pooling** (Li, Meng, Raghunathan & Rubin 1991) | A valid pooled LR test across 20 MICE draws otherwise needs Meng–Rubin D3. D2 is standard, citable, and ~20 lines. Label the column D2. |
 | MICE | **unchanged** | Already m=20, maxit=20, seed=42 — matches the spec exactly. |
+| Selection inside the bootstrap | **In scope**, for `top_6_variables` | Each resample re-ranks, re-guards and re-picks its own six before refitting. Otherwise the only data-selected model in the figure is the only one whose optimism is under-corrected. |
+| Collinearity threshold | **ρ = 0.8** | Conventional. Nothing in this cohort sits near the boundary, so 0.7 or 0.9 would pick the same six — but the number is published, so it is stated. |
+| AUC direction in tables | **Show discrimination beside raw AUC**, arrow on protective variables | A raw AUC of 0.370 for `adc_value` reads as "useless" when it means 0.630 the other way. Two of the six picked variables are protective. |
 
 ### Deviations from the source spec
 
@@ -129,10 +132,26 @@ new optional fields:
 
 Two papers have deliberate gaps, left empty rather than filled:
 
-- **Kawahara 2012** reports two independent predictors but no retrievable
-  ORs/CIs. Result cells stay empty until the publisher PDF is obtained.
+- **Kawahara 2012** — no ORs or CIs are available in any open source, so those
+  cells stay empty. What *is* available from the abstract and is recorded
+  instead: n=65 (39 benign, 26 high-grade); four factors assessed — tumour–brain
+  interface on T1WI, capsular enhancement, heterogeneity on T1Gd, tumoral margin
+  on T1Gd — all four significant univariably, with **unclear TBI and
+  heterogeneous enhancement** retained on multivariable analysis; and a joint
+  result of **98% probability of high grade when both are present**. That last
+  number is the only published performance figure for this model and is the one
+  our refit can be read against.
 - **Zhang 2020** reports β coefficients only, no ORs. Its terms carry β with the
   scale named.
+
+**Kawahara needs a stronger surrogate note than the other two.** The paper scored
+tumoral margin and tumour–brain interface as *separate* factors; both were
+significant univariably, and the multivariable model kept the interface while
+margin dropped out. Our refit substitutes `irregular_tumor_margin` for the
+interface — that is, it substitutes the variable this paper specifically
+discarded for the one it retained. Its note must say so. Kawahara also assessed
+capsular enhancement and did not retain it, which is worth stating because
+`lin_2014` does use `capsular_enhancement`.
 
 ### Comparison layer
 
@@ -155,6 +174,26 @@ A new module, `heavy_machinery/modelling_phase/model_comparison.py`, owns:
 
 It reuses `build_complete_case_frame` and `bootstrap_internal_validation` rather
 than reimplementing either.
+
+### Selection inside the bootstrap
+
+`top_6_variables` is the only model whose predictors are chosen from the same
+cohort it is fitted on, so it is the only one where the bootstrap must also
+re-run the *choosing*. `bootstrap_internal_validation` gains an optional
+`select` callable: when supplied, each resample re-ranks all candidates by AUC on
+that resample, re-applies both guards, picks its own six, fits them, and scores
+against the original cohort. The resulting optimism covers selection as well as
+coefficients.
+
+The six chosen on the full cohort remain the reported model; the selector only
+changes what the correction measures. A count of how often each variable is
+re-selected across the 1000 resamples goes into `top_variable_selection.csv` —
+a variable picked in 400 of 1000 resamples is a different claim from one picked
+in 990, and that distinction is otherwise invisible.
+
+`experimental_model_1` is deliberately excluded from this: its optimism comes
+from cut-points found in the cut-point phase, which the resample would have to
+re-derive. Out of scope, caveat text unchanged.
 
 ### Data-driven selection — `top_1_variable` and `top_6_variables`
 
@@ -211,8 +250,9 @@ under the manuscript without anyone noticing.
 - `model_vs_single_auc.csv` — one row per (model × one of its own predictors):
   both corrected AUCs, ΔAUC, CI bounds, D2 p-value.
 - `top_variable_selection.csv` — the selection audit: every candidate considered
-  in AUC order, its AUC, whether it was kept or dropped, and the reason for each
-  drop. Source of the footnote under `top_6_variables`.
+  in AUC order, its raw AUC, its discrimination (raw flipped when below 0.5),
+  whether it was kept or dropped, the reason for each drop, and how many of the
+  1000 resamples re-selected it. Source of the footnote under `top_6_variables`.
 
 ### `report.html`
 
@@ -237,7 +277,7 @@ visually distinguished. One figure, not two: 11 rows fits without crowding.
 
 ## Cost
 
-Modelling phase goes from ~13 s to roughly **1 minute** (22 models × 1000
+Modelling phase goes from ~13 s to roughly **90 seconds** (22 models × 1000
 resamples, 4 workers). Cut-point phase is unchanged in cost; only its seed usage
 is confirmed. A full clean pipeline run stays under two minutes.
 
@@ -246,13 +286,9 @@ is confirmed. A full clean pipeline run stays under two minutes.
 - No dichotomised `tumor_volume` variant. Source spec footnote 4: importing a
   foreign cohort's cut-point adds a second layer of optimism.
 - No refit of the five excluded models.
-- **Open — not yet decided.** Re-running the selection inside each bootstrap
-  resample for `top_6_variables` / `top_1_variable`. Because selection is now
-  code rather than a frozen list, each resample *could* re-rank, re-guard and
-  re-pick its own six before refitting. Without it the bootstrap corrects the
-  coefficients but gives the selection a free pass, so those two models'
-  corrected AUCs stay optimistic in a way the literature models' are not — and
-  they sit in the same comparison figure. Recommended in scope; costs roughly
-  3–5× their validation time (28 AUCs and one correlation matrix per resample,
-  cheap at n=352). **Decide before the implementation plan is written.**
+- No re-selection inside the bootstrap for `experimental_model_1`. Three of its
+  nine predictors are cohort-derived cut-points, so it carries the same kind of
+  optimism one layer down — but fixing that means folding the threshold search
+  into the resample, which spans the cut-point phase. Separate work; the model's
+  caveat text stays.
 - No new top-level report section.
