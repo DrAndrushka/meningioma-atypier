@@ -19,40 +19,34 @@ def _data(seed: int = 0, n: int = 300, sep: float = 0.9):
 
 
 # --- the settings this phase shares with the rest of the project ----------
-def test_the_seed_matches_the_other_phases():
+def test_the_settings_match_the_other_phases():
     """A different seed desynchronises this from the modelling-phase bootstraps."""
     assert wb.SEED == 20260801
-
-
-def test_the_default_is_a_thousand_replicates():
     assert wb.N_BOOTSTRAP == 1000
 
 
 # --- the interval ----------------------------------------------------------
-def test_the_interval_brackets_the_observed_cutpoint():
+def test_the_interval_brackets_the_cutpoint_and_is_rederived_each_replicate():
+    """A fixed cut-point would give a zero-width interval — the classic error."""
     y, x = _data()
     out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=200)
     assert out["ci_lo"] <= out["cutpoint"] <= out["ci_hi"]
-
-
-def test_the_inner_quartiles_sit_inside_the_interval():
-    y, x = _data()
-    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=200)
     assert out["ci_lo"] <= out["iqr_lo"] <= out["iqr_hi"] <= out["ci_hi"]
+    assert np.unique(out["draws"]).size > 1
+
+    # The draws are kept so the histogram can be drawn from them.
+    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=120)
+    assert out["draws"].size == out["n_valid"]
 
 
-def test_the_same_seed_gives_the_same_interval():
+def test_the_interval_follows_the_seed():
     y, x = _data()
     a = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=150, seed=7)
     b = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=150, seed=7)
     assert (a["ci_lo"], a["ci_hi"]) == (b["ci_lo"], b["ci_hi"])
 
-
-def test_a_different_seed_gives_a_different_interval():
-    y, x = _data()
-    a = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=150, seed=7)
-    b = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=150, seed=8)
-    assert (a["ci_lo"], a["ci_hi"]) != (b["ci_lo"], b["ci_hi"])
+    c = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=150, seed=8)
+    assert (a["ci_lo"], a["ci_hi"]) != (c["ci_lo"], c["ci_hi"])
 
 
 def test_a_stronger_signal_gives_a_tighter_interval():
@@ -63,65 +57,43 @@ def test_a_stronger_signal_gives_a_tighter_interval():
     assert (strong["ci_hi"] - strong["ci_lo"]) < (weak["ci_hi"] - weak["ci_lo"])
 
 
-def test_the_cutpoint_is_rederived_in_every_replicate_not_held_fixed():
-    """A fixed cut-point would give a zero-width interval — the classic error."""
-    y, x = _data()
-    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=200)
-    assert np.unique(out["draws"]).size > 1
-
-
-def test_the_draws_are_kept_for_the_histogram():
-    y, x = _data()
-    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=120)
-    assert out["draws"].size == out["n_valid"]
-
-
 # --- optimism --------------------------------------------------------------
-def test_optimism_is_positive_when_the_criterion_is_chasing_noise():
+def test_optimism_is_measured_on_held_out_patients():
+    """Scoring in-bag against in-bag would report zero optimism, always."""
     y, x = _data(seed=4, sep=0.0)       # pure noise: all apparent J is luck
-    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=300)
-    assert out["optimism"] > 0
+    assert wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=300)["optimism"] > 0
 
-
-def test_the_corrected_j_is_below_the_apparent_j():
     y, x = _data()
     out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=300)
     assert out["j_corrected"] < out["j_apparent"]
 
-
-def test_optimism_scores_held_out_patients_not_the_ones_it_learned_from():
-    """Scoring in-bag against in-bag would report zero optimism, always."""
     y, x = _data(seed=6, sep=0.2)
     out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=300)
     assert np.isfinite(out["optimism"]) and out["optimism"] != 0.0
 
 
 # --- refusals and graceful failure ----------------------------------------
-def test_one_grade_only_returns_blanks_rather_than_raising():
+def test_an_unresamplable_cohort_returns_blanks_rather_than_raising():
     out = wb.bootstrap_cutpoint(np.ones(50, dtype=int), np.arange(50.0),
                                 ms.HIGHER, n_boot=50)
     assert np.isnan(out["cutpoint"]) and out["n_valid"] == 0
 
-
-def test_too_few_events_returns_blanks():
     y = np.zeros(60, dtype=int)
     y[:2] = 1
-    out = wb.bootstrap_cutpoint(y, np.linspace(0, 1, 60), ms.HIGHER, n_boot=50)
-    assert out["n_valid"] == 0
+    assert wb.bootstrap_cutpoint(y, np.linspace(0, 1, 60), ms.HIGHER,
+                                 n_boot=50)["n_valid"] == 0
 
-
-def test_skipped_replicates_are_counted_not_hidden():
+    # Skipped replicates are counted, not hidden.
     y, x = _data(n=60)
     out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=100)
     assert out["n_valid"] + out["n_skipped"] == 100
 
-
-def test_missing_values_are_dropped_before_resampling():
+    # Missing values are dropped before resampling.
     y, x = _data(n=200)
     x = x.copy()
     x[:20] = np.nan
-    out = wb.bootstrap_cutpoint(y, x, ms.HIGHER, n_boot=100)
-    assert np.isfinite(out["cutpoint"])
+    assert np.isfinite(wb.bootstrap_cutpoint(y, x, ms.HIGHER,
+                                             n_boot=100)["cutpoint"])
 
 
 # --- the frozen point estimates -------------------------------------------
@@ -149,38 +121,24 @@ def _eligible(df):
                                         bl.bend_table(df, fits=fits)))
 
 
-def test_a_moved_point_estimate_stops_the_run():
-    """The bootstrap may bracket a published number; it may not move it."""
+def test_the_bootstrap_may_bracket_a_published_number_but_not_move_it():
     df = _cohort()
+    eligible = _eligible(df)
     with pytest.raises(wb.FrozenCutpointError, match="may not"):
-        wb.wobble_table(df, _eligible(df), n_boot=40,
-                        frozen={"adc_value": 0.01})
+        wb.wobble_table(df, eligible, n_boot=40, frozen={"adc_value": 0.01})
 
-
-def test_a_matching_point_estimate_passes_the_freeze():
-    df = _cohort()
-    table, _ = wb.wobble_table(df, _eligible(df), n_boot=40)
+    table, _ = wb.wobble_table(df, eligible, n_boot=40)
     adc = table.set_index("col").loc["adc_value", "cutpoint"]
-    wb.wobble_table(df, _eligible(df), n_boot=40, frozen={"adc_value": adc})
+    wb.wobble_table(df, eligible, n_boot=40, frozen={"adc_value": adc})
 
 
 # --- the table -------------------------------------------------------------
-def test_the_stability_ratio_is_the_interval_over_the_measurements_iqr():
-    df = _cohort()
-    table, _ = wb.wobble_table(df, _eligible(df), n_boot=60)
-    assert table["stability_ratio"].to_numpy() == pytest.approx(
-        (table["ci_width"] / table["measurement_iqr"]).to_numpy())
-
-
-def test_draws_come_back_keyed_by_measurement():
+def test_the_table_scales_the_interval_and_carries_step_five_forward():
     df = _cohort()
     table, draws = wb.wobble_table(df, _eligible(df), n_boot=60)
+    assert table["stability_ratio"].to_numpy() == pytest.approx(
+        (table["ci_width"] / table["measurement_iqr"]).to_numpy())
     assert set(draws) == set(table["col"])
-
-
-def test_the_claim_from_step_five_is_carried_forward():
-    df = _cohort()
-    table, _ = wb.wobble_table(df, _eligible(df), n_boot=40)
     assert table["claim"].str.len().gt(0).all()
 
 
@@ -193,8 +151,6 @@ def test_describe_separates_firm_cutpoints_from_dissolved_ones():
     table["stability_ratio"] = 0.2
     assert "Holds up under resampling" in wb.describe_wobble(table)
 
-
-def test_describe_handles_an_empty_table():
     assert wb.describe_wobble(pd.DataFrame()) == "No cut-point could be resampled."
 
 

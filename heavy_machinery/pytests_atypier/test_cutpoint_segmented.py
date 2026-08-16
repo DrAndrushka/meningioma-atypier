@@ -32,32 +32,19 @@ def test_candidates_stay_inside_the_data():
     assert grid.min() >= np.quantile(x, 0.10) - 1e-9
     assert grid.max() <= np.quantile(x, 0.90) + 1e-9
 
-
-def test_a_constant_predictor_yields_no_candidates():
     assert sg.candidate_breakpoints(np.ones(50)).size == 0
 
 
 # --- estimating the breakpoint --------------------------------------------
-def test_a_real_break_is_recovered_near_where_it_was_put():
+def test_a_real_break_is_recovered_with_its_slopes_and_interval():
     x, y = _broken(psi=5.0)
     fit = sg.fit_segmented(x, y)
     assert abs(fit.breakpoint - 5.0) < 1.5
-
-
-def test_the_two_slopes_differ_across_a_real_break():
-    x, y = _broken(psi=5.0)
-    fit = sg.fit_segmented(x, y)
     assert fit.slope_above > fit.slope_below
     assert fit.slope_change == pytest.approx(fit.slope_above - fit.slope_below)
-
-
-def test_the_profile_interval_brackets_the_estimate():
-    x, y = _broken()
-    fit = sg.fit_segmented(x, y)
     assert fit.ci_lo <= fit.breakpoint <= fit.ci_hi
 
-
-def test_a_stronger_break_gives_a_tighter_interval():
+    # A stronger break is located more precisely.
     weak = sg.fit_segmented(*_broken(n=600, seed=1))
     rng = np.random.default_rng(1)
     x = rng.uniform(0, 10, 600)
@@ -66,61 +53,44 @@ def test_a_stronger_break_gives_a_tighter_interval():
     assert strong.ci_width < weak.ci_width
 
 
-def test_the_profile_is_kept_so_the_surface_can_be_inspected():
+def test_the_profile_is_kept_and_its_maximum_is_the_estimate():
     """A grid sees local maxima that an iterative fit would settle into."""
     x, y = _broken()
     fit = sg.fit_segmented(x, y)
     assert fit.grid.size == fit.profile_llf.size > 0
     assert np.isfinite(fit.profile_llf).any()
 
-
-def test_the_best_candidate_is_the_one_with_the_highest_likelihood():
-    x, y = _broken()
-    fit = sg.fit_segmented(x, y)
     best = fit.grid[int(np.nanargmax(np.where(np.isfinite(fit.profile_llf),
                                               fit.profile_llf, -np.inf)))]
     assert fit.breakpoint == pytest.approx(best)
 
 
 # --- Davies' correction ----------------------------------------------------
-def test_davies_is_more_conservative_than_the_uncorrected_tail():
-    """It charges for having searched every candidate for the best one."""
-    z = np.array([0.2, 1.1, 2.4, 3.1, 2.0, 0.7])
+def test_davies_charges_for_having_searched_every_candidate():
+    """A maximum found by luck should cost more than one that was always there."""
     from scipy.stats import norm
+
+    z = np.array([0.2, 1.1, 2.4, 3.1, 2.0, 0.7])
     assert sg.davies_p(z) > 2 * norm.sf(np.max(np.abs(z)))
 
-
-def test_a_jagged_profile_is_penalised_more_than_a_smooth_one():
-    """A maximum found by luck should cost more than one that was always there."""
     smooth = np.linspace(0.1, 3.0, 30)
     jagged = np.abs(np.sin(np.linspace(0, 30, 30))) * 3.0
     jagged[15] = 3.0
     assert sg.davies_p(jagged) > sg.davies_p(smooth)
 
-
-def test_davies_never_exceeds_one():
     assert sg.davies_p(np.array([0.1, 0.2, 0.1, 0.3] * 20)) <= 1.0
-
-
-def test_davies_needs_more_than_one_candidate():
     assert np.isnan(sg.davies_p(np.array([2.0])))
 
 
-def test_a_straight_line_does_not_yield_a_supported_breakpoint():
-    """The failure mode the correction exists to prevent."""
-    x, y = _straight()
-    assert not sg.fit_segmented(x, y).supported
+def test_support_is_judged_on_davies_not_the_naive_p():
+    """A straight line yielding a 'breakpoint' is the failure mode the
+    correction exists to prevent."""
+    assert not sg.fit_segmented(*_straight()).supported
 
-
-def test_a_real_break_survives_the_correction():
     x, y = _broken()
     fit = sg.fit_segmented(x, y)
     assert fit.supported and fit.davies_p < 0.05
 
-
-def test_support_is_judged_on_davies_not_the_naive_p():
-    x, y = _broken()
-    fit = sg.fit_segmented(x, y)
     fit_naive_only = sg.SegmentedFit(**{**fit.__dict__, "davies_p": 0.40})
     assert not fit_naive_only.supported
 
@@ -128,35 +98,22 @@ def test_support_is_judged_on_davies_not_the_naive_p():
 # --- AIC -------------------------------------------------------------------
 def test_delta_aic_charges_for_both_extra_parameters():
     """The slope change and the breakpoint itself — two, not one."""
-    x, y = _broken()
-    fit = sg.fit_segmented(x, y)
+    fit = sg.fit_segmented(*_broken())
     assert fit.delta_aic == pytest.approx(4.0 - fit.lr_stat)
-
-
-def test_a_real_break_gives_a_negative_delta_aic():
-    assert sg.fit_segmented(*_broken()).delta_aic < 0
-
-
-def test_a_straight_line_gives_a_positive_delta_aic():
+    assert fit.delta_aic < 0
     assert sg.fit_segmented(*_straight()).delta_aic > 0
 
 
 # --- graceful failure ------------------------------------------------------
-def test_too_few_patients_is_blank_rather_than_fatal():
+def test_too_few_patients_or_events_is_blank_rather_than_fatal():
     fit = sg.fit_segmented(np.linspace(0, 1, 20), np.array([0, 1] * 10))
     assert np.isnan(fit.breakpoint) and "too few patients" in fit.note
+    assert not fit.supported
 
-
-def test_too_few_events_is_blank():
     y = np.zeros(200, dtype=int)
     y[:4] = 1
     fit = sg.fit_segmented(np.linspace(0, 10, 200), y)
     assert "too few patients or events" in fit.note
-
-
-def test_a_blank_fit_is_not_reported_as_supported():
-    assert not sg.fit_segmented(np.linspace(0, 1, 20),
-                                np.array([0, 1] * 10)).supported
 
 
 def test_every_candidate_keeps_enough_patients_on_both_sides():
@@ -195,42 +152,31 @@ def _eligible(df):
                                         bl.bend_table(df, fits=fits)))
 
 
-def test_the_table_reports_both_p_values_side_by_side():
+def test_the_table_reports_both_p_values_at_the_declared_precision():
     df = _cohort()
-    table = sg.segmented_table(df, _eligible(df))
+    eligible = _eligible(df)
+    table = sg.segmented_table(df, eligible)
     assert {"lr_p_naive", "davies_p"} <= set(table.columns)
 
+    by_col = table.set_index("col")
+    if np.isfinite(by_col.loc["adc_value", "breakpoint"]):
+        assert by_col.loc["adc_value", "breakpoint"] == round(
+            by_col.loc["adc_value", "breakpoint"], 2)
 
-def test_the_table_rounds_the_breakpoint_to_the_measurements_precision():
-    df = _cohort()
-    table = sg.segmented_table(df, _eligible(df)).set_index("col")
-    if np.isfinite(table.loc["adc_value", "breakpoint"]):
-        assert table.loc["adc_value", "breakpoint"] == round(
-            table.loc["adc_value", "breakpoint"], 2)
-
-
-def test_describe_says_plainly_when_nothing_survives():
-    df = _cohort()
-    table = sg.segmented_table(df, _eligible(df))
     table["breakpoint_supported"] = False
     assert "No breakpoint survives" in sg.describe_segmented(table)
 
 
 # --- against the real cohort ----------------------------------------------
 def test_the_real_cohort_supports_a_breakpoint_for_adc(real_cohort):
+    """0.72 was derived by Youden; the breakpoint is a different estimate, and
+    it has to land in the same place."""
     table = sg.segmented_table(real_cohort,
                                _eligible(real_cohort)).set_index("col")
     row = table.loc["adc_value"]
     assert row["breakpoint_supported"]
     assert row["davies_p"] < 0.05
     assert row["ci_lo"] < row["breakpoint"] < row["ci_hi"]
-
-
-def test_the_published_adc_cutpoint_lies_inside_the_breakpoint_interval(real_cohort):
-    """0.72 was derived by Youden; the breakpoint is a different estimate."""
-    table = sg.segmented_table(real_cohort,
-                               _eligible(real_cohort)).set_index("col")
-    row = table.loc["adc_value"]
     assert row["ci_lo"] <= 0.72 <= row["ci_hi"]
 
 

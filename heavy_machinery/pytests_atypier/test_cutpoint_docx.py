@@ -26,49 +26,28 @@ def _write(tmp_path, frame=None, **over):
 
 
 # --- no borders ------------------------------------------------------------
-def test_the_saved_file_prints_no_borders(tmp_path):
-    assert dx.audit(_write(tmp_path))["visible_borders"] == 0
-
-
-def test_a_grid_style_is_counted_as_visible_before_stripping():
-    """Borders live in the style, so the table XML alone proves nothing."""
+def test_borders_live_in_the_style_so_they_are_overridden_not_deleted():
+    """The table XML alone proves nothing — a grid style prints a grid without
+    a single ``tblBorders`` element."""
     document = Document()
     table = document.add_table(rows=2, cols=2, style="Table Grid")
     assert "tblBorders" not in table._tbl.xml      # nothing to delete
     assert dx.visible_borders(table) > 0           # yet it would print a grid
 
-
-def test_stripping_overrides_the_style_rather_than_deleting_nothing():
-    document = Document()
-    table = document.add_table(rows=2, cols=2, style="Table Grid")
     dx.strip_borders(table)
     assert dx.visible_borders(table) == 0
     assert "tblBorders" in table._tbl.xml          # an explicit all-none block
 
 
 # --- width -----------------------------------------------------------------
-def test_the_saved_width_is_under_the_limit(tmp_path):
-    """Measured on disk: EMU rounding once pushed a compliant layout over."""
-    assert dx.audit(_write(tmp_path))["max_width_in"] <= dx.MAX_WIDTH_IN
-
-
-def test_layout_leaves_headroom_for_emu_rounding():
-    assert dx.LAYOUT_WIDTH_IN < dx.MAX_WIDTH_IN
-
-
-def test_an_oversized_column_spec_is_refused(tmp_path):
-    with pytest.raises(dx.DocxContractError, match="broadside"):
-        _write(tmp_path, column_widths=[2.0, 2.0, 2.0, 2.0])
-
-
 def test_widths_are_measured_in_the_units_word_actually_stores():
-    """Twips, not EMUs. 0.858 in is recorded as 0.858333 — rounded up."""
+    """Twips, not EMUs. 0.858 in is recorded as 0.858333 — rounded up, which is
+    how 6.5 in of columns once saved as 6.5014."""
     assert dx.stored_inches(0.858) == pytest.approx(1236 / 1440)
     assert dx.stored_inches(0.858) > 0.858
 
+    assert dx.LAYOUT_WIDTH_IN < dx.MAX_WIDTH_IN
 
-def test_laying_out_to_the_hard_limit_would_overshoot_in_the_file():
-    """The bug this module was written around: 6.5 in of columns saved as 6.5014."""
     first = dx.MAX_WIDTH_IN * 0.34
     rest = (dx.MAX_WIDTH_IN - first) / 5
     widths = [first] + [rest] * 5              # six columns, as the real table has
@@ -76,20 +55,24 @@ def test_laying_out_to_the_hard_limit_would_overshoot_in_the_file():
     assert sum(dx.stored_inches(w) for w in widths) > dx.MAX_WIDTH_IN
 
 
-def test_the_default_layout_stays_under_once_stored(tmp_path):
-    assert dx.audit(_write(tmp_path, frame=_frame(cols=5)))["max_width_in"] <= dx.MAX_WIDTH_IN
+def test_an_oversized_column_spec_is_refused(tmp_path):
+    with pytest.raises(dx.DocxContractError, match="broadside"):
+        _write(tmp_path, column_widths=[2.0, 2.0, 2.0, 2.0])
 
 
-# --- type size and orientation --------------------------------------------
-def test_nothing_is_shrunk_below_body_size(tmp_path):
-    assert dx.audit(_write(tmp_path))["font_sizes_pt"] == [dx.BODY_PT]
+# --- what the saved file actually contains ---------------------------------
+def test_the_saved_file_obeys_every_layout_rule(tmp_path):
+    """Measured on disk: EMU rounding once pushed a compliant layout over."""
+    report = dx.audit(_write(tmp_path))
+    assert report["visible_borders"] == 0
+    assert report["max_width_in"] <= dx.MAX_WIDTH_IN
+    assert report["font_sizes_pt"] == [dx.BODY_PT]
+    assert report["landscape"] is False
 
+    # A wider table stays under the limit once stored, too.
+    assert dx.audit(_write(tmp_path, frame=_frame(cols=5)))[
+        "max_width_in"] <= dx.MAX_WIDTH_IN
 
-def test_the_document_stays_portrait(tmp_path):
-    assert dx.audit(_write(tmp_path))["landscape"] is False
-
-
-def test_every_paragraph_is_double_spaced(tmp_path):
     document = Document(str(_write(tmp_path)))
     spacings = {p.paragraph_format.line_spacing for p in document.paragraphs
                 if p.text.strip()}
@@ -104,48 +87,38 @@ def test_the_note_is_written_beneath_the_table(tmp_path):
     assert note.startswith("Note:—A note.")
 
 
-def test_only_abbreviations_that_appear_are_defined():
-    """A note glossing PPV in a table without one was not written for it."""
+def test_only_the_abbreviations_that_appear_are_defined():
+    """A note glossing PPV in a table without one was not written for it, and
+    'OR' must not fire on 'ORDER' — an uppercase letter after it disqualifies."""
     used = dx.abbreviations_used("AUC 0.63 with a 95% CI and an IQR")
     assert used == ["AUC", "CI", "IQR"]
     assert "PPV" not in used
 
+    assert "OR" not in dx.abbreviations_used("Ordered by ORDER of magnitude")
+    assert "OR" in dx.abbreviations_used("the OR was 3.6")
+    assert "AUC" in dx.abbreviations_used("the two AUCs were compared")
 
-def test_abbreviations_are_defined_alphabetically_in_the_journal_pattern():
     note = dx.abbreviation_note("SD and ADC and AUC")
     assert note.startswith("ADC indicates apparent diffusion coefficient; ")
     assert note.endswith("SD, standard deviation.")
 
-
-def test_a_term_inside_a_longer_word_is_not_matched():
-    """'OR' must not fire on 'ORDER' — an uppercase letter after it disqualifies."""
-    assert "OR" not in dx.abbreviations_used("Ordered by ORDER of magnitude")
-    assert "OR" in dx.abbreviations_used("the OR was 3.6")
-
-
-def test_a_plural_abbreviation_still_counts():
-    assert "AUC" in dx.abbreviations_used("the two AUCs were compared")
-
-
-def test_a_table_with_no_abbreviations_gets_no_glossary():
     assert dx.abbreviation_note("plain words only") == ""
-
-
-def test_the_glossary_defines_each_term_once():
     assert len(set(dx.GLOSSARY.values())) == len(dx.GLOSSARY)
 
 
 # --- structure -------------------------------------------------------------
-def test_the_header_row_carries_the_column_names(tmp_path):
+def test_the_table_keeps_its_header_index_and_values_verbatim(tmp_path):
+    """A second rounding rule here would be free to disagree with the figures."""
     document = Document(str(_write(tmp_path)))
     header = [c.text for c in document.tables[0].rows[0].cells]
     assert header == ["Criterion", "Measure 0", "Measure 1", "Measure 2"]
 
-
-def test_the_index_becomes_the_first_column(tmp_path):
-    document = Document(str(_write(tmp_path)))
     first = [row.cells[0].text for row in document.tables[0].rows[1:]]
     assert first == [f"Criterion {r}" for r in range(4)]
+
+    frame = pd.DataFrame([["0.7241"]], index=["x"], columns=["y"])
+    document = Document(str(_write(tmp_path, frame=frame)))
+    assert document.tables[0].rows[1].cells[1].text == "0.7241"
 
 
 def test_each_table_starts_on_its_own_page(tmp_path):
@@ -157,13 +130,6 @@ def test_each_table_starts_on_its_own_page(tmp_path):
                  for r in p.runs if "w:br" in r._element.xml)
     assert breaks >= 1
     assert len(document.tables) == 2
-
-
-def test_values_are_written_as_given_and_never_rounded(tmp_path):
-    """A second rounding rule here would be free to disagree with the figures."""
-    frame = pd.DataFrame([["0.7241"]], index=["x"], columns=["y"])
-    document = Document(str(_write(tmp_path, frame=frame)))
-    assert document.tables[0].rows[1].cells[1].text == "0.7241"
 
 
 # --- against the real scorecard -------------------------------------------

@@ -29,35 +29,26 @@ def test_series_differ_by_shade_and_line_style_together():
     assert a["color"] != b["color"]
     assert a["linestyle"] != b["linestyle"]
 
-
-def test_the_palette_is_pure_greyscale():
     for shade in aj.SHADES:
         r, g, b = (shade[1:3], shade[3:5], shade[5:7])
         assert r == g == b, f"{shade} is not neutral grey"
 
-
-def test_styles_cycle_rather_than_run_out():
     assert aj.series_style(len(aj.SHADES))["color"] == aj.SHADES[0]
 
 
-def test_palette_matches_the_existing_or_forest():
+def test_the_palette_matches_the_existing_or_forest():
     """A reader moving between figures must not have to relearn the greys."""
     from plot_style import OKABE
     assert aj.INK == OKABE["black"]
     assert aj.MUTED == OKABE["grey"].upper()
     assert aj.ROW_BAND == OKABE["lightgrey"].upper()
 
-
-def test_a_null_crossing_estimate_is_muted_not_dropped():
+    # A null crossing estimate is muted, not dropped.
     assert aj.point_style(muted=True)["color"] == aj.MUTED
     assert aj.point_style()["color"] == aj.INK
-
-
-def test_points_are_squares_like_the_existing_forest():
     assert aj.point_style()["marker"] == "s"
 
-
-def test_the_null_line_is_black_and_dashed_not_a_soft_guide():
+    # The null line is black and dashed, not a soft guide.
     assert aj.NULL_LINE["color"] == aj.INK
     assert aj.NULL_LINE["linestyle"] == "--"
     assert aj.REFERENCE != aj.INK
@@ -65,32 +56,19 @@ def test_the_null_line_is_black_and_dashed_not_a_soft_guide():
 
 # --- the export contract ---------------------------------------------------
 def test_both_formats_come_off_one_figure(fig, tmp_path):
+    assert fig.get_size_inches()[0] >= 4.0
+
     written = aj.save_figure(fig, tmp_path / "fig_demo")
     assert [p.suffix for p in written] == [".tif", ".png"]
     assert all(p.exists() for p in written)
 
-
-def test_tif_is_lzw_compressed(fig, tmp_path):
-    aj.save_figure(fig, tmp_path / "fig_demo")
     with Image.open(tmp_path / "fig_demo.tif") as im:
         assert im.info.get("compression") == "tiff_lzw"
 
-
-def test_saved_at_six_hundred_dpi(fig, tmp_path):
-    aj.save_figure(fig, tmp_path / "fig_demo")
     with Image.open(tmp_path / "fig_demo.png") as im:
         dpi_x, _ = im.info["dpi"]
         assert round(dpi_x) == aj.DPI
-
-
-def test_png_carries_no_tooling_metadata(fig, tmp_path):
-    aj.save_figure(fig, tmp_path / "fig_demo")
-    with Image.open(tmp_path / "fig_demo.png") as im:
         assert not im.info.get("Software")
-
-
-def test_the_figure_is_at_least_the_journal_floor(fig):
-    assert fig.get_size_inches()[0] >= 4.0
 
 
 # --- the refusals ----------------------------------------------------------
@@ -110,32 +88,27 @@ def test_an_identifying_filename_is_refused(fig, tmp_path):
     with pytest.raises(aj.FigureContractError, match="identifying text"):
         aj.save_figure(fig, tmp_path / "fig_pskus_cohort")
 
-
-def test_a_scanner_name_in_the_filename_is_refused(fig, tmp_path):
     with pytest.raises(aj.FigureContractError, match="identifying text"):
         aj.save_figure(fig, tmp_path / "fig_siemens_adc")
 
 
-def test_an_oversized_figure_is_refused(fig, tmp_path):
+def test_an_oversized_figure_and_eps_are_both_refused(fig, tmp_path):
+    """EPS flattens the confidence bands, so it is not a format this phase ships."""
+    with pytest.raises(aj.FigureContractError, match="not one this phase ships"):
+        aj.save_figure(fig, tmp_path / "fig_demo", formats=("eps",))
+
     fig.set_size_inches(9.0, 3.0)
     with pytest.raises(aj.FigureContractError, match="broadside"):
         aj.save_figure(fig, tmp_path / "fig_demo")
 
 
-def test_eps_is_refused_because_it_flattens_the_bands(fig, tmp_path):
-    with pytest.raises(aj.FigureContractError, match="not one this phase ships"):
-        aj.save_figure(fig, tmp_path / "fig_demo", formats=("eps",))
-
-
 # --- the style is applied locally, not globally ---------------------------
-def test_importing_the_module_does_not_change_global_rcparams():
+def test_the_style_is_applied_per_figure_not_globally():
     before = matplotlib.rcParams["font.size"]
     import importlib
     importlib.reload(aj)
     assert matplotlib.rcParams["font.size"] == before
 
-
-def test_new_figure_applies_arial():
     figure, _ = aj.new_figure()
     assert matplotlib.rcParams["font.sans-serif"][0] == "Arial"
     plt.close(figure)

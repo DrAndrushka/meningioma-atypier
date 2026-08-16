@@ -11,7 +11,7 @@ from config import load
 _derivations = load("derivations")
 
 
-def test_apply_derivations_bin_and_flag():
+def test_apply_derivations_bins_flags_and_carries_the_positive_class():
     df = pd.DataFrame({"age": [45, 55, 65], "who_grade": ["1", "2", "3"]})
     schema = {
         "age": ColSpec("age", "continuous"),
@@ -24,6 +24,7 @@ def test_apply_derivations_bin_and_flag():
             bins=[0, 50, 60, 100],
             labels=["<50", "50-59", "60+"],
             reason="test bins",
+            positive_class="60+",
         ),
         _derivations.Apply(
             name="high_grade",
@@ -31,6 +32,7 @@ def test_apply_derivations_bin_and_flag():
             fn=lambda s: s.isin(["2", "3"]).astype("boolean"),
             kind="binary",
             reason="test flag",
+            positive_class=True,
         ),
     ]
     out, out_schema, log = _derivations.apply_derivations(
@@ -41,64 +43,42 @@ def test_apply_derivations_bin_and_flag():
     assert out["high_grade"].dtype == "boolean"
     assert out_schema["high_grade"].kind == "binary"
     assert "derivation" in log.columns
-
-
-def test_apply_derivations_copies_positive_class_onto_colspec():
-    df = pd.DataFrame({
-        "age": [45, 55, 65],
-        "who_grade": ["1", "2", "3"],
-    })
-    schema = {
-        "age": ColSpec("age", "continuous"),
-        "who_grade": ColSpec("who_grade", "ordinal", ordered_levels=["1", "2", "3"]),
-    }
-    derivations = [
-        _derivations.BinNumeric(
-            name="age_bins",
-            source="age",
-            bins=[0, 50, 60, 100],
-            labels=["<50", "50-59", "60+"],
-            positive_class="60+",
-        ),
-        _derivations.Apply(
-            name="high_grade",
-            source="who_grade",
-            fn=lambda s: s.isin(["2", "3"]).astype("boolean"),
-            kind="binary",
-            positive_class=True,
-        ),
-    ]
-    _, out_schema, _ = _derivations.apply_derivations(
-        df, schema, derivations, preview=False,
-    )
     assert out_schema["age_bins"].positive_class == "60+"
     assert out_schema["high_grade"].positive_class is True
 
 
-def test_apply_derivations_custom_apply():
+def test_a_derivation_is_applied_skipped_or_replaces_an_existing_column():
     df = pd.DataFrame({"x": [1, 2, 3]})
     schema = {"x": ColSpec("x", "continuous")}
-    derivations = [
-        _derivations.Apply(
-            name="x_doubled",
-            source="x",
-            fn=lambda s: s * 2,
-            kind="continuous",
-            reason="double it",
-        ),
-    ]
-    out, _, log = _derivations.apply_derivations(df, schema, derivations, preview=False)
+    out, _, log = _derivations.apply_derivations(
+        df, schema,
+        [_derivations.Apply(name="x_doubled", source="x", fn=lambda s: s * 2,
+                            kind="continuous", reason="double it")],
+        preview=False)
     assert out["x_doubled"].tolist() == [2, 4, 6]
     assert log.iloc[0]["schema_action"].startswith("added ColSpec")
 
-
-def test_skipped_missing_source():
-    df = pd.DataFrame({"a": [1]})
-    schema = {"a": ColSpec("a", "continuous")}
-    derivations = [_derivations.Apply(name="flag", source="missing", fn=lambda s: s)]
-    out, _, log = _derivations.apply_derivations(df, schema, derivations, preview=False)
+    out, _, log = _derivations.apply_derivations(
+        pd.DataFrame({"a": [1]}), {"a": ColSpec("a", "continuous")},
+        [_derivations.Apply(name="flag", source="missing", fn=lambda s: s)],
+        preview=False)
     assert "flag" not in out.columns
     assert "source missing" in log.iloc[0]["schema_action"]
+
+    out, _, log = _derivations.apply_derivations(
+        pd.DataFrame({"x": [1]}), {"x": ColSpec("x", "continuous")},
+        [_derivations.Apply(name="y", source="x", fn=lambda s: s, active=False)],
+        preview=False)
+    assert "y" not in out.columns
+    assert log.iloc[0]["schema_action"] == "skipped (inactive)"
+
+    out, _, log = _derivations.apply_derivations(
+        pd.DataFrame({"x": [1], "y": [9]}),
+        {"x": ColSpec("x", "continuous"), "y": ColSpec("y", "continuous")},
+        [_derivations.Apply(name="y", source="x", fn=lambda s: s * 2)],
+        preview=False)
+    assert out["y"].iloc[0] == 2
+    assert "updated" in log.iloc[0]["schema_action"] or "added" in log.iloc[0]["schema_action"]
 
 
 def test_apply_derivations_writes_derived_summary_row(tmp_path):
@@ -144,34 +124,7 @@ def test_apply_derivations_writes_derived_summary_row(tmp_path):
     assert steps.index("derived") < steps.index("final")
 
 
-def test_skipped_inactive():
-    df = pd.DataFrame({"x": [1]})
-    schema = {"x": ColSpec("x", "continuous")}
-    derivations = [
-        _derivations.Apply(
-            name="y",
-            source="x",
-            fn=lambda s: s,
-            active=False,
-        ),
-    ]
-    out, _, log = _derivations.apply_derivations(df, schema, derivations, preview=False)
-    assert "y" not in out.columns
-    assert log.iloc[0]["schema_action"] == "skipped (inactive)"
-
-
-def test_existing_name_is_replaced():
-    df = pd.DataFrame({"x": [1], "y": [9]})
-    schema = {"x": ColSpec("x", "continuous"), "y": ColSpec("y", "continuous")}
-    derivations = [
-        _derivations.Apply(name="y", source="x", fn=lambda s: s * 2),
-    ]
-    out, _, log = _derivations.apply_derivations(df, schema, derivations, preview=False)
-    assert out["y"].iloc[0] == 2
-    assert "updated" in log.iloc[0]["schema_action"] or "added" in log.iloc[0]["schema_action"]
-
-
-def test_dda_in_derived_columns_from_specs(tmp_path):
+def test_the_dda_derived_listing_comes_from_the_specs_and_reaches_disk(tmp_path):
     derivations = [
         _derivations.Apply(
             name="high_grade",
@@ -199,6 +152,20 @@ def test_dda_in_derived_columns_from_specs(tmp_path):
     )
     path = _derivations.write_dda_in_derived_columns(tmp_path, derivations)
     assert pd.read_csv(path)["column"].tolist() == ["edema_index", "male_sex"]
+
+    run_root = tmp_path / "run"
+    _derivations.apply_derivations(
+        pd.DataFrame({"sex": ["male", "female"]}),
+        {"sex": ColSpec("sex", "nominal")},
+        [_derivations.Apply(
+            name="male_sex", source="sex",
+            fn=lambda s: (s == "male").astype("boolean"),
+            kind="binary", dda_in_derived=True)],
+        output_root=run_root, write_csv=True, preview=False,
+    )
+    path = run_root / "cleaning" / "dda_derived_columns.csv"
+    assert path.exists()
+    assert pd.read_csv(path)["column"].tolist() == ["male_sex"]
 
 
 def test_eda_in_derived_none_writes_excluded_csv(tmp_path):
@@ -258,27 +225,7 @@ def test_derived_dependencies_from_skips_inactive_and_inplace():
     }
 
 
-def test_apply_derivations_writes_dda_in_derived_csv(tmp_path):
-    df = pd.DataFrame({"sex": ["male", "female"]})
-    schema = {"sex": ColSpec("sex", "nominal")}
-    derivations = [
-        _derivations.Apply(
-            name="male_sex",
-            source="sex",
-            fn=lambda s: (s == "male").astype("boolean"),
-            kind="binary",
-            dda_in_derived=True,
-        ),
-    ]
-    _derivations.apply_derivations(
-        df, schema, derivations, output_root=tmp_path, write_csv=True, preview=False,
-    )
-    path = tmp_path / "cleaning" / "dda_derived_columns.csv"
-    assert path.exists()
-    assert pd.read_csv(path)["column"].tolist() == ["male_sex"]
-
-
-def test_hidden_parent_columns_from_specs():
+def test_the_hidden_parent_listing_comes_from_the_specs_and_reaches_disk(tmp_path):
     derivations = [
         _derivations.Apply(
             name="male_sex",
@@ -319,24 +266,18 @@ def test_hidden_parent_columns_from_specs():
         {"sex", "perifocal_edema", "age"}
     )
 
-
-def test_apply_derivations_writes_hidden_parent_csv(tmp_path):
     df = pd.DataFrame({"sex": ["male", "female"], "who_grade": [1, 2]})
     schema = {
         "sex": ColSpec("sex", "nominal"),
         "who_grade": ColSpec("who_grade", "ordinal"),
     }
-    derivations = [
-        _derivations.Apply(
-            name="male_sex",
-            source="sex",
-            fn=lambda s: (s == "male").astype("boolean"),
-            kind="binary",
-            hide_parent=True,
-        ),
-    ]
     out, _, _ = _derivations.apply_derivations(
-        df, schema, derivations, output_root=tmp_path, write_csv=True, preview=False,
+        df, schema,
+        [_derivations.Apply(
+            name="male_sex", source="sex",
+            fn=lambda s: (s == "male").astype("boolean"),
+            kind="binary", hide_parent=True)],
+        output_root=tmp_path, write_csv=True, preview=False,
     )
     path = tmp_path / "cleaning" / "hidden_parent_columns.csv"
     assert path.exists()
@@ -351,35 +292,26 @@ def _apply(**kwargs):
         name="flag", source="parent", fn=lambda s: s, kind="binary", **kwargs)
 
 
-def test_hiding_the_parent_makes_the_flag_native():
-    """It replaced that column, so nothing in the table is left to restate."""
+def test_eda_in_derived_defaults_from_hide_parent():
+    """Hiding the parent makes the flag native — it replaced that column, so
+    nothing in the table is left to restate. Leaving the parent in place makes
+    it derived: a cut-point and the measurement it was cut from are one thing
+    twice. Saying it outright beats the default, and ``None`` was already spoken
+    for (omit from the EDA entirely), which is why the default needed a sentinel.
+    """
     assert _apply(hide_parent=True).eda_in_derived is False
-
-
-def test_leaving_the_parent_in_place_makes_the_flag_derived():
-    """A cut-point and the measurement it was cut from are one thing twice."""
     assert _apply(hide_parent=False).eda_in_derived is True
-
-
-def test_saying_it_outright_beats_the_default():
-    """The exception this exists for: a repair rule is native, parent visible."""
     assert _apply(hide_parent=False, eda_in_derived=False).eda_in_derived is False
     assert _apply(hide_parent=True, eda_in_derived=True).eda_in_derived is True
-
-
-def test_none_still_means_omit_from_the_eda_entirely():
-    """None was already spoken for, which is why the default needed a sentinel."""
     assert _apply(hide_parent=True, eda_in_derived=None).eda_in_derived is None
 
 
-def test_the_sentinel_refuses_to_be_read_as_a_truth_value():
-    """`if spec.eda_in_derived` on an unresolved AUTO would silently mean False."""
+def test_the_sentinel_is_resolved_at_declaration_and_refuses_to_be_a_boolean():
+    """`if spec.eda_in_derived` on an unresolved AUTO would silently mean False,
+    and a late default lets the two handoff CSVs disagree about one column."""
     with pytest.raises(TypeError, match="not a truth value"):
         bool(_derivations.AUTO)
 
-
-def test_the_default_is_resolved_at_declaration_not_at_read_time():
-    """Otherwise the two handoff CSVs can disagree about the same column."""
     spec = _apply(hide_parent=True)
     assert not isinstance(spec.eda_in_derived, type(_derivations.AUTO))
 

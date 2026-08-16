@@ -11,49 +11,34 @@ import scorecard as sc
 
 
 # --- the criteria themselves ----------------------------------------------
-def test_every_criterion_is_numbered_uniquely_and_in_order():
+def test_the_criteria_keep_their_original_numbers():
+    """1, 2, 3, 4 and 7 were removed; the survivors keep their numbers so
+    citations stay stable."""
     numbers = [c.number for c in sc.CRITERIA]
     assert numbers == sorted(numbers)
     assert len(set(numbers)) == len(numbers)
+    assert numbers == [5, 6, 8, 9, 10, 11]
 
-
-def test_the_numbering_keeps_its_gaps_so_citations_stay_stable():
-    """1, 2, 3, 4 and 7 were removed; the survivors keep their original numbers."""
-    assert [c.number for c in sc.CRITERIA] == [5, 6, 8, 9, 10, 11]
-
-
-def test_the_removed_criteria_are_gone_from_the_module():
     removed = {"separates", "number_works", "not_a_copy", "survives_adjustment",
                "bend_interior"}
     assert removed & {c.key for c in sc.CRITERIA} == set()
 
 
 def test_every_criterion_states_a_formula_a_grading_rule_and_its_step():
+    from scorecard import _evaluators
+
     for c in sc.CRITERIA:
         assert c.question.endswith("?")
         assert c.name and not c.name.endswith("?")
         assert c.formula and c.yes_when and c.no_when and c.step
-
-
-def test_the_grading_rules_are_two_sides_of_one_test():
-    """Every Yes must have a stated No, or the reader cannot check the call."""
-    for c in sc.CRITERIA:
+        # Every Yes must have a stated No, or the reader cannot check the call.
         assert c.yes_when != c.no_when
 
-
-def test_every_criterion_belongs_to_a_named_family():
     assert {c.family for c in sc.CRITERIA} == {sc.FAMILY_THRESHOLD,
                                                sc.FAMILY_CUTPOINT}
-
-
-def test_every_criterion_is_now_about_the_cutpoint_not_the_measurement():
-    """The table's scope narrowed; the footnote has to say so."""
-    assert "read together with those analyses" in sc.footnote()
-
-
-def test_every_criterion_has_an_evaluator():
-    from scorecard import _evaluators
     assert set(_evaluators()) == {c.key for c in sc.CRITERIA}
+    # The table's scope narrowed to the cut-point; the footnote has to say so.
+    assert "read together with those analyses" in sc.footnote()
 
 
 # --- the tables it is built from ------------------------------------------
@@ -104,49 +89,45 @@ def _met(key: str, **over) -> bool:
 
 
 # --- each criterion decides on the number it names ------------------------
-def test_a_disagreeing_scale_fails_the_scale_free_criterion():
-    assert not _met("scale_free", bend=pd.DataFrame(
-        [{"col": "adc_value", "stratum": "all", "bend_is_real": True,
-          "lr_p": 0.02, "scales_agree": False, "knee_at_boundary": False,
-          "knee_percentile": 47.0}]))
-
-
-def test_a_wide_bootstrap_interval_fails_the_resampling_criterion():
-    assert not _met("survives_resampling", wobble=pd.DataFrame(
-        [{"col": "adc_value", "stratum": "all", "ci_lo": 6.8, "ci_hi": 44.8,
-          "stability_ratio": 1.21}]))
-
-
-def test_a_divergent_cutpoint_fails_the_missingness_criterion():
-    assert not _met("survives_missingness", imputation=pd.DataFrame(
-        [{"col": "adc_value", "stratum": "all", "diverges": True,
-          "draw_min": 1.0, "draw_max": 2.0}]))
-
-
-def test_an_expensive_cut_fails_the_cost_criterion():
-    assert not _met("cut_costs_little", dichotomy=pd.DataFrame(
-        [{"col": "adc_value", "stratum": "all", "or_per_sd": 1.96,
-          "or_per_sd_lo": 1.51, "or_per_sd_hi": 2.54,
-          "information_retained": 0.77}]))
+@pytest.mark.parametrize(
+    ("key", "override"),
+    [
+        # A cut-point that moves when the scale changes is not scale-free.
+        ("scale_free", {"bend": pd.DataFrame(
+            [{"col": "adc_value", "stratum": "all", "bend_is_real": True,
+              "lr_p": 0.02, "scales_agree": False, "knee_at_boundary": False,
+              "knee_percentile": 47.0}])}),
+        # A wide bootstrap interval fails resampling.
+        ("survives_resampling", {"wobble": pd.DataFrame(
+            [{"col": "adc_value", "stratum": "all", "ci_lo": 6.8, "ci_hi": 44.8,
+              "stability_ratio": 1.21}])}),
+        # A cut-point that moves between imputation draws fails missingness.
+        ("survives_missingness", {"imputation": pd.DataFrame(
+            [{"col": "adc_value", "stratum": "all", "diverges": True,
+              "draw_min": 1.0, "draw_max": 2.0}])}),
+        # Losing a quarter of the discrimination is an expensive cut.
+        ("cut_costs_little", {"dichotomy": pd.DataFrame(
+            [{"col": "adc_value", "stratum": "all", "or_per_sd": 1.96,
+              "or_per_sd_lo": 1.51, "or_per_sd_hi": 2.54,
+              "information_retained": 0.77}])}),
+    ],
+)
+def test_a_criterion_fails_on_the_number_it_names(key, override):
+    assert not _met(key, **override)
 
 
 # --- every cell shows its working -----------------------------------------
-def test_every_row_carries_the_value_that_decided_it():
+def test_every_row_carries_the_value_and_the_rule_that_decided_it():
     long = _long()
     assert long["evidence"].str.len().gt(0).all()
     assert not long["evidence"].str.contains("nan").any()
-
-
-def test_the_evidence_quotes_the_number_not_the_rule():
-    long = _long().set_index("criterion_number")
-    assert "0.009" in long.loc[5, "evidence"]
-    assert "0.93" in long.loc[9, "evidence"]
-
-
-def test_every_row_carries_its_formula_and_grading_rule():
-    long = _long()
     assert long["formula"].str.len().gt(0).all()
     assert long["graded"].str.startswith("Yes, ").all()
+
+    # The evidence quotes the number, not the rule.
+    by_number = long.set_index("criterion_number")
+    assert "0.009" in by_number.loc[5, "evidence"]
+    assert "0.93" in by_number.loc[9, "evidence"]
 
 
 def test_a_missing_input_table_fails_the_criterion_rather_than_crashing():
@@ -158,40 +139,35 @@ def test_a_missing_input_table_fails_the_criterion_rather_than_crashing():
 
 # --- the wide table --------------------------------------------------------
 def test_the_wide_table_has_criteria_as_rows_and_measurements_as_columns():
-    wide = sc.scorecard_wide(_long())
+    long = _long()
+    wide = sc.scorecard_wide(long)
     assert list(wide.columns) == ["ADC (mean)"]
     assert len(wide.index) == len(sc.CRITERIA) + 1     # + the count row
 
-
-def test_every_row_is_labelled_with_its_number_and_scientific_name():
-    wide = sc.scorecard_wide(_long())
+    # Every row is labelled with its number and scientific name.
     assert wide.index[0] == "5. Nonlinearity"
     assert "11. Dichotomisation cost" in list(wide.index)
 
-
-def test_the_count_row_sits_at_the_bottom_and_matches_the_ticks():
-    long = _long()
-    wide = sc.scorecard_wide(long)
+    # The count row sits at the bottom and matches the ticks above it.
     assert wide.index[-1] == "Criteria met"
     met = int(long["met"].sum())
     assert wide.loc["Criteria met", "ADC (mean)"] == f"{met} of {len(sc.CRITERIA)}"
 
 
-def test_the_count_row_follows_a_failing_criterion_down():
+def test_the_count_row_follows_a_failing_criterion_down_and_orders_the_columns():
     long = _long(wobble=pd.DataFrame(
         [{"col": "adc_value", "stratum": "all", "ci_lo": 6.8, "ci_hi": 44.8,
           "stability_ratio": 1.21}]))
     wide = sc.scorecard_wide(long)
     assert wide.loc["9. Sampling stability", "ADC (mean)"] == "No"
-    assert wide.loc["Criteria met", "ADC (mean)"] == f"{len(sc.CRITERIA) - 1} of {len(sc.CRITERIA)}"
+    assert wide.loc["Criteria met", "ADC (mean)"] == \
+        f"{len(sc.CRITERIA) - 1} of {len(sc.CRITERIA)}"
 
-
-def test_columns_are_ordered_by_criteria_met():
-    long = pd.concat([
+    both = pd.concat([
         _long(),
         _long().assign(measurement="Fewer", col="fewer", met=False),
     ], ignore_index=True)
-    assert list(sc.scorecard_wide(long).columns)[0] == "ADC (mean)"
+    assert list(sc.scorecard_wide(both).columns)[0] == "ADC (mean)"
 
 
 def test_the_wide_table_says_yes_and_no_rather_than_grading():
@@ -199,65 +175,36 @@ def test_the_wide_table_says_yes_and_no_rather_than_grading():
     wide = sc.scorecard_wide(_long()).drop(index="Criteria met")
     assert set(wide.to_numpy().ravel()) <= {"Yes", "No"}
 
-
-def test_no_verdict_word_appears_anywhere_in_the_output():
-    long = _long()
-    text = " ".join(long.astype(str).to_numpy().ravel()).lower()
+    text = " ".join(_long().astype(str).to_numpy().ravel()).lower()
     for word in ("strong", "fragile", "weak", "robust", "moderate"):
         assert word not in text
 
-
-def test_an_empty_input_gives_an_empty_table_not_an_error():
     assert sc.scorecard_wide(pd.DataFrame()).empty
 
 
 # --- the footnote ----------------------------------------------------------
-def test_the_footnote_names_and_numbers_every_row():
+def test_the_footnote_names_numbers_and_explains_every_row():
     note = sc.footnote()
     for c in sc.CRITERIA:
         assert f"{c.number}, {c.name}:" in note
-
-
-def test_the_footnote_gives_the_formula_for_every_criterion():
-    note = sc.footnote()
-    for c in sc.CRITERIA:
         assert c.formula in note
-
-
-def test_the_footnote_states_both_sides_of_every_grading_rule():
-    note = sc.footnote()
-    for c in sc.CRITERIA:
         assert f"Yes, {c.yes_when}; No, {c.no_when}" in note
-
-
-def test_the_footnote_explains_the_gaps_in_the_numbering():
-    assert "Numbering is not consecutive" in sc.footnote()
-
-
-def test_the_footnote_still_warns_about_the_dichotomisation_trap():
-    """Nothing in the table catches it now, so the note must point elsewhere."""
-    note = sc.footnote()
+    assert "Numbering is not consecutive" in note
+    # Nothing in the table catches the dichotomisation trap now, so the note
+    # must point elsewhere.
     assert "read together with those analyses" in note
     assert "cutting something uninformative costs nothing" in note
-
-
-def test_the_footnote_opens_in_the_journal_pattern():
-    assert sc.footnote().startswith("Note:—")
+    assert note.startswith("Note:—")
 
 
 # --- the summary line ------------------------------------------------------
-def test_describe_names_the_leader_and_what_it_failed():
-    line = sc.describe_scorecard(_long())
-    assert "Most criteria met: ADC (mean)" in line
+def test_describe_names_the_leader_and_handles_the_edges():
+    assert "Most criteria met: ADC (mean)" in sc.describe_scorecard(_long())
 
-
-def test_describe_says_so_when_a_measurement_meets_everything():
     long = _long()
     long["met"] = True
     assert "meets every criterion" in sc.describe_scorecard(long)
 
-
-def test_describe_handles_an_empty_table():
     assert sc.describe_scorecard(pd.DataFrame()) == "No measurement could be scored."
 
 

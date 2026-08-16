@@ -19,25 +19,28 @@ def _paired(seed: int = 0, n: int = 400):
 
 
 # --- paired AUC comparison -------------------------------------------------
-def test_a_score_compared_with_itself_has_zero_difference():
+def test_delong_compares_two_scores_on_the_same_patients():
     y, x = _paired()
+
+    # A score compared with itself has no difference at all.
     out = sep.delong_compare(y, x, x)
     assert out["difference"] == pytest.approx(0.0)
     assert out["difference_lo"] == pytest.approx(0.0)
     assert out["difference_hi"] == pytest.approx(0.0)
 
-
-def test_the_difference_is_the_gap_between_the_two_aucs():
-    y, x = _paired()
     noise = np.random.default_rng(1).normal(size=len(y))
     out = sep.delong_compare(y, x, noise)
     assert out["difference"] == pytest.approx(out["auc_a"] - out["auc_b"])
 
+    assert sep.delong_compare(
+        y, x, np.random.default_rng(2).normal(size=len(y)))["p"] < 0.01
 
-def test_a_clearly_better_score_wins_significantly():
-    y, x = _paired()
-    noise = np.random.default_rng(2).normal(size=len(y))
-    assert sep.delong_compare(y, x, noise)["p"] < 0.01
+    # Swapping the arguments flips the sign and leaves the p value alone.
+    noise = np.random.default_rng(4).normal(size=len(y))
+    forward = sep.delong_compare(y, x, noise)
+    backward = sep.delong_compare(y, noise, x)
+    assert forward["difference"] == pytest.approx(-backward["difference"])
+    assert forward["p"] == pytest.approx(backward["p"])
 
 
 def test_correlated_scores_get_a_narrower_interval_than_independence_implies():
@@ -51,54 +54,35 @@ def test_correlated_scores_get_a_narrower_interval_than_independence_implies():
     assert (paired["difference_hi"] - paired["difference"]) < naive
 
 
-def test_the_comparison_is_antisymmetric():
-    y, x = _paired()
-    noise = np.random.default_rng(4).normal(size=len(y))
-    forward = sep.delong_compare(y, x, noise)
-    backward = sep.delong_compare(y, noise, x)
-    assert forward["difference"] == pytest.approx(-backward["difference"])
-    assert forward["p"] == pytest.approx(backward["p"])
-
-
 # --- standardisation -------------------------------------------------------
-def test_standardising_gives_unit_spread():
+def test_standardising_gives_unit_spread_and_keeps_legitimate_zeros():
+    """log(0) would drop exactly the patients whose absent edema is the finding."""
     x = np.random.default_rng(5).gamma(2, 8, 300)
     assert np.std(di.standardise(x, log_x=False), ddof=1) == pytest.approx(1.0)
     assert np.mean(di.standardise(x, log_x=False)) == pytest.approx(0.0, abs=1e-9)
 
+    assert np.isfinite(di.standardise(np.array([0.0, 1.0, 5.0, 20.0]),
+                                      log_x=True)).all()
 
-def test_log1p_is_used_so_a_legitimate_zero_survives():
-    """log(0) would drop exactly the patients whose absent edema is the finding."""
-    x = np.array([0.0, 1.0, 5.0, 20.0])
-    assert np.isfinite(di.standardise(x, log_x=True)).all()
-
-
-def test_a_constant_measurement_does_not_divide_by_zero():
+    # A constant measurement must not divide by zero.
     assert (di.standardise(np.full(20, 3.0), log_x=False) == 0).all()
 
 
 # --- odds ratios -----------------------------------------------------------
-def test_a_null_predictor_has_an_odds_ratio_near_one():
+def test_odds_ratios_separate_a_real_predictor_from_a_null_one():
     rng = np.random.default_rng(6)
     y = rng.integers(0, 2, 400)
     out = di.odds_ratio(y, rng.normal(size=400))
     assert out["or_lo"] < 1.0 < out["or_hi"]
 
-
-def test_a_real_predictor_has_an_interval_clear_of_one():
     y, x = _paired()
     out = di.odds_ratio(y, di.standardise(x, log_x=False))
     assert out["or_lo"] > 1.0 and out["p"] < 0.001
+    assert not out["asymmetric"]
 
-
-def test_a_well_behaved_wald_interval_is_not_flagged_asymmetric():
-    y, x = _paired()
-    assert not di.odds_ratio(y, di.standardise(x, log_x=False))["asymmetric"]
-
-
-def test_too_few_patients_returns_blanks_rather_than_raising():
-    out = di.odds_ratio(np.array([0, 1, 0]), np.array([1.0, 2.0, 3.0]))
-    assert np.isnan(out["or"])
+    # Too few patients blanks rather than raising.
+    assert np.isnan(di.odds_ratio(np.array([0, 1, 0]),
+                                  np.array([1.0, 2.0, 3.0]))["or"])
 
 
 # --- the comparison --------------------------------------------------------
@@ -137,12 +121,13 @@ def test_a_binary_auc_is_the_average_of_sensitivity_and_specificity():
     assert out["auc_binary"] == pytest.approx(
         (perf["sensitivity"] + perf["specificity"]) / 2)
 
-
-def test_information_retained_is_the_share_of_lift_above_a_coin_flip():
-    df = _cohort()
-    out = di.dichotomy_for(df, ms.MEASUREMENTS_BY_COL["tumor_volume"], "all", 20.0)
+    # Retention is the share of lift above a coin flip, with a bracketing
+    # interval, and both odds ratios come from the same patients.
     assert out["information_retained"] == pytest.approx(
         (out["auc_binary"] - 0.5) / (out["auc_continuous"] - 0.5))
+    assert out["auc_loss_lo"] <= out["auc_loss"] <= out["auc_loss_hi"]
+    assert np.isfinite(out["or_per_sd"]) and np.isfinite(out["or_binary"])
+    assert out["n"] == int(df["tumor_volume"].notna().sum())
 
 
 def test_dichotomising_can_beat_the_raw_number_when_the_signal_is_a_step():
@@ -158,36 +143,20 @@ def test_dichotomising_can_beat_the_raw_number_when_the_signal_is_a_step():
     assert out["information_retained"] > 0.9
 
 
-def test_the_loss_interval_brackets_the_loss():
+def test_the_table_carries_the_declarations_and_ranks_by_what_survives():
     df = _cohort()
-    out = di.dichotomy_for(df, ms.MEASUREMENTS_BY_COL["tumor_volume"], "all", 20.0)
-    assert out["auc_loss_lo"] <= out["auc_loss"] <= out["auc_loss_hi"]
+    eligible = _eligible(df)
 
-
-def test_both_odds_ratios_are_reported_for_the_same_patients():
-    df = _cohort()
-    out = di.dichotomy_for(df, ms.MEASUREMENTS_BY_COL["tumor_volume"], "all", 20.0)
-    assert np.isfinite(out["or_per_sd"]) and np.isfinite(out["or_binary"])
-    assert out["n"] == int(df["tumor_volume"].notna().sum())
-
-
-def test_the_log_transform_declaration_travels_into_the_table():
-    df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df),
+    table = di.dichotomy_table(df, eligible,
                                {"tumor_volume": 20.0, "adc_value": 0.8})
     by_col = table.set_index("col")["log_transformed"]
     assert by_col["tumor_volume"] and not by_col["adc_value"]
 
+    # A measurement without a cut-point is skipped.
+    assert list(di.dichotomy_table(df, eligible, {"tumor_volume": 20.0})["col"]) == [
+        "tumor_volume"]
 
-def test_a_measurement_without_a_cutpoint_is_skipped():
-    df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df), {"tumor_volume": 20.0})
-    assert list(table["col"]) == ["tumor_volume"]
-
-
-def test_the_table_is_ranked_by_what_survives_the_cut():
-    df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df),
+    table = di.dichotomy_table(df, eligible,
                                {"tumor_volume": 20.0, "adc_value": 0.8,
                                 "max_diameter_cm": 3.8})
     retained = table["information_retained"].to_numpy()
@@ -195,29 +164,23 @@ def test_the_table_is_ranked_by_what_survives_the_cut():
 
 
 # --- the summary lines -----------------------------------------------------
-def test_describe_names_the_worst_loss():
+def test_describe_names_the_worst_loss_or_says_none_is_significant():
     df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df),
+    eligible = _eligible(df)
+    table = di.dichotomy_table(df, eligible,
                                {"tumor_volume": 20.0, "adc_value": 0.8})
     assert "Dichotomising costs most in" in di.describe_dichotomy(table)
 
-
-def test_describe_says_plainly_when_no_loss_is_significant():
-    df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df), {"adc_value": 0.8})
+    table = di.dichotomy_table(df, eligible, {"adc_value": 0.8})
     table["auc_loss_p"] = 0.9
     assert "No loss reaches significance" in di.describe_dichotomy(table)
 
 
-def test_asymmetry_notes_are_empty_on_well_behaved_fits():
+def test_asymmetry_notes_name_firth_only_when_wald_strains():
     df = _cohort()
     table = di.dichotomy_table(df, _eligible(df), {"tumor_volume": 20.0})
     assert di.asymmetry_notes(table) == []
 
-
-def test_asymmetry_notes_name_firth_when_wald_strains():
-    df = _cohort()
-    table = di.dichotomy_table(df, _eligible(df), {"tumor_volume": 20.0})
     table["or_per_sd_asymmetric"] = True
     assert "Firth" in di.asymmetry_notes(table)[0]
 
@@ -237,7 +200,5 @@ def test_the_binary_odds_ratios_match_the_published_forest(real_cohort):
     for col, value in expected.items():
         assert got[col] == pytest.approx(value, abs=0.01), col
 
-
-def test_no_odds_ratio_needs_a_penalised_fit(real_cohort):
-    table = di.dichotomy_table(real_cohort, _eligible(real_cohort), _FROZEN)
+    # And none of them needs a penalised fit.
     assert di.asymmetry_notes(table) == []

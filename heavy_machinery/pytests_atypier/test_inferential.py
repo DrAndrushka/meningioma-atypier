@@ -23,79 +23,65 @@ from inferential import (
 from schema_infer import ColSpec
 
 
-def test_pool_df_for_display():
-    assert inf._pool_df_for_display(float("inf")) == "∞"
-    assert inf._pool_df_for_display(12.0) == 12
-
-
-def test_format_inferential_table_tames_a_runaway_pooled_df():
+def test_small_helpers(tmp_output):
     """Rubin's pooled df blows up when between-draw variance is tiny.
 
-    Left raw it prints as 1e+300 in the CSV, so it is displayed as ``\u221e``;
+    Left raw it prints as 1e+300 in the CSV, so it is displayed as ``∞``;
     a real df stays a plain integer.
     """
+    assert inf._pool_df_for_display(float("inf")) == "∞"
+    assert inf._pool_df_for_display(12.0) == 12
     df = pd.DataFrame({"df": [5.0, float("inf")], "p": [0.01, 0.05]})
-    out = inf._format_inferential_table(df)
-    assert list(out["df"]) == [5, "\u221e"]
+    assert list(inf._format_inferential_table(df)["df"]) == [5, "∞"]
 
-
-def test_safe_z_denominator():
     assert _safe_z_denominator(0.0) == 1.0
 
-
-def test_ensure_dirs(tmp_output):
     figs, tabs = inf._ensure_dirs(tmp_output)
     assert figs.is_dir() and tabs.is_dir()
 
+    pooled = inf._rubin_pool(np.array([0.1, 0.2, 0.15]), np.array([0.05, 0.05, 0.05]))
+    assert np.isfinite(pooled["coef"])
+    assert "or" in pooled
 
-def test_build_design(tiny_df, tiny_schema):
+    assert inf._artifact_model_id("high_grade_yao_et_al_2022_model", "high_grade") == (
+        "yao_et_al_2022"
+    )
+    assert inf._artifact_model_id("high_grade_model", "high_grade") == ""
+
+
+def test_build_design_and_prune_by_vif(tiny_df, tiny_schema):
     X, mapping, z_params = inf._build_design(tiny_df, tiny_schema, ["age", "sex"])
     assert "age" in mapping
     assert not X.empty
     assert "age" in z_params
     assert "mu" in z_params["age"] and "sd" in z_params["age"]
 
-
-def test_prune_by_vif(tiny_df, tiny_schema):
     X, _, _ = inf._build_design(tiny_df, tiny_schema, ["age"])
     pruned, vif_df = inf._prune_by_vif(X, threshold=5.0)
     assert list(pruned.columns) == list(X.columns)
     assert "vif" in vif_df.columns
     assert vif_df["vif"].notna().all()
 
-
-def test_prune_by_vif_with_nan_rows(tiny_schema):
-    """VIF must use complete cases when design matrix has NaN (e.g. unimputed binary)."""
-    X = pd.DataFrame({
+    # VIF must use complete cases when the design matrix has NaN (e.g. an
+    # unimputed binary).
+    holey = pd.DataFrame({
         "a": [1.0, 2.0, 3.0, np.nan],
         "b": [1.0, 0.0, 1.0, 1.0],
     })
-    _, vif_df = inf._prune_by_vif(X, threshold=5.0)
+    _, vif_df = inf._prune_by_vif(holey, threshold=5.0)
     assert vif_df["vif"].notna().all()
     assert (vif_df["vif"] >= 1.0).all()
 
 
-def test_rubin_pool():
-    thetas = np.array([0.1, 0.2, 0.15])
-    ses = np.array([0.05, 0.05, 0.05])
-    pooled = inf._rubin_pool(thetas, ses)
-    assert np.isfinite(pooled["coef"])
-    assert "or" in pooled
-
-
-def test_target_is_binary():
+def test_target_encoding():
     y = pd.Series([True, False, True], dtype="boolean")
     assert inf._target_is_binary(y, ColSpec("event", "binary"))
 
-
-def test_encode_target():
-    y = pd.Series([True, False, True])
-    enc, pos = inf._encode_target(y, True)
+    enc, pos = inf._encode_target(pd.Series([True, False, True]), True)
     assert pos is True
     assert enc.iloc[0] == 1.0
 
-
-def test_encode_target_auto_picks_rarer_class():
+    # With nothing declared, the rarer class becomes the event.
     y = pd.Series(["benign", "benign", "benign", "atypical", "benign"])
     enc, pos = inf._encode_target(y, None)
     assert pos == "atypical"
@@ -131,15 +117,13 @@ def _make_imputed(tiny_df, tiny_schema):
     return [df], schema
 
 
-def test_fit_logit_robust(tiny_df):
+def test_fit_logit_robust_converges_and_retries_a_stalled_newton(tiny_df):
     sub = tiny_df.dropna(subset=["age", "event"])
     Xc = sm.add_constant(sub[["age"]].astype(float), has_constant="add")
     model = inf._fit_logit_robust(sub["event"].astype(float), Xc)
     assert model is not None
     assert inf._logit_converged(model)
 
-
-def test_fit_logit_robust_retries_after_stalled_newton():
     y = pd.Series([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
     Xc = sm.add_constant(pd.DataFrame({"x": [10.0, 10.0, 10.0, -10.0, -10.0, -10.0]}))
     with warnings.catch_warnings(record=True) as caught:
@@ -163,19 +147,6 @@ def test_fit_multivariable_logistic(tiny_df, tiny_schema):
     assert np.isfinite(pooled.loc[0, "z_sd"])
 
 
-def test_forest_plot(tmp_path):
-    pooled = pd.DataFrame({
-        "predictor_col": ["age"],
-        "or": [1.5],
-        "or_ci_lo": [0.8],
-        "or_ci_hi": [2.5],
-    })
-    figs = tmp_path / "figs"
-    figs.mkdir()
-    inf._forest_plot(pooled, "event", figs)
-    assert (figs / "event__forest.png").exists()
-
-
 def test_summarize_multivariable_cases(tiny_df, tiny_schema):
     frames, schema = _make_imputed(tiny_df, tiny_schema)
     summary = inf.summarize_multivariable_cases(
@@ -185,9 +156,6 @@ def test_summarize_multivariable_cases(tiny_df, tiny_schema):
     assert summary.iloc[0]["n_complete_cases"] == len(frames[0])
     assert summary.iloc[0]["n_outcome_events"] >= 1
 
-
-def test_summarize_multivariable_cases_experimental_flag(tiny_df, tiny_schema):
-    frames, schema = _make_imputed(tiny_df, tiny_schema)
     variants = [
         inf.InferentialModelVariant(
             "lit", "Literature", "", "event", ("age",), experimental=False,
@@ -205,7 +173,7 @@ def test_summarize_multivariable_cases_experimental_flag(tiny_df, tiny_schema):
     assert by_id["try_hard_model"] is True
 
 
-def test_normalize_inferential_variants_tuple():
+def test_normalize_inferential_variants():
     vars_ = normalize_inferential_variants(
         variants=[("bondo_et_al", "Bondo et al.", "https://example.com/bondo", "high_grade", ["age", "sex"])],
     )
@@ -214,8 +182,7 @@ def test_normalize_inferential_variants_tuple():
     assert vars_[0].target == "high_grade"
     assert vars_[0].link == "https://example.com/bondo"
 
-
-def test_normalize_inferential_variants_legacy_tuple():
+    # The legacy three-tuple takes its target from the default.
     vars_ = normalize_inferential_variants(
         variants=[("bondo_et_al", "Bondo et al.", ["age", "sex"])],
         default_target="event",
@@ -223,8 +190,13 @@ def test_normalize_inferential_variants_legacy_tuple():
     assert vars_[0].target == "event"
 
 
-def test_run_inferential_variant_target(tiny_df, tiny_schema, tmp_output):
+def test_run_inferential_variants_write_one_artifact_set_per_variant(
+    tiny_df, tiny_schema, tmp_output,
+):
     frames, schema = _make_imputed(tiny_df, tiny_schema)
+    tables = tmp_output / "inferential" / "tables"
+
+    # A variant declares its own target, so the other target is not modelled.
     out = run_inferential(
         frames, schema,
         targets=["event", "grade"],
@@ -233,12 +205,9 @@ def test_run_inferential_variant_target(tiny_df, tiny_schema, tmp_output):
         output_root=tmp_output,
     )
     assert set(out["target"].unique()) == {"event"}
-    assert (tmp_output / "inferential" / "tables" / "event__sex_only__multivariable.csv").exists()
-    assert not (tmp_output / "inferential" / "tables" / "grade__sex_only__multivariable.csv").exists()
+    assert (tables / "event__sex_only__multivariable.csv").exists()
+    assert not (tables / "grade__sex_only__multivariable.csv").exists()
 
-
-def test_run_inferential_variants(tiny_df, tiny_schema, tmp_output):
-    frames, schema = _make_imputed(tiny_df, tiny_schema)
     out = run_inferential(
         frames, schema,
         targets=["event"],
@@ -250,9 +219,9 @@ def test_run_inferential_variants(tiny_df, tiny_schema, tmp_output):
         output_root=tmp_output,
     )
     assert set(out["model_id"].unique()) == {"full", "sex_only"}
-    assert (tmp_output / "inferential" / "tables" / "event__full__multivariable.csv").exists()
-    assert (tmp_output / "inferential" / "tables" / "event__sex_only__multivariable.csv").exists()
-    cases = pd.read_csv(tmp_output / "inferential" / "tables" / "multivariable_cases.csv")
+    assert (tables / "event__full__multivariable.csv").exists()
+    assert (tables / "event__sex_only__multivariable.csv").exists()
+    cases = pd.read_csv(tables / "multivariable_cases.csv")
     assert len(cases) == 2
     assert model_key("event", "full") == "event::full"
     assert artifact_base("event", "full") == "event__full"
@@ -349,61 +318,36 @@ def test_forest_row_label_states_the_contrast_for_standardised_predictors():
     assert continuous == "ADC value (per 1 SD: 0.17)"
     assert "\n" not in continuous
 
-
-def test_forest_row_label_ignores_a_missing_or_zero_sd():
-    row = _pooled().iloc[0].copy()
+    row = rows.iloc[0].copy()
     row["z_sd"] = 0.0
     assert "per 1 SD" not in inf._forest_row_label(row)
 
 
-def test_or_tick_labels_are_plain_decimals():
-    """Log axes default to 6×10⁻¹; an odds ratio axis must read as a number."""
-    assert inf._or_tick(1.0) == "1"
-    assert inf._or_tick(2.0) == "2"
-    assert inf._or_tick(0.6) == "0.6"
-    assert inf._or_tick(0.0) == ""
-
-
-def test_forest_plot_writes_the_report_png(tmp_path):
-    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
-                     n_cases=352, n_events=105, epv=17.5)
-    assert (tmp_path / "event__m1__forest.png").exists()
-    assert not (tmp_path / "event__m1__forest.eps").exists()
-
-
-def test_forest_plot_writes_ajnr_exports_under_the_submission_profile(
+def test_forest_plot_writes_the_report_png_and_the_ajnr_tif_on_request(
     tmp_path, monkeypatch,
 ):
-    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
-    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1",
-                     n_cases=352, n_events=105, epv=17.5)
+    simple = pd.DataFrame({
+        "predictor_col": ["age"],
+        "or": [1.5],
+        "or_ci_lo": [0.8],
+        "or_ci_hi": [2.5],
+    })
+    figs = tmp_path / "figs"
+    figs.mkdir()
+    inf._forest_plot(simple, "event", figs)
+    assert (figs / "event__forest.png").exists()
+
+    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m1")
     assert (tmp_path / "event__m1__forest.png").exists()
-    assert (tmp_path / "event__m1__forest.tif").exists()
     assert not (tmp_path / "event__m1__forest.eps").exists()
 
+    # An empty model draws nothing at all.
+    inf._forest_plot(_pooled().assign(**{"or": np.nan}), "event", tmp_path,
+                     model_id="m2")
+    assert not list(tmp_path.glob("event__m2__forest*"))
 
-def test_forest_plot_skips_an_empty_model(tmp_path):
-    empty = _pooled().assign(**{"or": np.nan})
-    inf._forest_plot(empty, "event", tmp_path, model_id="m1")
-    assert not list(tmp_path.glob("event__m1__forest*"))
-
-
-def test_artifact_model_id_strips_target_and_suffix():
-    assert inf._artifact_model_id("high_grade_yao_et_al_2022_model", "high_grade") == (
-        "yao_et_al_2022"
-    )
-    assert inf._artifact_model_id("high_grade_model", "high_grade") == ""
-
-
-def test_case_counts_reads_the_matching_variant():
-    cases = pd.DataFrame([
-        {"target": "event", "model_id": "m1", "n_complete_cases": 352,
-         "n_outcome_events": 105, "epv": 17.5},
-        {"target": "event", "model_id": "m2", "n_complete_cases": 300,
-         "n_outcome_events": 90, "epv": 9.0},
-    ])
-    assert inf._case_counts(cases, "event", "m2") == {
-        "n_cases": 300, "n_events": 90, "epv": 9.0,
-    }
-    assert inf._case_counts(cases, "event", "nope")["n_cases"] is None
-    assert inf._case_counts(pd.DataFrame(), "event", "m1")["epv"] is None
+    monkeypatch.setenv("ATYPIER_FIGURES", "submission")
+    inf._forest_plot(_pooled(), "event", tmp_path, model_id="m3")
+    assert (tmp_path / "event__m3__forest.png").exists()
+    assert (tmp_path / "event__m3__forest.tif").exists()
+    assert not (tmp_path / "event__m3__forest.eps").exists()

@@ -14,37 +14,27 @@ import eda
 from schema_infer import ColSpec
 
 
-def test_mwu_rank_biserial_positive_when_group1_higher():
+def test_mwu_rank_biserial_follows_which_group_is_higher():
     g1 = np.array([8.0, 10.0, 12.0, 15.0, 20.0])
     g0 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
     _U, _p, r, _n = eda._mwu_with_effect(g1, g0)
     assert r == 1.0
 
-
-def test_mwu_rank_biserial_negative_when_group1_lower():
-    g1 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    g0 = np.array([8.0, 10.0, 12.0, 15.0, 20.0])
-    _U, _p, r, _n = eda._mwu_with_effect(g1, g0)
+    _U, _p, r, _n = eda._mwu_with_effect(g0, g1)
     assert r == -1.0
 
 
-def test_phi_negative_when_present_protective():
+def test_phi_is_signed_by_whether_present_is_risk_or_protective():
     # [[n00, n01], [n10, n11]] — present (row1) less often has y=1
     table = np.array([[3.0, 6.0], [243.0, 99.0]])
-    phi = eda._phi_coef(table)
-    assert phi < 0
+    assert eda._phi_coef(table) < 0
     row = eda._chi2_row(table)
     assert row["effect_label"] == "phi"
     assert row["effect"] < 0
 
+    assert eda._phi_coef(np.array([[198.0, 65.0], [49.0, 39.0]])) > 0
 
-def test_phi_positive_when_present_risk():
-    table = np.array([[198.0, 65.0], [49.0, 39.0]])
-    phi = eda._phi_coef(table)
-    assert phi > 0
-
-
-def test_ordered_binary_2x2_locks_sign():
+    # The 2×2 builder is what locks that sign down.
     x = pd.Series([True, True, False, False, True, False])
     y = pd.Series([1.0, 1.0, 0.0, 0.0, 0.0, 1.0])
     table = eda._ordered_binary_2x2(eda._binary_predictor_scores(x), y)
@@ -53,23 +43,19 @@ def test_ordered_binary_2x2_locks_sign():
     assert eda._phi_coef(table) > 0
 
 
-def test_heatmap_signed_effect_keeps_phi_sign():
-    row = pd.Series({"effect": -0.13, "effect_label": "phi"})
-    assert eda._heatmap_signed_effect(row) == -0.13
-    row_v = pd.Series({"effect": 0.18, "effect_label": "cramers_v"})
-    assert eda._heatmap_signed_effect(row_v) == 0.18
+def test_the_heatmap_keeps_signs_flags_unsigned_effects_and_prints_two_decimals():
+    """Unsigned effects are marked so red never silently means 'positive', and
+    one decimal would collapse distinguishable effect sizes onto one label."""
+    assert eda._heatmap_signed_effect(
+        pd.Series({"effect": -0.13, "effect_label": "phi"})) == -0.13
+    assert eda._heatmap_signed_effect(
+        pd.Series({"effect": 0.18, "effect_label": "cramers_v"})) == 0.18
 
-
-def test_heatmap_flags_magnitude_only_effects():
-    """Unsigned effects are marked so red never silently means 'positive'."""
     assert eda._heatmap_is_unsigned(pd.Series({"effect_label": "cramers_v"}))
     assert eda._heatmap_is_unsigned(pd.Series({"effect_label": "epsilon_sq"}))
     assert not eda._heatmap_is_unsigned(pd.Series({"effect_label": "phi"}))
     assert not eda._heatmap_is_unsigned(pd.Series({"effect_label": "spearman_rho"}))
 
-
-def test_heatmap_cell_text_keeps_two_decimals():
-    """One decimal collapses distinguishable effect sizes onto one label."""
     row = pd.Series({"test": "chi2", "p_fdr": 0.01, "effect": 0.243})
     assert eda._heatmap_cell_text(row, fdr_alpha=0.05) == "0.24*"
     weak = pd.Series({"test": "chi2", "p_fdr": 0.01, "effect": 0.164})
@@ -83,15 +69,13 @@ def test_heatmap_cell_text_keeps_two_decimals():
 # Figure content
 # ---------------------------------------------------------------------------
 
-def test_level_order_pins_declared_positive_last_for_nominal():
+def test_level_order_pins_the_positive_class_last_and_keeps_clinical_order():
     s = pd.Series(["left", "right", "left", "midline"])
     spec = ColSpec("side", "nominal", positive_class="right")
     order = eda._level_order(s, spec)
     assert order[-1] == "right"
     assert set(order) == {"left", "right", "midline"}
 
-
-def test_level_order_keeps_ordinal_clinical_order():
     s = pd.Series(["<50", "80+", "50-59", "<50"])
     spec = ColSpec(
         "age_bins", "ordinal",
@@ -114,8 +98,6 @@ def test_result_subtitle_reports_test_effect_and_fdr():
     assert "q = 0.041" in text
     assert "FDR-significant" in text
 
-
-def test_result_subtitle_omits_the_flag_when_not_significant():
     row = {"test": "chi2", "effect": 0.06, "effect_label": "phi",
            "p": 0.264, "p_fdr": 0.264}
     text = eda._result_subtitle(row, 352, fdr_alpha=0.05)
@@ -140,52 +122,7 @@ def _tiny_cohort() -> tuple[pd.DataFrame, dict[str, ColSpec]]:
     return df, schema
 
 
-def test_screen_associations_plots_every_tested_pair(tmp_path):
-    df, schema = _tiny_cohort()
-    out = eda.screen_associations(
-        df, schema, targets=["high_grade"], predictors=["age", "margin"],
-        output_root=tmp_path,
-    )
-    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.png")}
-    assert {"high_grade__age", "high_grade__margin"} <= figs
-    assert set(out["predictor"]) == {"age", "margin"}
-
-
-def test_screen_associations_skips_eda_excluded_columns(tmp_path):
-    df, schema = _tiny_cohort()
-    cleaning = tmp_path / "cleaning"
-    cleaning.mkdir(parents=True)
-    pd.DataFrame({"column": ["margin"]}).to_csv(
-        cleaning / "eda_excluded_columns.csv", index=False,
-    )
-    out = eda.screen_associations(
-        df, schema, targets=["high_grade"], predictors=["age", "margin"],
-        output_root=tmp_path,
-    )
-    assert set(out["predictor"]) == {"age"}
-    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.png")}
-    assert "high_grade__age" in figs
-    assert "high_grade__margin" not in figs
-
-
-def test_screen_associations_skips_hidden_parent_columns(tmp_path):
-    df, schema = _tiny_cohort()
-    cleaning = tmp_path / "cleaning"
-    cleaning.mkdir(parents=True)
-    pd.DataFrame({"column": ["margin"]}).to_csv(
-        cleaning / "hidden_parent_columns.csv", index=False,
-    )
-    out = eda.screen_associations(
-        df, schema, targets=["high_grade"], predictors=["age", "margin"],
-        output_root=tmp_path,
-    )
-    assert set(out["predictor"]) == {"age"}
-    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.png")}
-    assert "high_grade__age" in figs
-    assert "high_grade__margin" not in figs
-
-
-def test_pair_figures_carry_the_fdr_adjusted_q_value(tmp_path):
+def test_screen_associations_plots_every_tested_pair_and_quotes_q(tmp_path):
     """Figures are drawn after FDR adjustment, so they can quote q."""
     df, schema = _tiny_cohort()
     captured: list[dict] = []
@@ -197,15 +134,36 @@ def test_pair_figures_carry_the_fdr_adjusted_q_value(tmp_path):
 
     eda._plot_pair = spy
     try:
-        eda.screen_associations(
+        out = eda.screen_associations(
             df, schema, targets=["high_grade"], predictors=["age", "margin"],
             output_root=tmp_path,
         )
     finally:
         eda._plot_pair = original
 
+    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.png")}
+    assert {"high_grade__age", "high_grade__margin"} <= figs
+    assert set(out["predictor"]) == {"age", "margin"}
     assert captured
     assert all("p_fdr" in result for result in captured)
+
+
+@pytest.mark.parametrize(
+    "listing", ["eda_excluded_columns.csv", "hidden_parent_columns.csv"],
+)
+def test_screen_associations_skips_the_columns_cleaning_took_out(tmp_path, listing):
+    df, schema = _tiny_cohort()
+    cleaning = tmp_path / "cleaning"
+    cleaning.mkdir(parents=True)
+    pd.DataFrame({"column": ["margin"]}).to_csv(cleaning / listing, index=False)
+    out = eda.screen_associations(
+        df, schema, targets=["high_grade"], predictors=["age", "margin"],
+        output_root=tmp_path,
+    )
+    assert set(out["predictor"]) == {"age"}
+    figs = {p.stem for p in (tmp_path / "eda" / "figures").glob("*.png")}
+    assert "high_grade__age" in figs
+    assert "high_grade__margin" not in figs
 
 
 def _fdr_family_fixture():
@@ -248,6 +206,16 @@ def test_fdr_family_limits_correction_to_family(tmp_path):
     expected = eda.benjamini_hochberg(fam["p"])
     assert np.allclose(fam["p_fdr"].values, expected.values)
 
+    # With no family named, everything is in it.
+    out = eda.screen_associations(
+        df, schema,
+        targets=["high_grade"],
+        predictors=["vol", "vol_ge10", "adc"],
+        output_root=tmp_path / "all",
+    )
+    assert out["in_fdr_family"].all()
+    assert out["p_fdr"].notna().all()
+
 
 def test_derived_columns_get_separate_fdr_and_stay_out_of_native_family(tmp_path):
     df, schema = _fdr_family_fixture()
@@ -272,18 +240,6 @@ def test_derived_columns_get_separate_fdr_and_stay_out_of_native_family(tmp_path
     assert np.allclose(native["p_fdr"].values, expected_native.values)
     # one derived test → q equals raw p
     assert np.allclose(derived["p_fdr"].values, derived["p"].values)
-
-
-def test_fdr_family_none_keeps_everything_in_family(tmp_path):
-    df, schema = _fdr_family_fixture()
-    out = eda.screen_associations(
-        df, schema,
-        targets=["high_grade"],
-        predictors=["vol", "vol_ge10", "adc"],
-        output_root=tmp_path,
-    )
-    assert out["in_fdr_family"].all()
-    assert out["p_fdr"].notna().all()
 
 
 # ---------------------------------------------------------------------------
@@ -321,23 +277,9 @@ def _linear_by_linear_p(codes: np.ndarray, y: np.ndarray) -> float:
     return float(chi2.sf((n - 1) * r * r, 1))
 
 
-def test_ordinal_predictor_uses_cochran_armitage_not_spearman(tmp_path):
-    df, schema = _unbalanced_ordinal()
-    out = eda.screen_associations(
-        df, schema, targets=["high_grade"], predictors=["stage"],
-        output_root=tmp_path,
-    )
-    row = out.iloc[0]
-    assert row["test"] == "cochran_armitage"
-    codes = pd.Categorical(
-        df["stage"], categories=["none", "some", "extensive"], ordered=True,
-    ).codes
-    y = df["high_grade"].astype(float).to_numpy()
-    assert row["p"] == pytest.approx(_linear_by_linear_p(codes, y), rel=1e-9)
-
-
-def test_cochran_armitage_uses_equal_spacing_not_rank_scores(tmp_path):
-    """Equal spacing keeps the rare extreme level at full weight."""
+def test_an_ordinal_predictor_uses_cochran_armitage_with_equal_spacing(tmp_path):
+    """Equal spacing keeps the rare extreme level at full weight, where rank
+    scores would dilute it."""
     from scipy.stats import spearmanr
 
     df, schema = _unbalanced_ordinal()
@@ -345,13 +287,18 @@ def test_cochran_armitage_uses_equal_spacing_not_rank_scores(tmp_path):
         df, schema, targets=["high_grade"], predictors=["stage"],
         output_root=tmp_path,
     )
+    row = out.iloc[0]
+    assert row["test"] == "cochran_armitage"
+
     codes = pd.Categorical(
         df["stage"], categories=["none", "some", "extensive"], ordered=True,
     ).codes
     y = df["high_grade"].astype(float).to_numpy()
+    assert row["p"] == pytest.approx(_linear_by_linear_p(codes, y), rel=1e-9)
+
     rank_p = float(spearmanr(y, codes).pvalue)
-    assert out.iloc[0]["p"] < rank_p          # equal spacing is the stronger test here
-    assert rank_p > 0.05 > out.iloc[0]["p"]   # and the two land on opposite verdicts
+    assert row["p"] < rank_p            # equal spacing is the stronger test here
+    assert rank_p > 0.05 > row["p"]     # and the two land on opposite verdicts
 
 
 def test_cochran_armitage_reads_the_declared_level_order(tmp_path):
@@ -373,8 +320,10 @@ def test_cochran_armitage_reads_the_declared_level_order(tmp_path):
     assert forward["p"] == pytest.approx(reverse["p"])
 
 
-def test_cochran_armitage_returns_nan_when_there_is_no_trend_to_test():
-    """One level, or one outcome class, leaves the row empty rather than crashing."""
+def test_cochran_armitage_handles_rows_it_cannot_score():
+    """One level, or one outcome class, leaves the row empty rather than
+    crashing; codes are NaN for values outside ``ordered_levels`` and those
+    must not poison r either."""
     y = np.array([0.0, 1.0, 0.0, 1.0, 1.0, 0.0])
     one_level = eda._cochran_armitage_row(y, np.zeros(6))
     assert one_level["test"] == "cochran_armitage"
@@ -382,9 +331,6 @@ def test_cochran_armitage_returns_nan_when_there_is_no_trend_to_test():
     one_class = eda._cochran_armitage_row(np.ones(6), np.array([0.0, 1, 2, 0, 1, 2]))
     assert np.isnan(one_class["p"])
 
-
-def test_cochran_armitage_drops_rows_with_an_unlisted_level():
-    """Codes are NaN for values outside ``ordered_levels``; they must not poison r."""
     y = np.array([0.0, 1.0, 0.0, 1.0, 1.0, 1.0, np.nan])
     x = np.array([0.0, 1.0, 0.0, 1.0, np.nan, 2.0, 1.0])
     row = eda._cochran_armitage_row(y, x)

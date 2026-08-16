@@ -58,17 +58,12 @@ def report_art(tmp_output):
     ))
 
 
-def test_embed_png_src(tmp_path):
+def test_png_embedding_helpers(tmp_path):
     p = tmp_path / "x.png"
     p.write_bytes(b"\x89PNG\r\n\x1a\n")
     assert rp._embed_png_src(p).startswith("data:image/png;base64,")
-
-
-def test_figure_img_html(tmp_path):
-    p = tmp_path / "x.png"
-    p.write_bytes(b"\x89PNG\r\n\x1a\n")
-    html = rp._figure_img_html(p)
-    assert "<img" in html
+    assert "<img" in rp._figure_img_html(p)
+    assert "figure-grid" in svg_grid([p])
 
 
 def test_report_css_caps_embedded_images_to_the_page():
@@ -78,86 +73,60 @@ def test_report_css_caps_embedded_images_to_the_page():
     assert "max-width: none" not in rp._CSS
 
 
-def test_esc():
+def test_scalar_helpers():
     assert rp._esc("<b>") == "&lt;b&gt;"
     assert rp._esc(None) == ""
-
-
-def test_human_pool_df():
     assert human_pool_df(12.0) == "12"
     assert human_pool_df(float("inf")) == "∞"
-
-
-def test_human_p():
     assert human_p(0.0001) == "<0.001"
     assert human_p("<0.001") == "<0.001"
-
-
-def test_coerce_p():
     assert rp._coerce_p("<0.001") is not None
     assert rp._coerce_p(None) is None
-
-
-def test_coerce_float():
     assert rp._coerce_float("1.5") == 1.5
     assert rp._coerce_float("bad") is None
+    assert rp._to_int_or_none(4.0) == 4
+    assert rp._to_int_or_none("x") is None
+    assert rp._first_present(pd.DataFrame({"b": [1]}), ["a", "b"]) == "b"
 
 
-def test_classify_significance():
+def test_classifiers():
     assert classify_significance(0.01, 0.02) == "sig-fdr"
-
-
-def test_classify_or_direction():
     assert classify_or_direction(2.0, 1.2, 3.0) == "or-risk"
-
-
-def test_classify_missing():
     assert classify_missing(50.0) == "missing-severe"
 
 
-def test_warning_box():
+def test_html_building_blocks():
     assert "warning-box" in warning_box("oops")
-
-
-def test_info_box():
     assert "info-box" in info_box("note")
-
-
-def test_table_to_html():
-    df = pd.DataFrame({"a": [1], "b": [2]})
-    html = table_to_html(df)
-    assert "<table" in html
-
-
-def test_svg_grid(tmp_path):
-    p = tmp_path / "x.png"
-    p.write_bytes(b"\x89PNG\r\n\x1a\n")
-    assert "figure-grid" in svg_grid([p])
-
-
-def test_details_block():
+    assert "<table" in table_to_html(pd.DataFrame({"a": [1], "b": [2]}))
     assert "<details" in details_block("sum", "<p>x</p>")
+    assert "<html" in rp._wrap_html("T", "<body/>")
 
 
-def test_maybe_read_csv(tmp_path):
-    p = tmp_path / "x.csv"
-    p.write_text("a\n1\n")
+def test_file_loaders(tmp_path):
+    csv = tmp_path / "x.csv"
+    csv.write_text("a\n1\n")
     warns = []
-    df = rp._maybe_read_csv(p, warns)
+    df = rp._maybe_read_csv(csv, warns)
     assert df is not None and len(df) == 1
 
-
-def test_load_schema_any(tmp_path):
-    p = tmp_path / "schema.json"
-    p.write_text(json.dumps({"age": {"kind": "continuous"}}))
-    warns = []
-    df = rp._load_schema_any(p, warns)
+    schema = tmp_path / "schema.json"
+    schema.write_text(json.dumps({"age": {"kind": "continuous"}}))
+    df = rp._load_schema_any(schema, warns)
     assert df is not None and "column" in df.columns
 
 
-def test_load_artifacts(report_cfg, tmp_output):
-    art = load_artifacts(report_cfg)
-    assert art.output_root == tmp_output
+def test_load_artifacts_and_build_report(report_cfg, tmp_output):
+    assert load_artifacts(report_cfg).output_root == tmp_output
+    assert "<html" in build_report(report_cfg)
+
+
+def test_cli_entry_points(tmp_path, tmp_output):
+    assert write_html("<html><body>x</body></html>", tmp_path / "r.html").exists()
+    assert rp._parse_args(["--output-root", str(tmp_path)]).output_root == tmp_path
+    code = main(["--output-root", str(tmp_output), "--out", str(tmp_output / "r.html")])
+    assert code == 0
+    assert (tmp_output / "r.html").exists()
 
 
 def test_format_authors():
@@ -180,11 +149,18 @@ def test_render_header(report_cfg, report_art):
     assert "Author" not in html or 'class="label">Author<' not in html
 
 
-def test_render_cleaning(report_cfg, report_art):
+def test_plain_sections_render(report_cfg, report_art):
     assert "<section" in render_cleaning(report_cfg, report_art)
+    assert "<section" in render_missingness(report_cfg, report_art)
+    html = render_eda(report_cfg, report_art)
+    assert "<section" in html
+    assert "💡 Interpretation" not in html
+    assert "Full Sweep" not in html
+    assert "Like in that research" not in html
+    assert "Exploratory variants" not in html
 
 
-def test_cohort_flow_table_uses_log_counts_and_shows_zero_duplicates():
+def test_cohort_flow_table_uses_log_counts_and_falls_back_without_one():
     art = Artifacts(
         output_root=Path("."),
         cleaning_summary=pd.DataFrame([
@@ -211,16 +187,15 @@ def test_cohort_flow_table_uses_log_counts_and_shows_zero_duplicates():
     assert "WHO grade recorded" in html
     assert "Analysed cohort" in html
 
-
-def test_cohort_flow_table_falls_back_to_summary_without_log():
-    art = Artifacts(
+    # Without a log, the same facts come off the summary.
+    bare = Artifacts(
         output_root=Path("."),
         cleaning_summary=pd.DataFrame([
             {"step": "drop_rows", "detail": "grade exists", "n_rows": 9,
              "n_columns": 2, "criterion": "WHO grade recorded"},
         ]),
     )
-    html = rp._cohort_flow_table(art)
+    html = rp._cohort_flow_table(bare)
     assert "grade exists" in html and "WHO grade recorded" in html
 
 
@@ -322,19 +297,8 @@ def test_render_cleaning_coercion_audit(report_cfg, report_art):
     assert "<td>1.10</td>" not in html
 
 
-def test_render_dda(report_cfg, report_art):
+def test_render_dda_orders_the_blocks_and_splits_native_from_derived(report_cfg, report_art):
     report_art.dda_overall = pd.DataFrame([{"n_rows": 4}])
-    html = render_dda(report_cfg, report_art)
-    assert "<section" in html
-    assert "1️⃣ DDA - univariate" in html
-    assert "2️⃣ DDA - bivariate" in html
-    assert "3️⃣ DDA - trivariate" in html
-    # Univariate appears before bivariate before trivariate in the HTML
-    assert html.index("1️⃣ DDA - univariate") < html.index("2️⃣ DDA - bivariate")
-    assert html.index("2️⃣ DDA - bivariate") < html.index("3️⃣ DDA - trivariate")
-
-
-def test_render_dda_datatype_collapsibles_and_native_derived(report_cfg, report_art):
     report_art.dda_derived_columns = frozenset({"high_grade", "male_sex"})
     report_art.dda_binary = pd.DataFrame([
         {"column": "dural_tail", "kind": "binary", "n": 10},
@@ -345,6 +309,13 @@ def test_render_dda_datatype_collapsibles_and_native_derived(report_cfg, report_
         {"column": "age", "kind": "continuous", "n": 10, "min": 20.0},
     ])
     html = render_dda(report_cfg, report_art)
+    assert "<section" in html
+    assert "1️⃣ DDA - univariate" in html
+    assert "2️⃣ DDA - bivariate" in html
+    assert "3️⃣ DDA - trivariate" in html
+    # Univariate appears before bivariate before trivariate in the HTML
+    assert html.index("1️⃣ DDA - univariate") < html.index("2️⃣ DDA - bivariate")
+    assert html.index("2️⃣ DDA - bivariate") < html.index("3️⃣ DDA - trivariate")
     assert "✅ Binary variables (3)" in html
     assert "🌱 Native (1)" in html
     assert "🧩 Derived (2)" in html
@@ -369,50 +340,42 @@ def test_render_dda_hides_hidden_parent_columns(report_cfg, report_art):
     assert ">sex<" not in html
 
 
-def test_group_dda_bivariate_figures(tmp_path):
-    a = tmp_path / "age__by__sex.png"
-    b = tmp_path / "age__by__adc_value.png"
-    c = tmp_path / "sex__by__adc_value.png"
-    for p in (a, b, c):
+def test_group_dda_figures_by_key(tmp_path):
+    bi = [tmp_path / "age__by__sex.png",
+          tmp_path / "age__by__adc_value.png",
+          tmp_path / "sex__by__adc_value.png"]
+    tri = [tmp_path / "vol__vs__diam__by__high_grade.png",
+           tmp_path / "vol__vs__diam__by__sex.png",
+           tmp_path / "age__vs__adc__by__sex.png"]
+    for p in (*bi, *tri):
         p.write_text("<svg></svg>", encoding="utf-8")
-    groups = rp._group_dda_bivariate_figures([a, b, c])
+
+    groups = rp._group_dda_bivariate_figures(bi)
     assert list(groups) == ["age", "sex"]
     assert len(groups["age"]) == 2
     assert len(groups["sex"]) == 1
 
-
-def test_group_dda_trivariate_figures(tmp_path):
-    a = tmp_path / "vol__vs__diam__by__high_grade.png"
-    b = tmp_path / "vol__vs__diam__by__sex.png"
-    c = tmp_path / "age__vs__adc__by__sex.png"
-    for p in (a, b, c):
-        p.write_text("<svg></svg>", encoding="utf-8")
-    groups = rp._group_dda_trivariate_figures([a, b, c])
+    groups = rp._group_dda_trivariate_figures(tri)
     assert list(groups) == ["age__vs__adc", "vol__vs__diam"]
     assert len(groups["vol__vs__diam"]) == 2
 
 
-def test_render_dda_bivariate_key_dropdowns(report_cfg, report_art, tmp_path):
+def test_render_dda_key_dropdowns(report_cfg, report_art, tmp_path):
     a = tmp_path / "age__by__sex.png"
     b = tmp_path / "sex__by__adc_value.png"
-    for p in (a, b):
+    c = tmp_path / "tumor_volume__vs__max_diameter_cm__by__high_grade.png"
+    for p in (a, b, c):
         p.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
     report_art.dda_bivariate_figures = [a, b]
+    report_art.dda_trivariate_figures = [c]
     html = render_dda(report_cfg, report_art)
     assert "🔑 Age (1)" in html
     assert "🔑 Sex (1)" in html
-
-
-def test_render_dda_trivariate_key_dropdowns(report_cfg, report_art, tmp_path):
-    a = tmp_path / "tumor_volume__vs__max_diameter_cm__by__high_grade.png"
-    a.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
-    report_art.dda_trivariate_figures = [a]
-    html = render_dda(report_cfg, report_art)
     assert "3️⃣ DDA - trivariate (1)" in html
     assert "Tumor volume (cm³) vs Max diameter (cm) (1)" in html
 
 
-def test_dda_continuous_for_report_rounds_to_two_decimals():
+def test_dda_continuous_rounds_to_two_decimals(report_cfg, report_art):
     df = pd.DataFrame([{
         "column": "age",
         "kind": "continuous",
@@ -428,8 +391,6 @@ def test_dda_continuous_for_report_rounds_to_two_decimals():
     assert out.loc[0, "std"] == 12.76
     assert out.loc[0, "n"] == 365
 
-
-def test_render_dda_continuous_table_in_report(report_cfg, report_art):
     report_art.dda_continuous = pd.DataFrame([{
         "column": "age",
         "kind": "continuous",
@@ -445,20 +406,7 @@ def test_render_dda_continuous_table_in_report(report_cfg, report_art):
     assert ">63<" in html or ">63.0<" in html
 
 
-def test_render_missingness(report_cfg, report_art):
-    assert "<section" in render_missingness(report_cfg, report_art)
-
-
-def test_render_eda(report_cfg, report_art):
-    html = render_eda(report_cfg, report_art)
-    assert "<section" in html
-    assert "💡 Interpretation" not in html
-    assert "Full Sweep" not in html
-    assert "Like in that research" not in html
-    assert "Exploratory variants" not in html
-
-
-def test_eda_paper_display_blanks_nan():
+def test_eda_paper_display_table_blanks_nan_and_keeps_nn_pct():
     rows = pd.DataFrame([{
         "row_role": "variable",
         "predictor": "dural_tail",
@@ -484,9 +432,7 @@ def test_eda_paper_display_blanks_nan():
     assert "AUC" not in out.columns
     assert "nan" not in " ".join(map(str, row.values)).lower()
 
-
-def test_eda_paper_display_categorical_uses_nn_pct():
-    rows = pd.DataFrame([{
+    levels = pd.DataFrame([{
         "row_role": "level",
         "predictor": "side",
         "level": "left",
@@ -498,7 +444,7 @@ def test_eda_paper_display_categorical_uses_nn_pct():
         "p_level": "0.020",
     }])
     out = rp._eda_paper_display_table(
-        rows, table_kind="nominal", target="high_grade",
+        levels, table_kind="nominal", target="high_grade",
     )
     assert list(out.columns) == [
         "Variable", "WHO Grade 1 n/N (%)", "WHO Grade 2–3 n/N (%)",
@@ -659,12 +605,11 @@ def test_render_eda_omits_excluded_columns(report_cfg, report_art):
 
 
 def test_render_inferential(report_cfg, report_art):
-    report_art.inferential_multivariable = {
-        "event": pd.DataFrame({
-            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
-            "or_ci_hi": [3.0], "p": [0.01],
-        }),
-    }
+    tbl = pd.DataFrame({
+        "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+        "or_ci_hi": [3.0], "p": [0.01],
+    })
+    report_art.inferential_multivariable = {"event": tbl}
     report_art.inferential_cases = pd.DataFrame([{
         "target": "event",
         "model_id": "",
@@ -678,6 +623,10 @@ def test_render_inferential(report_cfg, report_art):
     assert "<section" in html
     assert 'class="epv-card"' in html
     assert "Underpowered" in html
+
+    assert "Interpretation" in rp._render_inferential_interpretation(
+        "event", tbl, "predictor_col", "or", "or_ci_lo", "or_ci_hi", "p",
+    )
 
 
 def test_render_inferential_multiple_variants(report_cfg, report_art):
@@ -724,9 +673,21 @@ def test_render_inferential_multiple_variants(report_cfg, report_art):
     assert "Interpretation" in html
 
 
-def test_render_inferential_experimental_last(report_cfg, report_art):
+@pytest.mark.parametrize(
+    ("model_id", "title", "flagged"),
+    [
+        # Flagged by the explicit `experimental` column ...
+        ("experimental", "meningioma_atypier experimental", True),
+        # ... and by the legacy id prefix when that column is absent.
+        ("experimental_model_1", "Custom model", False),
+    ],
+)
+def test_render_inferential_puts_the_experimental_model_last(
+    report_cfg, report_art, model_id, title, flagged,
+):
+    key = f"high_grade::{model_id}"
     report_art.inferential_multivariable = {
-        "high_grade::experimental": pd.DataFrame({
+        key: pd.DataFrame({
             "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
             "or_ci_hi": [3.0], "p": [0.01],
         }),
@@ -736,92 +697,36 @@ def test_render_inferential_experimental_last(report_cfg, report_art):
         }),
     }
     report_art.inferential_model_titles = {
-        "high_grade::experimental": "meningioma_atypier experimental",
+        key: title,
         "high_grade::yao_et_al_2022": "Yao et al. 2022",
     }
-    report_art.inferential_cases = pd.DataFrame([
-        {
-            "target": "high_grade", "model_id": "experimental",
-            "model_title": "meningioma_atypier experimental",
-            "experimental": True,
-            "n_complete_cases": 40, "n_outcome_events": 12,
-            "n_design_columns": 3, "epv": 4.0,
-        },
-        {
-            "target": "high_grade", "model_id": "yao_et_al_2022",
-            "model_title": "Yao et al. 2022",
-            "experimental": False,
-            "n_complete_cases": 38, "n_outcome_events": 12,
-            "n_design_columns": 2, "epv": 6.0,
-        },
-    ])
-    report_art.inferential_model_experimental = {
-        "high_grade::experimental": True,
-        "high_grade::yao_et_al_2022": False,
+    case = {
+        "target": "high_grade", "model_id": model_id, "model_title": title,
+        "n_complete_cases": 40, "n_outcome_events": 12,
+        "n_design_columns": 3, "epv": 4.0,
     }
+    other = {
+        "target": "high_grade", "model_id": "yao_et_al_2022",
+        "model_title": "Yao et al. 2022",
+        "n_complete_cases": 38, "n_outcome_events": 12,
+        "n_design_columns": 2, "epv": 6.0,
+    }
+    if flagged:
+        case["experimental"] = True
+        other["experimental"] = False
+        report_art.inferential_model_experimental = {
+            key: True, "high_grade::yao_et_al_2022": False,
+        }
+    report_art.inferential_cases = pd.DataFrame([case, other])
     report_cfg.targets = ("high_grade",)
     html = render_inferential(report_cfg, report_art)
-    assert html.index("Yao et al. 2022") < html.index("meningioma_atypier experimental")
+    assert html.index("Yao et al. 2022") < html.index(title)
     assert "Literature-based models" in html
     assert "Experimental model" in html
     assert html.index("Literature-based models") < html.index("Experimental model")
 
 
-def test_render_inferential_legacy_id_fallback_without_experimental_column(report_cfg, report_art):
-    report_art.inferential_multivariable = {
-        "high_grade::experimental_model_1": pd.DataFrame({
-            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
-            "or_ci_hi": [3.0], "p": [0.01],
-        }),
-        "high_grade::yao_et_al_2022": pd.DataFrame({
-            "predictor_col": ["sex"], "or": [1.5], "or_ci_lo": [1.0],
-            "or_ci_hi": [2.0], "p": [0.04],
-        }),
-    }
-    report_art.inferential_model_titles = {
-        "high_grade::experimental_model_1": "Custom model",
-        "high_grade::yao_et_al_2022": "Yao et al. 2022",
-    }
-    report_art.inferential_cases = pd.DataFrame([
-        {
-            "target": "high_grade", "model_id": "experimental_model_1",
-            "model_title": "Custom model",
-            "n_complete_cases": 40, "n_outcome_events": 12,
-            "n_design_columns": 3, "epv": 4.0,
-        },
-        {
-            "target": "high_grade", "model_id": "yao_et_al_2022",
-            "model_title": "Yao et al. 2022",
-            "n_complete_cases": 38, "n_outcome_events": 12,
-            "n_design_columns": 2, "epv": 6.0,
-        },
-    ])
-    report_cfg.targets = ("high_grade",)
-    html = render_inferential(report_cfg, report_art)
-    assert html.index("Yao et al. 2022") < html.index("Custom model")
-    assert "Experimental model" in html
-
-
-def test_to_int_or_none():
-    assert rp._to_int_or_none(4.0) == 4
-    assert rp._to_int_or_none("x") is None
-
-
-def test_first_present():
-    df = pd.DataFrame({"b": [1]})
-    assert rp._first_present(df, ["a", "b"]) == "b"
-
-
-def test_render_inferential_interpretation():
-    tbl = pd.DataFrame({"predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
-                        "or_ci_hi": [3.0], "p": [0.01]})
-    html = rp._render_inferential_interpretation(
-        "event", tbl, "predictor_col", "or", "or_ci_lo", "or_ci_hi", "p",
-    )
-    assert "Interpretation" in html
-
-
-def test_render_appendix(report_cfg, report_art):
+def test_render_appendix_lists_the_environment(report_cfg, report_art):
     html = render_appendix(report_cfg, report_art)
     assert isinstance(html, str)
     assert "Environment &amp; package versions" in html or "Environment & package versions" in html
@@ -829,8 +734,6 @@ def test_render_appendix(report_cfg, report_art):
     assert "pandas" in html
     assert "Python" in html
 
-
-def test_render_environment_appendix():
     art = rp.Artifacts(output_root=Path("output"))
     art.mice_manifest = {
         "r_version": "R version 4.6.1 (2026-06-24)",
@@ -864,31 +767,6 @@ def test_system_specs_processor_and_graphics(monkeypatch):
     assert "12 cores" in rows["Processor"]
     assert "NVIDIA GeForce RTX 3080" in rows["Graphics"]
     assert rows["RAM"] == "32.0 GB"
-
-
-def test_wrap_html():
-    assert "<html" in rp._wrap_html("T", "<body/>")
-
-
-def test_build_report(report_cfg):
-    html = build_report(report_cfg)
-    assert "<html" in html
-
-
-def test_write_html(tmp_path):
-    out = write_html("<html><body>x</body></html>", tmp_path / "r.html")
-    assert out.exists()
-
-
-def test_parse_args(tmp_path):
-    args = rp._parse_args(["--output-root", str(tmp_path)])
-    assert args.output_root == tmp_path
-
-
-def test_main(tmp_output):
-    code = main(["--output-root", str(tmp_output), "--out", str(tmp_output / "r.html")])
-    assert code == 0
-    assert (tmp_output / "r.html").exists()
 
 
 # --------------------------------------------------------------------------
@@ -955,25 +833,18 @@ def panel_output(tmp_output):
     return tmp_output
 
 
-def test_load_artifacts_finds_the_panel_tables(panel_output):
-    art = load_artifacts(ReportConfig(output_root=panel_output, title="T"))
+def test_the_binary_block_answers_aim_one(panel_output):
+    """Every other table in the section goes through a reading view; the panel
+    tables used to be dumped straight from the CSV."""
+    cfg = ReportConfig(output_root=panel_output, title="T")
+    art = load_artifacts(cfg)
     assert art.panel_marker_reading_view is not None
     assert len(art.panel_figures) == 2
 
-
-def test_the_binary_block_answers_aim_one(panel_output):
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp._binary_marker_block(load_artifacts(cfg))
+    html = rp._binary_marker_block(art)
     assert "⋈ Binary" in html
     assert "Cortical destruction" in html
     assert "2.8 (1.7–4.6)" in html
-
-
-def test_the_panel_tables_never_show_raw_machine_column_names(panel_output):
-    """Every other table in the section goes through a reading view; these two
-    used to be dumped straight from the CSV."""
-    cfg = ReportConfig(output_root=panel_output, title="T")
-    html = rp._binary_marker_block(load_artifacts(cfg))
     for machine_name in ("auc_shared_apparent", "auc_artifact_corrected",
                          "best_single_J_corrected", "n_bootstrap", "n_scored"):
         assert machine_name not in html
@@ -999,39 +870,33 @@ def test_the_binary_block_sits_inside_the_eda_target(panel_output):
     assert html.index("🎯 Target: <code>high_grade</code>") < html.index("⋈ Binary")
 
 
-def test_data_quality_flags_implausible_minima():
+def test_data_quality_warnings():
     import report
-    dda = pd.DataFrame({
+
+    # Implausible minima are flagged, one message per column.
+    msgs = report.data_quality_warnings(pd.DataFrame({
         "column": ["max_diameter_cm", "tumor_volume", "age"],
         "min": [0.2, 0.3, 18.0],
-    })
-    msgs = report.data_quality_warnings(dda)
+    }))
     assert len(msgs) == 2
     assert any("0.2" in m and "diameter" in m.lower() for m in msgs)
     assert any("0.3" in m and "volume" in m.lower() for m in msgs)
 
+    # Plausible minima stay silent.
+    assert report.data_quality_warnings(
+        pd.DataFrame({"column": ["max_diameter_cm"], "min": [1.4]}),
+    ) == []
 
-def test_data_quality_silent_when_plausible():
-    import report
-    dda = pd.DataFrame({"column": ["max_diameter_cm"], "min": [1.4]})
-    assert report.data_quality_warnings(dda) == []
+    # A missing "min" column returns [] without raising.
+    assert report.data_quality_warnings(
+        pd.DataFrame({"column": ["max_diameter_cm", "tumor_volume"]}),
+    ) == []
 
-
-def test_data_quality_missing_min_column_degrades_gracefully():
-    import report
-    dda = pd.DataFrame({"column": ["max_diameter_cm", "tumor_volume"]})
-    # Missing "min" column should return [] without raising
-    assert report.data_quality_warnings(dda) == []
-
-
-def test_data_quality_duplicate_column_rows_take_minimum():
-    import report
-    dda = pd.DataFrame({
+    # Duplicate rows for one column collapse to a single warning at the minimum.
+    msgs = report.data_quality_warnings(pd.DataFrame({
         "column": ["max_diameter_cm", "max_diameter_cm", "age"],
         "min": [0.2, 0.6, 25.0],
-    })
-    msgs = report.data_quality_warnings(dda)
-    # Should produce exactly one warning for diameter, using the minimum (0.2)
+    }))
     assert len(msgs) == 1
     assert "0.2" in msgs[0] and "diameter" in msgs[0].lower()
 
@@ -1047,12 +912,15 @@ def _paper_pair():
     })
 
 
-def test_a_derived_flag_may_not_be_corrected_in_the_native_family():
-    """Checked against the derivation log, not the list that decided the split.
+def test_the_native_family_rejects_restatements_and_hidden_parents():
+    """A restatement is checked against the derivation log, not the list that
+    decided the split.
 
     ``adc_value_le0.72`` is ``adc_value`` with a line drawn through it, so
     correcting it natively tests the same information twice and moves every
-    native q. This is how multiple_meningiomas ended up with no q at all.
+    native q. This is how multiple_meningiomas ended up with no q at all. A
+    hidden parent is the mirror case: it was replaced by a flag, so showing
+    both puts one fact in twice.
     """
     with pytest.raises(ValueError, match="alongside the column they restate"):
         rp._render_eda_native_derived_block(
@@ -1061,9 +929,6 @@ def test_a_derived_flag_may_not_be_corrected_in_the_native_family():
             derived_sources={"adc_value_le0.72": ["adc_value"]},
         )
 
-
-def test_a_hidden_parent_may_not_reach_the_table():
-    """It was replaced by a flag; showing both puts one fact in twice."""
     with pytest.raises(ValueError, match="Hidden parent"):
         rp._render_eda_native_derived_block(
             _paper_pair(), target="y",

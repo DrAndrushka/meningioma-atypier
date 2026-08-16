@@ -39,11 +39,16 @@ def separable_model_df() -> tuple[pd.DataFrame, list[str], dict]:
     return df, ["score"], {"const": -0.8, "score": 1.5}
 
 
-def test_calibration_block_bins_every_patient(separable_model_df):
+def test_calibration_and_decision_curve_on_a_model_with_real_signal(
+    separable_model_df,
+):
+    """LOWESS robustness iterations flatten a binary outcome to zero — it=0 — and
+    correcting only the slope reports half the calibration."""
     df, design_cols, coefficients = separable_model_df
     out = bootstrap_internal_validation(
-        df, "event", design_cols, coefficients, n_bootstrap=20,
+        df, "event", design_cols, coefficients, n_bootstrap=60,
     )
+
     cal = out["calibration"]
     assert sum(b["n"] for b in cal["bins"]) == len(df)
     assert all(0.0 <= b["observed"] <= 1.0 for b in cal["bins"])
@@ -51,29 +56,25 @@ def test_calibration_block_bins_every_patient(separable_model_df):
     assert cal["slope_apparent"] == 1.0
     assert "slope_corrected" in cal and "intercept_apparent" in cal
 
-
-def test_calibration_smooth_tracks_risk_not_the_floor(separable_model_df):
-    """LOWESS robustness iterations flatten a binary outcome to zero — it=0."""
-    df, design_cols, coefficients = separable_model_df
-    out = bootstrap_internal_validation(
-        df, "event", design_cols, coefficients, n_bootstrap=20,
-    )
-    smooth = out["calibration"]["smooth"]
+    smooth = cal["smooth"]
     assert smooth["predicted"], "no smoothed calibration curve"
     observed = np.asarray(smooth["observed"], dtype=float)
     # A model with real signal must not smooth to a flat line at zero.
     assert observed.max() > 0.4
     assert observed[-1] > observed[0]
 
+    assert "intercept_corrected" in cal
+    assert np.isfinite(cal["intercept_corrected"])
+    # Apparent calibration-in-the-large on the development sample is 0 by
+    # construction; the corrected value is what the model would do elsewhere.
+    assert cal["intercept_apparent"] == pytest.approx(0.0, abs=0.01)
 
-def test_decision_curve_matches_the_net_benefit_definition(separable_model_df):
-    df, design_cols, coefficients = separable_model_df
-    out = bootstrap_internal_validation(
-        df, "event", design_cols, coefficients, n_bootstrap=20,
-    )
+    row = next(m for m in out["metrics"] if m["metric"] == "Calibration intercept")
+    assert row["optimism_corrected"] == cal["intercept_corrected"]
+    assert row["apparent"] == cal["intercept_apparent"]
+
     dca = out["decision_curve"]
     assert len(dca["thresholds"]) == len(dca["model"]) == len(dca["treat_all"])
-
     prevalence = float(df["event"].mean())
     assert dca["prevalence"] == pytest.approx(prevalence, abs=5e-4)
     # Treat-all is prevalence − (1 − prevalence)·odds(t), by definition.
@@ -97,13 +98,14 @@ def test_bootstrap_internal_validation(tiny_model_df):
     assert out["roc_curves"]["curves"][0]["fpr"]
 
 
-def test_enrich_streamlit_artifact_with_ordinal_predictor():
+def test_enrich_streamlit_artifact_shrinks_every_kind_of_coefficient(
+    tiny_model_df,
+):
     rng = np.random.default_rng(0)
     n = 80
     age_bins = rng.integers(0, 5, size=n).astype(float)
     event = ((age_bins + rng.normal(0, 1.5, size=n)) > 2).astype(int)
-    df = pd.DataFrame({"event": event, "age_bins": age_bins})
-    design_cols = ["age_bins"]
+    ordinal_df = pd.DataFrame({"event": event, "age_bins": age_bins})
     meta = {
         "target": "event",
         "intercept": -0.3,
@@ -116,13 +118,14 @@ def test_enrich_streamlit_artifact_with_ordinal_predictor():
             },
         ],
     }
-    artifact = calculator_meta_to_streamlit_artifact(meta, n=len(df), events=int(df["event"].sum()))
-    enriched = enrich_streamlit_artifact(artifact, df, design_cols, n_bootstrap=20)
+    artifact = calculator_meta_to_streamlit_artifact(
+        meta, n=len(ordinal_df), events=int(ordinal_df["event"].sum()))
+    enriched = enrich_streamlit_artifact(artifact, ordinal_df, ["age_bins"],
+                                         n_bootstrap=20)
     shrinkage = enriched["coefficient_processing"]["shrinkage_factor"]
-    assert enriched["coefficients"]["age_bins"] == pytest.approx(0.2 * shrinkage, abs=0.0001)
+    assert enriched["coefficients"]["age_bins"] == pytest.approx(0.2 * shrinkage,
+                                                                abs=0.0001)
 
-
-def test_enrich_streamlit_artifact_adds_validation(tiny_model_df):
     df, design_cols, coefficients = tiny_model_df
     meta = {
         "target": "event",
@@ -140,35 +143,8 @@ def test_enrich_streamlit_artifact_adds_validation(tiny_model_df):
     assert "missing_data_policy" in enriched
 
 
-# --------------------------------------------------------------------------
-# Calibration-in-the-large
-# --------------------------------------------------------------------------
-def test_calibration_intercept_is_corrected_not_just_apparent(separable_model_df):
-    """Correcting only the slope reports half the calibration."""
-    df, design_cols, coefficients = separable_model_df
-    out = bootstrap_internal_validation(
-        df, "event", design_cols, coefficients, n_bootstrap=60,
-    )
-    cal = out["calibration"]
-    assert "intercept_corrected" in cal
-    assert np.isfinite(cal["intercept_corrected"])
-    # Apparent calibration-in-the-large on the development sample is 0 by
-    # construction; the corrected value is what the model would do elsewhere.
-    assert cal["intercept_apparent"] == pytest.approx(0.0, abs=0.01)
-
-
-def test_corrected_intercept_appears_in_the_metrics_list(separable_model_df):
-    df, design_cols, coefficients = separable_model_df
-    out = bootstrap_internal_validation(
-        df, "event", design_cols, coefficients, n_bootstrap=40,
-    )
-    row = next(m for m in out["metrics"] if m["metric"] == "Calibration intercept")
-    assert row["optimism_corrected"] == out["calibration"]["intercept_corrected"]
-    assert row["apparent"] == out["calibration"]["intercept_apparent"]
-
-
-def test_an_overfitted_model_loses_both_slope_and_intercept(tiny_model_df):
-    """Eight noise predictors on 80 patients: the slope must fall well short of 1."""
+def test_an_overfitted_model_loses_both_slope_and_intercept():
+    """Eight noise predictors on 90 patients: the slope must fall well short of 1."""
     rng = np.random.default_rng(23)
     n, k = 90, 8
     noise = {f"z{i}": rng.normal(size=n) for i in range(k)}
@@ -194,25 +170,20 @@ def test_bootstrap_default_comes_from_shared_config():
 # Running the model validations side by side must stay a wall-clock change and
 # nothing else, and it must stay polite on a laptop.
 
-def test_a_single_model_never_starts_a_pool(monkeypatch):
+def test_the_worker_count_is_capped_polite_and_overridable(monkeypatch):
+    """Unplugged, spinning up every core is exactly what empties the battery."""
     monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
     monkeypatch.setattr(mv, "_on_battery", lambda: False)
     assert mv.validation_workers(1) == 1
     assert mv.validation_workers(0) == 1
 
-
-def test_battery_power_forces_sequential(monkeypatch):
-    """Unplugged, spinning up every core is exactly what empties the battery."""
-    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
     monkeypatch.setattr(mv, "_on_battery", lambda: True)
     assert mv.validation_workers(7) == 1
 
-
-def test_worker_count_is_capped_and_leaves_cores_free(monkeypatch):
-    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
     monkeypatch.setattr(mv, "_on_battery", lambda: False)
     monkeypatch.setattr(mv.os, "cpu_count", lambda: 64)
     assert mv.validation_workers(50) == mv.MAX_VALIDATION_WORKERS
+    assert mv.validation_workers(2) == 2      # never more than there are models
 
     monkeypatch.setattr(mv.os, "cpu_count", lambda: 4)
     assert mv.validation_workers(50) == 4 - mv.RESERVED_CORES
@@ -220,23 +191,13 @@ def test_worker_count_is_capped_and_leaves_cores_free(monkeypatch):
     monkeypatch.setattr(mv.os, "cpu_count", lambda: 2)
     assert mv.validation_workers(50) == 1  # never zero or negative
 
-
-def test_worker_count_never_exceeds_the_number_of_models(monkeypatch):
-    monkeypatch.delenv(mv.WORKERS_ENV, raising=False)
-    monkeypatch.setattr(mv, "_on_battery", lambda: False)
-    monkeypatch.setattr(mv.os, "cpu_count", lambda: 64)
-    assert mv.validation_workers(2) == 2
-
-
-def test_env_override_wins_over_the_battery_check(monkeypatch):
+    # The environment override wins even over the battery check.
     monkeypatch.setattr(mv, "_on_battery", lambda: True)
     monkeypatch.setenv(mv.WORKERS_ENV, "3")
     assert mv.validation_workers(7) == 3
     monkeypatch.setenv(mv.WORKERS_ENV, "1")
     assert mv.validation_workers(7) == 1
 
-
-def test_a_nonsense_worker_override_is_refused(monkeypatch):
     monkeypatch.setenv(mv.WORKERS_ENV, "lots")
     with pytest.raises(ValueError, match="whole number of workers"):
         mv.validation_workers(7)
@@ -274,6 +235,4 @@ def test_a_model_that_cannot_be_validated_keeps_its_plain_artifact(monkeypatch):
     df = pd.DataFrame({"event": [1, 0], "x": [1.0, 2.0]})
     assert mv.enrich_streamlit_artifacts([(art, df, ["x"])], n_bootstrap=5) == [art]
 
-
-def test_no_models_is_not_an_error():
     assert mv.enrich_streamlit_artifacts([]) == []

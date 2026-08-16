@@ -12,47 +12,33 @@ import nonlinearity as nl
 
 
 # --- knots -----------------------------------------------------------------
-def test_three_knots_are_the_default():
+def test_knots_sit_at_harrells_quantiles_and_degrade_cleanly():
     assert nl.DEFAULT_N_KNOTS == 3
 
-
-def test_knots_sit_at_harrells_quantiles():
     x = np.arange(1001, dtype=float)
     knots = nl.default_knots(x, 3)
     assert knots.size == 3
     assert knots == pytest.approx(np.quantile(x, (0.10, 0.50, 0.90)))
 
+    # A third of this cohort sits at zero, which ties the lower quantiles.
+    piled = np.concatenate([np.zeros(60), np.arange(1, 41, dtype=float)])
+    assert nl.default_knots(piled, 3).size < 3
 
-def test_knots_reduce_rather_than_collapse_on_a_zero_pile():
-    """A third of this cohort sits at zero, which ties the lower quantiles."""
-    x = np.concatenate([np.zeros(60), np.arange(1, 41, dtype=float)])
-    assert nl.default_knots(x, 3).size < 3
-
-
-def test_knots_give_up_cleanly_on_a_constant():
     assert nl.default_knots(np.ones(50), 3).size == 0
 
 
 # --- the basis -------------------------------------------------------------
-def test_basis_first_column_is_the_variable_itself():
-    """This nesting is what makes the likelihood-ratio test valid."""
+def test_the_basis_nests_the_linear_term_and_stays_linear_in_the_tails():
+    """The nesting is what makes the likelihood-ratio test valid, and
+    'restricted' means the tails cannot flap."""
     x = np.linspace(0, 10, 50)
     basis = nl.rcs_basis(x, nl.default_knots(x, 3))
     assert basis[:, 0] == pytest.approx(x)
 
-
-def test_basis_has_one_column_fewer_than_knots():
     x = np.linspace(0, 10, 60)
     assert nl.rcs_basis(x, nl.default_knots(x, 3)).shape[1] == 2
+    assert nl.rcs_basis(np.linspace(0, 10, 30), np.array([1.0, 2.0])).shape[1] == 1
 
-
-def test_basis_falls_back_to_linear_without_enough_knots():
-    x = np.linspace(0, 10, 30)
-    assert nl.rcs_basis(x, np.array([1.0, 2.0])).shape[1] == 1
-
-
-def test_basis_is_linear_beyond_the_outer_knots():
-    """Restricted means the tails cannot flap — that is the whole restriction."""
     x = np.linspace(0, 100, 400)
     knots = nl.default_knots(x, 3)
     basis = nl.rcs_basis(x, knots)
@@ -76,58 +62,39 @@ def _straight(n: int = 400, seed: int = 0):
     return x, rng.binomial(1, 1 / (1 + np.exp(-(-3.0 + 0.5 * x))))
 
 
-def test_a_real_bend_is_detected():
+def test_a_real_bend_is_detected_and_a_straight_climb_is_not():
     x, y = _bent()
-    assert nl.fit_spline(x, y).bent
+    fit = nl.fit_spline(x, y)
+    assert fit.bent
+    assert fit.lr_df == 1     # 3 knots -> 2 columns -> 1 extra
+
+    assert not nl.fit_spline(*_straight()).bent
 
 
-def test_a_straight_climb_is_not_called_bent():
-    x, y = _straight()
-    assert not nl.fit_spline(x, y).bent
-
-
-def test_the_test_has_the_expected_degrees_of_freedom():
-    x, y = _bent()
-    assert nl.fit_spline(x, y).lr_df == 1     # 3 knots -> 2 columns -> 1 extra
-
-
-def test_the_fitted_curve_is_returned_on_the_original_scale():
+def test_the_fitted_curve_comes_back_banded_and_trimmed_to_the_patients():
     x, y = _bent()
     fit = nl.fit_spline(x, y, log_fit=True)
     assert fit.log_fitted
     assert fit.grid.min() >= x.min() and fit.grid.max() <= x.max()
 
-
-def test_the_band_brackets_the_curve():
-    x, y = _bent()
     fit = nl.fit_spline(x, y)
     assert (fit.risk_lo <= fit.risk).all() and (fit.risk <= fit.risk_hi).all()
-
-
-def test_the_grid_is_trimmed_to_where_the_patients_are():
-    x, y = _bent()
-    fit = nl.fit_spline(x, y)
     assert fit.grid.min() >= np.quantile(x, 0.025) - 1e-9
     assert fit.grid.max() <= np.quantile(x, 0.975) + 1e-9
 
 
 # --- graceful failure ------------------------------------------------------
-def test_too_few_patients_is_blank_not_fatal():
+def test_too_few_patients_or_events_is_blank_not_fatal():
     fit = nl.fit_spline(np.arange(10.0), np.array([0, 1] * 5))
     assert not fit.spline_fitted
     assert "too few patients" in fit.note
     assert np.isnan(fit.lr_p)
+    assert not fit.bent
 
-
-def test_too_few_events_is_blank_not_fatal():
     y = np.zeros(60, dtype=int)
     y[:2] = 1
-    fit = nl.fit_spline(np.linspace(0, 10, 60), y)
-    assert "too few patients or events" in fit.note
-
-
-def test_a_blank_fit_is_not_reported_as_bent():
-    assert not nl.fit_spline(np.arange(10.0), np.array([0, 1] * 5)).bent
+    assert "too few patients or events" in nl.fit_spline(
+        np.linspace(0, 10, 60), y).note
 
 
 # --- parity with the implementation this replaces -------------------------
@@ -168,41 +135,33 @@ def _cohort(n: int = 300, seed: int = 4) -> pd.DataFrame:
     })
 
 
-def test_table_has_a_row_per_measurement_per_stratum():
-    assert len(nl.nonlinearity_table(_cohort())) == 7
-
-
-def test_table_reports_both_scales_for_every_row():
-    table = nl.nonlinearity_table(_cohort())
+def test_the_table_carries_one_row_per_stratum_on_both_scales():
+    df = _cohort()
+    table = nl.nonlinearity_table(df)
+    assert len(table) == 7
     assert {"lr_p", "lr_p_log", "bent_clinical", "bent_log",
             "scales_agree"} <= set(table.columns)
 
-
-def test_scales_agree_is_false_when_the_two_fits_disagree():
-    table = nl.nonlinearity_table(_cohort())
     mismatched = table["bent_clinical"] != table["bent_log"]
     assert (~table.loc[mismatched, "scales_agree"]).all()
 
-
-def test_fit_all_covers_both_scales_for_every_stratum():
-    fits = nl.fit_all(_cohort())
+    fits = nl.fit_all(df)
     assert len(fits) == 14                      # 7 rows x 2 scales
     assert {log for _, _, log in fits} == {False, True}
 
 
 # --- the summary line ------------------------------------------------------
-def test_describe_names_what_bent():
-    line = nl.describe_nonlinearity(nl.nonlinearity_table(_cohort()))
+def test_describe_names_what_bent_and_whether_the_scales_agreed():
+    table = nl.nonlinearity_table(_cohort())
+    line = nl.describe_nonlinearity(table)
     assert "Bend detected" in line or "No measurement shows a bend" in line
 
+    scale_dependent = table.copy()
+    scale_dependent.loc[0, ["bent_clinical", "bent_log", "scales_agree"]] = [
+        True, False, False]
+    assert "no claim about a bend is scale-free" in nl.describe_nonlinearity(
+        scale_dependent)
 
-def test_describe_flags_scale_dependence_when_present():
-    table = nl.nonlinearity_table(_cohort())
-    table.loc[0, ["bent_clinical", "bent_log", "scales_agree"]] = [True, False, False]
-    assert "no claim about a bend is scale-free" in nl.describe_nonlinearity(table)
-
-
-def test_describe_says_both_scales_agree_when_they_do():
-    table = nl.nonlinearity_table(_cohort())
-    table["scales_agree"] = True
-    assert "Both scales agree everywhere." in nl.describe_nonlinearity(table)
+    agreeing = table.copy()
+    agreeing["scales_agree"] = True
+    assert "Both scales agree everywhere." in nl.describe_nonlinearity(agreeing)

@@ -18,7 +18,7 @@ TARGET = "high_grade"
 # --------------------------------------------------------------------------
 # Positive likelihood ratio
 # --------------------------------------------------------------------------
-def test_lr_pos_matches_a_hand_computed_2x2():
+def test_likelihood_ratio_positive():
     """27 of 105 high-grade flagged, 23 of 247 benign flagged.
 
     sens = 27/105 = 0.2571, spec = 224/247 = 0.9069, LR+ = sens / (1 - spec).
@@ -31,21 +31,15 @@ def test_lr_pos_matches_a_hand_computed_2x2():
     assert out["chance_overlap"] is False
     assert out["continuity_corrected"] is False
 
-
-def test_lr_pos_flags_a_marker_whose_interval_covers_one():
-    """A sign that fires equally often in both groups carries no information."""
+    # A sign that fires equally often in both groups carries no information.
     out = mp.likelihood_ratio_positive(tp=20, fp=45, fn=85, tn=202)
     assert out["lr_pos_lo"] < 1.0 < out["lr_pos_hi"]
     assert out["chance_overlap"] is True
 
-
-def test_lr_pos_survives_a_zero_cell_with_a_continuity_correction():
-    """brain_invasion-shaped: never seen in a benign tumour, so FP = 0.
-
-    Without a correction LR+ is infinite and its interval undefined. Adding 0.5
-    to every cell (Haldane-Anscombe) gives a finite, very wide interval — which
-    is the honest answer: a huge point estimate resting on five patients.
-    """
+    # brain_invasion-shaped: never seen in a benign tumour, so FP = 0. Without a
+    # correction LR+ is infinite and its interval undefined. Adding 0.5 to every
+    # cell (Haldane-Anscombe) gives a finite, very wide interval — which is the
+    # honest answer: a huge point estimate resting on five patients.
     out = mp.likelihood_ratio_positive(tp=5, fp=0, fn=100, tn=247)
     assert np.isfinite(out["lr_pos"])
     assert out["lr_pos"] == pytest.approx(25.7358, abs=1e-3)
@@ -53,9 +47,7 @@ def test_lr_pos_survives_a_zero_cell_with_a_continuity_correction():
     assert out["lr_pos_hi"] == pytest.approx(461.3, rel=1e-3)
     assert out["continuity_corrected"] is True
 
-
-def test_lr_pos_returns_nan_when_a_margin_is_empty():
-    """No high-grade patients at all: nothing to compute, and no crash."""
+    # No high-grade patients at all: nothing to compute, and no crash.
     out = mp.likelihood_ratio_positive(tp=0, fp=3, fn=0, tn=40)
     assert np.isnan(out["lr_pos"])
     assert out["chance_overlap"] is False
@@ -89,7 +81,7 @@ def accuracy_table() -> pd.DataFrame:
 # --------------------------------------------------------------------------
 # BinaryMarker — the adapter that lets combinations.py accept yes/no columns
 # --------------------------------------------------------------------------
-def test_binary_marker_flags_match_an_equivalent_cutpoint():
+def test_binary_marker_is_a_drop_in_cutpoint():
     """The reuse claim, verified: a marker and a 0.5 cut-point flag the same rows."""
     df = marker_frame()
     numeric = df.assign(sign_a=df["sign_a"].astype("Float64"))
@@ -103,18 +95,12 @@ def test_binary_marker_flags_match_an_equivalent_cutpoint():
         check_names=False,
     )
 
-
-def test_binary_marker_short_label_is_the_label():
-    """No cut-point to print, so the short form is just the name."""
-    marker = mp.BinaryMarker("sign_a", "Sign A")
+    # No cut-point to print, so the short form is just the name.
     assert marker.label == "Sign A"
     assert marker.short_label == "Sign A"
 
-
-def test_combinations_accepts_binary_markers_unchanged():
-    """single_rule_table is threshold-phase code, called here on plain columns."""
-    df = marker_frame()
-    markers = [mp.BinaryMarker("sign_a", "Sign A"), mp.BinaryMarker("sign_b", "Sign B")]
+    # single_rule_table is threshold-phase code, called here on plain columns.
+    markers = [marker, mp.BinaryMarker("sign_b", "Sign B")]
     table = cb.single_rule_table(df, markers, TARGET)
     assert list(table["rule_label"]) == ["Sign A", "Sign B"]
     assert table["youden_J"].notna().all()
@@ -125,32 +111,21 @@ def test_combinations_accepts_binary_markers_unchanged():
 # --------------------------------------------------------------------------
 def test_markers_are_read_from_the_accuracy_table():
     markers = mp.markers_from_diagnostic_accuracy(accuracy_table(), target=TARGET)
-    assert [m.col for m in markers] == ["sign_a", "sign_b", "sex_male"]
-
-
-def test_the_outcome_is_never_treated_as_a_marker():
-    markers = mp.markers_from_diagnostic_accuracy(accuracy_table(), target=TARGET)
-    assert TARGET not in [m.col for m in markers]
-
-
-def test_continuous_predictors_and_other_targets_are_left_out():
-    markers = mp.markers_from_diagnostic_accuracy(accuracy_table(), target=TARGET)
     cols = [m.col for m in markers]
+    assert cols == ["sign_a", "sign_b", "sex_male"]
+    # The outcome is never treated as a marker, and neither are continuous
+    # predictors or the columns screened against a different target.
+    assert TARGET not in cols
     assert "adc_value" not in cols
     assert "sign_c" not in cols
+    # Labels are prettified for printing.
+    assert markers[0].label == "Sign A"
 
-
-def test_the_exclude_list_excludes():
-    """sex_male is derived_binary and would otherwise enter a section on MRI signs."""
-    markers = mp.markers_from_diagnostic_accuracy(
+    # sex_male is derived_binary and would otherwise enter a section on MRI signs.
+    excluded = mp.markers_from_diagnostic_accuracy(
         accuracy_table(), target=TARGET, exclude={"sex_male"},
     )
-    assert [m.col for m in markers] == ["sign_a", "sign_b"]
-
-
-def test_marker_labels_are_prettified():
-    markers = mp.markers_from_diagnostic_accuracy(accuracy_table(), target=TARGET)
-    assert markers[0].label == "Sign A"
+    assert [m.col for m in excluded] == ["sign_a", "sign_b"]
 
 
 # --------------------------------------------------------------------------
@@ -222,12 +197,12 @@ def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
     assert view.iloc[0]["LR+ (95% CI)"] == "3.00 (0.50–17.95)"
     assert view.iloc[0]["n/N (%)"] == "4/8 (50%)"
 
-
-def test_marker_panel_is_empty_not_broken_when_there_are_no_markers():
-    df = pd.DataFrame({TARGET: pd.array([True, False], dtype="boolean")})
-    panel = mp.marker_panel_table(df, [], TARGET)
-    assert panel.empty
-    assert mp.marker_panel_reading_view(panel).empty
+    # With no markers at all the panel is empty, not broken.
+    empty = mp.marker_panel_table(
+        pd.DataFrame({TARGET: pd.array([True, False], dtype="boolean")}), [], TARGET,
+    )
+    assert empty.empty
+    assert mp.marker_panel_reading_view(empty).empty
 
 
 # --------------------------------------------------------------------------
@@ -254,9 +229,7 @@ def test_lr_forest_draws_one_row_per_marker_on_a_log_axis():
     assert len(ax.get_yticklabels()) == 2
     plt.close(fig)
 
-
-def test_lr_forest_returns_a_figure_even_with_nothing_to_plot():
-    """An empty panel must not crash the notebook cell that saves figures."""
+    # An empty panel must not crash the notebook cell that saves figures.
     fig = mp.lr_forest_figure(pd.DataFrame(columns=["label", "lr_pos"]))
     assert fig is not None
     plt.close(fig)
@@ -282,6 +255,25 @@ def test_shared_cohort_keeps_only_patients_with_every_marker_observed():
     assert len(shared) == 4
     assert shared["sign_b"].notna().all()
 
+    # The audit records what each marker cost.
+    audit = mp.shared_cohort_audit(df, markers, TARGET, dropped=[])
+    assert set(audit.columns) == {"item", "value", "note"}
+    rows = dict(zip(audit["item"], audit["value"]))
+    assert rows["Patients in the shared set"] == 4
+    assert rows["sign_b"] == 2  # patients this marker cost
+
+    # When no patient has everything, the result is empty, not broken.
+    nothing_shared = pd.DataFrame({
+        "a": pd.array([True, None], dtype="boolean"),
+        "b": pd.array([None, True], dtype="boolean"),
+        TARGET: pd.array([True, False], dtype="boolean"),
+    })
+    assert mp.shared_cohort_frame(
+        nothing_shared,
+        [mp.BinaryMarker("a", "A"), mp.BinaryMarker("b", "B")],
+        TARGET,
+    ).empty
+
 
 def test_a_marker_that_never_fires_is_dropped_with_a_reason():
     """An all-false column has an undefined likelihood ratio and no rule value."""
@@ -291,26 +283,6 @@ def test_a_marker_that_never_fires_is_dropped_with_a_reason():
     assert [m.col for m in kept] == ["sign_a"]
     assert dropped[0]["marker"] == "always_off"
     assert "never" in dropped[0]["reason"].lower()
-
-
-def test_shared_cohort_audit_records_what_each_marker_cost():
-    df = sparse_frame()
-    markers = [mp.BinaryMarker("sign_a", "A"), mp.BinaryMarker("sign_b", "B")]
-    audit = mp.shared_cohort_audit(df, markers, TARGET, dropped=[])
-    assert set(audit.columns) == {"item", "value", "note"}
-    rows = dict(zip(audit["item"], audit["value"]))
-    assert rows["Patients in the shared set"] == 4
-    assert rows["sign_b"] == 2  # patients this marker cost
-
-
-def test_shared_cohort_is_empty_not_broken_when_no_patient_has_everything():
-    df = pd.DataFrame({
-        "a": pd.array([True, None], dtype="boolean"),
-        "b": pd.array([None, True], dtype="boolean"),
-        TARGET: pd.array([True, False], dtype="boolean"),
-    })
-    markers = [mp.BinaryMarker("a", "A"), mp.BinaryMarker("b", "B")]
-    assert mp.shared_cohort_frame(df, markers, TARGET).empty
 
 
 # --------------------------------------------------------------------------
@@ -332,20 +304,15 @@ def count_frame(n: int = 240, seed: int = 3) -> pd.DataFrame:
 COUNT_MARKERS = [mp.BinaryMarker(f"sign_{i}", f"Sign {i}") for i in range(3)]
 
 
-def test_count_score_has_a_row_for_every_possible_count():
+def test_count_score_rows_and_thresholds():
     counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
     assert list(counts["n_criteria_met"]) == [0, 1, 2, 3]
     assert counts["n"].sum() == counts.attrs["n_scored"]
 
-
-def test_risk_climbs_with_the_number_of_signs_present():
-    """The literal claim the section makes. If this fails, the claim is wrong."""
-    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
+    # The literal claim the section makes. If this fails, the claim is wrong.
     risks = counts[counts["n"] >= 10]["risk"].to_numpy(dtype=float)
     assert risks[0] < risks[-1]
 
-
-def test_count_thresholds_are_scored_as_tests():
     rules = mp.count_thresholds(count_frame(), COUNT_MARKERS, TARGET)
     assert list(rules["rule_label"]) == [
         "≥ 1 of 3 criteria", "≥ 2 of 3 criteria", "≥ 3 of 3 criteria",
@@ -353,19 +320,12 @@ def test_count_thresholds_are_scored_as_tests():
     assert rules["youden_J"].notna().all()
 
 
-def test_count_score_figure_labels_the_axis_with_the_marker_count():
+def test_count_score_figure_names_the_count_and_a_short_marker_list():
     counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
     fig = mp.count_score_figure(counts, COUNT_MARKERS)
     ax = fig.axes[0]
     assert "3" in ax.get_xlabel()
-    plt.close(fig)
-
-
-def test_a_short_marker_list_is_still_named_in_the_subtitle():
-    counts = mp.count_score(count_frame(), COUNT_MARKERS, TARGET)
-    fig = mp.count_score_figure(counts, COUNT_MARKERS)
-    subtitle = " ".join(t.get_text() for t in fig.axes[0].texts) + \
-        fig.axes[0].get_title()
+    subtitle = " ".join(t.get_text() for t in ax.texts) + ax.get_title()
     assert "Sign 0" in subtitle
     plt.close(fig)
 
@@ -413,12 +373,13 @@ def _counts(rows: list[tuple[int, int, int]]) -> pd.DataFrame:
     return frame
 
 
-def test_the_headline_skips_counts_with_almost_nobody_in_them():
+def test_the_headline_picks_two_usable_counts_and_measures_the_direction():
     """The real failure: the top bin held one patient, whose 0% became the claim.
 
     Occupied is not the same as usable. With the highest bin holding a single
     patient, a sentence built from the first and last occupied rows reported
-    two coin flips as a trend.
+    two coin flips as a trend. The direction is measured too — a hard-coded
+    "rises" is a hope, not a finding.
     """
     head = mp.count_headline(_counts([
         (3, 9, 0), (4, 12, 0), (8, 60, 18), (10, 40, 17), (15, 1, 0),
@@ -428,23 +389,16 @@ def test_the_headline_skips_counts_with_almost_nobody_in_them():
     assert row["high_count"] == 10
     assert row["direction"] == "rises"
 
-
-def test_the_headline_reports_a_fall_as_a_fall():
-    """The direction is measured. A hard-coded "rises" is a hope, not a finding."""
-    head = mp.count_headline(_counts([
+    assert mp.count_headline(_counts([
         (0, 40, 24), (1, 50, 20), (2, 60, 6),
-    ]), min_n=10)
-    assert head.iloc[0]["direction"] == "falls"
+    ]), min_n=10).iloc[0]["direction"] == "falls"
 
-
-def test_the_headline_says_flat_when_the_two_ends_agree():
-    head = mp.count_headline(_counts([
+    assert mp.count_headline(_counts([
         (0, 40, 20), (1, 30, 12), (2, 60, 30),
-    ]), min_n=10)
-    assert head.iloc[0]["direction"] == "flat"
+    ]), min_n=10).iloc[0]["direction"] == "flat"
 
 
-def test_the_headline_relaxes_its_floor_rather_than_going_silent():
+def test_the_headline_degrades_rather_than_going_silent():
     """A thin honest sentence beats no sentence — but it must say it is thin."""
     head = mp.count_headline(_counts([(0, 4, 0), (1, 5, 3)]), min_n=10)
     row = head.iloc[0]
@@ -452,15 +406,12 @@ def test_the_headline_relaxes_its_floor_rather_than_going_silent():
     assert row["min_n"] == 1
     assert "no two counts" in row["note"]
 
-
-def test_the_headline_is_empty_when_one_count_is_occupied():
+    # One occupied count is no trend at all, and neither is no table.
     assert mp.count_headline(_counts([(2, 30, 9)]), min_n=10).empty
     assert mp.count_headline(pd.DataFrame()).empty
 
-
-def test_the_headline_carries_the_denominators_it_quotes():
-    head = mp.count_headline(_counts([(1, 25, 2), (4, 40, 20)]), min_n=10)
-    row = head.iloc[0]
+    # Whatever it quotes, it carries the denominators.
+    row = mp.count_headline(_counts([(1, 25, 2), (4, 40, 20)]), min_n=10).iloc[0]
     assert row["low_n"] == 25 and row["high_n"] == 40
     assert row["k_markers"] == 4
 
@@ -475,6 +426,11 @@ def test_both_sides_of_the_head_to_head_are_corrected():
     combination by the whole of the single's own selection optimism. Picking the
     best of N single markers is a choice made on these patients too, so it costs
     something, and that cost must be non-zero and recorded.
+
+    Whether correction shrinks the gap is data, not doctrine: correction
+    subtracts each side's *own* optimism, so when the best-of-N-singles side
+    pays more of it the corrected gap is the larger one. That is measured here
+    rather than asserted in the report's prose.
     """
     corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
     assert list(corr["side"]) == ["best single", "best combination"]
@@ -482,27 +438,11 @@ def test_both_sides_of_the_head_to_head_are_corrected():
     assert (corr["optimism"] > 0).all()
     assert corr["J_corrected"].notna().all()
 
-
-def test_the_reported_gain_is_corrected_on_both_sides():
-    corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
-    single = corr[corr["side"] == "best single"].iloc[0]
-    combo = corr[corr["side"] == "best combination"].iloc[0]
+    single, combo = corr.iloc[0], corr.iloc[1]
     expected = combo["J_corrected"] - single["J_corrected"]
     assert corr["gain_corrected"].iloc[0] == pytest.approx(expected, abs=1e-9)
 
-
-def test_the_correction_records_both_gaps_and_which_way_it_moved_them():
-    """Whether correction shrinks the gap is data, not doctrine.
-
-    Correction subtracts each side's *own* selection optimism. When the
-    best-of-N-singles side pays more of it than the combination side, the
-    corrected gap is the larger one — so "the uncorrected gap is larger" is a
-    claim that has to be measured, and it is measured here rather than in the
-    report's prose.
-    """
-    corr = mp.selection_correction(count_frame(), COUNT_MARKERS, TARGET, n_boot=60)
     row = corr.iloc[1]
-    single, combo = corr.iloc[0], corr.iloc[1]
     assert row["gain_apparent"] == pytest.approx(
         combo["J_apparent"] - single["J_apparent"], abs=1e-9)
     assert row["correction_effect"] in {"widens", "narrows", "unchanged"}
@@ -511,9 +451,7 @@ def test_the_correction_records_both_gaps_and_which_way_it_moved_them():
                 else "unchanged")
     assert row["correction_effect"] == expected
 
-
-def test_a_widening_correction_is_labelled_widening():
-    """The real cohort's case, isolated: the single side costs more to choose."""
+    # The real cohort's case, isolated: the single side costs more to choose.
     assert mp._correction_effect(0.119, 0.134) == "widens"
     assert mp._correction_effect(0.134, 0.119) == "narrows"
     assert mp._correction_effect(0.100, 0.100) == "unchanged"
@@ -527,7 +465,6 @@ def test_selection_correction_is_deterministic_for_a_seed():
     pd.testing.assert_frame_equal(a, b)
 
 
-
 # --------------------------------------------------------------------------
 # The orchestrator
 # --------------------------------------------------------------------------
@@ -538,7 +475,7 @@ def panel_accuracy_table() -> pd.DataFrame:
     ])
 
 
-def test_run_marker_panel_writes_every_table_and_figure(tmp_output):
+def test_run_marker_panel_writes_every_table_and_honours_exclusions(tmp_output):
     tables = mp.run_marker_panel(
         count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
         output_root=tmp_output, n_boot=40,
@@ -557,8 +494,6 @@ def test_run_marker_panel_writes_every_table_and_figure(tmp_output):
     assert figures == ["count_score.png", "lr_forest.png", "lr_forest_native.png"]
     assert set(tables) >= {"01_marker_panel", "09_selection_correction"}
 
-
-def test_run_marker_panel_excludes_what_it_is_told_to(tmp_output):
     mp.run_marker_panel(
         count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
         output_root=tmp_output, exclude={"sign_2"}, n_boot=40,
@@ -566,12 +501,9 @@ def test_run_marker_panel_excludes_what_it_is_told_to(tmp_output):
     panel = pd.read_csv(tmp_output / "panel" / "tables" / "01_marker_panel.csv")
     assert "sign_2" not in set(panel["marker"])
 
-
-def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
-    """A combination question needs two markers. One must not crash the run."""
-    df = count_frame()
+    # A combination question needs two markers. One must not crash the run.
     tables = mp.run_marker_panel(
-        df, target=TARGET, accuracy_table=panel_accuracy_table(),
+        count_frame(), target=TARGET, accuracy_table=panel_accuracy_table(),
         output_root=tmp_output, exclude={"sign_1", "sign_2"}, n_boot=40,
     )
     assert not tables["01_marker_panel"].empty
@@ -579,11 +511,12 @@ def test_run_marker_panel_survives_a_single_usable_marker(tmp_output):
 
 
 # --- which side of the panel a flag belongs to -----------------------------
-def test_a_flag_whose_parent_is_hidden_counts_as_native():
-    """It replaced that column, so nothing in the table restates anything.
-
-    ``male`` replaced ``sex``; there is no ``sex`` row left for it to
-    duplicate, so it is corrected with the other recorded signs.
+def test_classify_origin_follows_whether_the_parent_is_still_shown():
+    """A flag whose parent is hidden counts as native — it replaced that column,
+    so nothing in the table restates anything. ``male`` replaced ``sex``; there
+    is no ``sex`` row left for it to duplicate, so it is corrected with the
+    other recorded signs. A cut-point whose measurement is still on the page is
+    the opposite case: one thing twice.
     """
     got = mp.classify_origin(
         ["male", "cystic_component"],
@@ -592,9 +525,6 @@ def test_a_flag_whose_parent_is_hidden_counts_as_native():
     )
     assert got == {"male": mp.NATIVE, "cystic_component": mp.NATIVE}
 
-
-def test_a_flag_whose_parent_is_still_present_counts_as_derived():
-    """A cut-point and the measurement it was cut from are one thing twice."""
     got = mp.classify_origin(
         ["adc_value_le0.72"],
         derivation_sources={"adc_value_le0.72": "adc_value"},
