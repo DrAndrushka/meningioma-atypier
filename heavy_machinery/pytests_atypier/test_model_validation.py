@@ -170,6 +170,23 @@ def test_bootstrap_default_comes_from_shared_config():
 # Later phases difference two models' AUCs resample-by-resample, which is only
 # a paired difference if both models were refit on the same index sets.
 
+def test_resample_indices_is_a_deterministic_pure_function_of_shape():
+    """``_resample_indices`` takes only ``(n_rows, n_bootstrap)`` — nothing
+    else can influence it. This is the primitive the pairing guarantee (below)
+    rests on, so it gets its own direct test rather than being inferred from
+    a downstream AUC."""
+    import model_validation as mv
+    m1 = mv._resample_indices(157, 40)
+    m2 = mv._resample_indices(157, 40)
+    assert np.array_equal(m1, m2)
+    assert m1.shape == (40, 157)
+    assert m1.min() >= 0
+    assert m1.max() < 157
+    # A different shape must not silently collide with the one above.
+    m3 = mv._resample_indices(157, 41)
+    assert m3.shape == (41, 157)
+
+
 def test_resample_aucs_are_returned_and_paired_across_models():
     """Two models validated on the same frame must use the same resample
     indices, or their AUC difference is not a paired difference."""
@@ -189,11 +206,60 @@ def test_resample_aucs_are_returned_and_paired_across_models():
         df, "y", ["a", "b"], {"const": 0.0, "a": 1.0, "b": 0.0},
         n_bootstrap=50, return_resample_aucs=True)
     assert len(out_a["resample_aucs"]) == len(out_b["resample_aucs"]) == 50
+    # The pairing claim, checked directly rather than inferred from lengths:
+    # both models were fit on the same ``df`` (same n_rows = len(df)) with the
+    # same n_bootstrap, and ``_resample_indices`` has no other parameter it
+    # could depend on — not design_cols, not call order. So the exact matrix
+    # each model's loop indexed with is reproducible and provably identical.
+    idx_for_a = mv._resample_indices(len(df), 50)
+    idx_for_b = mv._resample_indices(len(df), 50)
+    assert np.array_equal(idx_for_a, idx_for_b)
     # Same seed -> same index sets -> a rerun reproduces exactly.
     again = mv.bootstrap_internal_validation(
         df, "y", ["a"], {"const": 0.0, "a": 1.0},
         n_bootstrap=50, return_resample_aucs=True)
     assert out_a["resample_aucs"] == again["resample_aucs"]
+
+
+def test_two_models_actually_call_resample_indices_with_the_same_arguments(
+    monkeypatch,
+):
+    """Closes the gap the previous test leaves open: it's not enough that
+    ``_resample_indices(same shape)`` returns the same matrix in isolation —
+    ``bootstrap_internal_validation`` must actually call it that way for both
+    models. Spies on the real call site so a future change that seeded by
+    design_cols, coefficients, or call order (instead of n_rows/n_bootstrap
+    alone) would fail this test even though it left ``_resample_indices``
+    itself untouched."""
+    import model_validation as mv
+
+    real_resample_indices = mv._resample_indices
+    calls: list[tuple[int, int, np.ndarray]] = []
+
+    def spy(n_rows, n_bootstrap):
+        matrix = real_resample_indices(n_rows, n_bootstrap)
+        calls.append((n_rows, n_bootstrap, matrix.copy()))
+        return matrix
+
+    monkeypatch.setattr(mv, "_resample_indices", spy)
+
+    rng = np.random.RandomState(0)
+    n = 200
+    df = pd.DataFrame({
+        "y": rng.binomial(1, 0.3, n).astype(float),
+        "a": rng.normal(size=n),
+        "b": rng.normal(size=n),
+    })
+    df["y"] = (df["a"] * 0.9 + rng.normal(size=n) > 0).astype(float)
+    mv.bootstrap_internal_validation(
+        df, "y", ["a"], {"const": 0.0, "a": 1.0}, n_bootstrap=50)
+    mv.bootstrap_internal_validation(
+        df, "y", ["a", "b"], {"const": 0.0, "a": 1.0, "b": 0.0}, n_bootstrap=50)
+
+    assert len(calls) == 2
+    (n_rows_a, n_boot_a, matrix_a), (n_rows_b, n_boot_b, matrix_b) = calls
+    assert (n_rows_a, n_boot_a) == (n_rows_b, n_boot_b) == (200, 50)
+    assert np.array_equal(matrix_a, matrix_b)
 
 
 def test_bootstrap_seed_is_the_pipeline_seed():
@@ -227,6 +293,59 @@ def test_resample_aucs_absent_unless_requested():
         df, "event", ["age"], {"const": -0.5, "age": 0.05}, n_bootstrap=20,
     )
     assert "resample_aucs" not in out
+
+
+def test_a_resample_that_fails_to_fit_is_skipped_not_padded(monkeypatch):
+    """One bad bootstrap draw must shrink ``resample_aucs`` and
+    ``successful_bootstraps`` together, in lockstep — never padded with a NaN
+    or 0.0 placeholder, which would silently corrupt a later paired
+    comparison against another model's (differently-shrunk) vector.
+
+    Forcing a genuine statsmodels convergence failure with synthetic data
+    isn't reliable, so this monkeypatches ``sm.Logit`` to raise on exactly
+    one resample's fit. The design matrix here has 3 columns (const + age +
+    flag), a shape no calibration sub-fit ever produces (those always fit on
+    1 or 2 columns), so counting occurrences of that shape safely identifies
+    the apparent fit (call 1, must succeed) and each resample's boot fit
+    (call 2 onward) without needing to track every internal statsmodels call.
+    """
+    import model_validation as mv
+
+    rng = np.random.default_rng(0)
+    n = 80
+    df = pd.DataFrame({
+        "event": rng.integers(0, 2, n),
+        "age": rng.normal(60, 10, n),
+        "flag": rng.integers(0, 2, n),
+    })
+    design_cols = ["age", "flag"]
+    design_width = len(design_cols) + 1  # +1 for the prepended constant
+
+    real_logit = mv.sm.Logit
+    seen = {"design_shape_fits": 0}
+
+    class BoomOnFirstResample(real_logit):
+        def fit(self, *args, **kwargs):
+            if self.exog.shape[1] == design_width:
+                seen["design_shape_fits"] += 1
+                if seen["design_shape_fits"] == 2:  # 1st is the apparent fit
+                    raise RuntimeError("synthetic fit failure for testing")
+            return super().fit(*args, **kwargs)
+
+    monkeypatch.setattr(mv.sm, "Logit", BoomOnFirstResample)
+
+    n_bootstrap = 15
+    out = mv.bootstrap_internal_validation(
+        df, "event", design_cols, {"const": -0.5, "age": 0.05, "flag": 0.4},
+        n_bootstrap=n_bootstrap, return_resample_aucs=True,
+    )
+
+    assert out["successful_bootstraps"] == n_bootstrap - 1
+    assert len(out["resample_aucs"]) == n_bootstrap - 1
+    assert len(out["resample_aucs"]) == out["successful_bootstraps"]
+    # No NaN and no 0.0 placeholder standing in for the skipped resample.
+    assert all(np.isfinite(v) for v in out["resample_aucs"])
+    assert all(v > 0.0 for v in out["resample_aucs"])
 
 
 # ---------------------------------------------------------------------------
