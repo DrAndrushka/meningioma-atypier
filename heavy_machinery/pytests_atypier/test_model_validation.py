@@ -165,6 +165,71 @@ def test_bootstrap_default_comes_from_shared_config():
 
 
 # ---------------------------------------------------------------------------
+# Master bootstrap seed and per-resample AUC vector
+# ---------------------------------------------------------------------------
+# Later phases difference two models' AUCs resample-by-resample, which is only
+# a paired difference if both models were refit on the same index sets.
+
+def test_resample_aucs_are_returned_and_paired_across_models():
+    """Two models validated on the same frame must use the same resample
+    indices, or their AUC difference is not a paired difference."""
+    import model_validation as mv
+    rng = np.random.RandomState(0)
+    n = 200
+    df = pd.DataFrame({
+        "y": rng.binomial(1, 0.3, n).astype(float),
+        "a": rng.normal(size=n),
+        "b": rng.normal(size=n),
+    })
+    df["y"] = (df["a"] * 0.9 + rng.normal(size=n) > 0).astype(float)
+    out_a = mv.bootstrap_internal_validation(
+        df, "y", ["a"], {"const": 0.0, "a": 1.0},
+        n_bootstrap=50, return_resample_aucs=True)
+    out_b = mv.bootstrap_internal_validation(
+        df, "y", ["a", "b"], {"const": 0.0, "a": 1.0, "b": 0.0},
+        n_bootstrap=50, return_resample_aucs=True)
+    assert len(out_a["resample_aucs"]) == len(out_b["resample_aucs"]) == 50
+    # Same seed -> same index sets -> a rerun reproduces exactly.
+    again = mv.bootstrap_internal_validation(
+        df, "y", ["a"], {"const": 0.0, "a": 1.0},
+        n_bootstrap=50, return_resample_aucs=True)
+    assert out_a["resample_aucs"] == again["resample_aucs"]
+
+
+def test_bootstrap_seed_is_the_pipeline_seed():
+    import model_validation as mv
+    assert mv.BOOTSTRAP_SEED == 20260801
+
+
+def test_select_is_accepted_but_not_yet_implemented():
+    """Task 6 wires ``select`` up; this task only needs it to not raise."""
+    rng = np.random.default_rng(0)
+    n = 80
+    df = pd.DataFrame({
+        "event": rng.integers(0, 2, n),
+        "age": rng.normal(60, 10, n),
+    })
+    out = bootstrap_internal_validation(
+        df, "event", ["age"], {"const": -0.5, "age": 0.05},
+        n_bootstrap=20, select=object(),
+    )
+    assert out["method"] == "bootstrap internal validation"
+
+
+def test_resample_aucs_absent_unless_requested():
+    rng = np.random.default_rng(0)
+    n = 80
+    df = pd.DataFrame({
+        "event": rng.integers(0, 2, n),
+        "age": rng.normal(60, 10, n),
+    })
+    out = bootstrap_internal_validation(
+        df, "event", ["age"], {"const": -0.5, "age": 0.05}, n_bootstrap=20,
+    )
+    assert "resample_aucs" not in out
+
+
+# ---------------------------------------------------------------------------
 # Parallel validation policy
 # ---------------------------------------------------------------------------
 # Running the model validations side by side must stay a wall-clock change and

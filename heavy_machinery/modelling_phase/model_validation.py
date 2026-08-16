@@ -220,6 +220,8 @@ def bootstrap_internal_validation(
     coefficients: dict[str, float],
     *,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
+    return_resample_aucs: bool = False,
+    select=None,
 ) -> dict[str, Any]:
     """Apparent + optimism-corrected metrics and ROC points for the development sample."""
     y_arr = model_df[target].astype(int).to_numpy()
@@ -246,11 +248,16 @@ def bootstrap_internal_validation(
     brier_optimisms: list[float] = []
     slope_optimisms: list[float] = []
     intercept_optimisms: list[float] = []
+    resample_aucs: list[float] = []
+
+    # One index matrix for every resample, drawn from the single master seed
+    # (see BOOTSTRAP_SEED) instead of reseeding per-resample. This is what lets
+    # two different models validated in the same run see identical patients at
+    # resample i, so their AUCs at i can be differenced as a paired sample.
+    idx_matrix = _resample_indices(n_rows, n_bootstrap)
 
     for i in range(n_bootstrap):
-        # Same draws as ``model_df.sample(replace=True, random_state=i)``, which
-        # is RandomState(i).choice under the hood — the resamples are unchanged.
-        idx = np.random.RandomState(i).choice(n_rows, size=n_rows, replace=True)
+        idx = idx_matrix[i]
         y_boot = y_arr[idx]
         X_boot = X_orig[idx]
 
@@ -258,6 +265,9 @@ def bootstrap_internal_validation(
             boot_result = sm.Logit(y_boot, X_boot).fit(disp=False)
             pred_boot = np.asarray(boot_result.predict(X_boot), dtype=float)
             pred_orig = np.asarray(boot_result.predict(X_orig), dtype=float)
+
+            if return_resample_aucs:
+                resample_aucs.append(_round_metric(_auc(y_arr, pred_orig), 6))
 
             auc_optimisms.append(
                 _auc(y_boot, pred_boot) - _auc(y_arr, pred_orig)
@@ -314,7 +324,7 @@ def bootstrap_internal_validation(
         },
     ]
 
-    return {
+    result = {
         "method": "bootstrap internal validation",
         "bootstrap_resamples": n_bootstrap,
         "successful_bootstraps": len(auc_optimisms),
@@ -361,6 +371,11 @@ def bootstrap_internal_validation(
         "decision_curve": _net_benefit_data(y_arr, y_pred_apparent),
         "corrected_calibration_slope": slope_corr,
     }
+    if return_resample_aucs:
+        # 6 decimals, not the usual 3 — these get differenced against another
+        # model's resample_aucs, and 3 decimals would quantise the difference.
+        result["resample_aucs"] = resample_aucs
+    return result
 
 
 def shrink_and_recalibrate_coefficients(
@@ -545,6 +560,23 @@ def enrich_streamlit_artifact(
             "1 = high-grade meningioma, 0 = non-high-grade meningioma"
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# One master seed for every bootstrap in the modelling phase
+# ---------------------------------------------------------------------------
+# Matches the cut-point phase's ``wobble.SEED``. Every model validated in a
+# run draws its resamples from the same index matrix, so two models' AUCs at
+# resample i come from the same patients and their difference is a paired
+# difference rather than noise from two unrelated resamplings.
+
+BOOTSTRAP_SEED: int = 20260801
+
+
+def _resample_indices(n_rows: int, n_bootstrap: int) -> np.ndarray:
+    """``n_bootstrap`` x ``n_rows`` index matrix, fixed by ``BOOTSTRAP_SEED``."""
+    rng = np.random.RandomState(BOOTSTRAP_SEED)
+    return rng.choice(n_rows, size=(n_bootstrap, n_rows), replace=True)
 
 
 # ---------------------------------------------------------------------------
