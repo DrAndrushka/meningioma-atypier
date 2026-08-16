@@ -316,6 +316,19 @@ def test_the_sentinel_is_resolved_at_declaration_and_refuses_to_be_a_boolean():
     assert not isinstance(spec.eda_in_derived, type(_derivations.AUTO))
 
 
+def test_age_ge75_splits_both_grade_groups_above_the_floor(real_cohort):
+    """Lin 2014 dichotomises age at 75. The source spec says fall back to
+    continuous age if either grade group has <20 patients in the >=75 stratum.
+    It does not: 46 grade-1 and 23 grade-2/3. This test re-raises the question
+    if the cohort ever changes."""
+    df = real_cohort
+    assert "age_ge75" in df.columns
+    hg = df["high_grade"].astype("boolean").fillna(False)
+    ge75 = df["age_ge75"].astype("boolean").fillna(False)
+    assert int((ge75 & ~hg).sum()) >= 20
+    assert int((ge75 & hg).sum()) >= 20
+
+
 def test_no_derivation_can_be_both_hidden_parent_and_eda_derived():
     """The pair that produced the blank-q defect: in neither family.
 
