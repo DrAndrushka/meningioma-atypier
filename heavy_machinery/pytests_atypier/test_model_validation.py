@@ -267,8 +267,10 @@ def test_bootstrap_seed_is_the_pipeline_seed():
     assert mv.BOOTSTRAP_SEED == 20260801
 
 
-def test_select_is_accepted_but_not_yet_implemented():
-    """Task 6 wires ``select`` up; this task only needs it to not raise."""
+def test_select_hook_accepts_a_callable_that_always_agrees():
+    """Task 6 wires ``select`` up: a selector that always returns the same
+    column must reproduce the fixed-column result, and every resample counts
+    toward that one variable."""
     rng = np.random.default_rng(0)
     n = 80
     df = pd.DataFrame({
@@ -277,9 +279,40 @@ def test_select_is_accepted_but_not_yet_implemented():
     })
     out = bootstrap_internal_validation(
         df, "event", ["age"], {"const": -0.5, "age": 0.05},
-        n_bootstrap=20, select=object(),
+        n_bootstrap=20, select=lambda frame, y: ["age"],
     )
     assert out["method"] == "bootstrap internal validation"
+    assert out["selection_counts"] == {"age": 20}
+
+
+def test_select_hook_reselects_per_resample_and_counts_choices():
+    """A model whose predictors are chosen from the data must have that choosing
+    re-run inside the bootstrap, or its optimism correction misses the part that
+    matters most."""
+    import model_validation as mv
+    rng = np.random.RandomState(3)
+    n = 250
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "y": y.astype(float),
+        "strong": y * 1.3 + rng.normal(size=n),
+        "weak": y * 0.15 + rng.normal(size=n),
+        "noise": rng.normal(size=n),
+    })
+
+    def select(frame, y_arr):
+        import variable_selection as vs
+        picked, _ = vs.select_variables(
+            frame, y_arr, ["strong", "weak", "noise"], k=1, rho_max=0.8)
+        return picked
+
+    out = mv.bootstrap_internal_validation(
+        df, "y", ["strong"], {"const": 0.0, "strong": 1.0},
+        n_bootstrap=40, return_resample_aucs=True, select=select)
+    counts = out["selection_counts"]
+    assert sum(counts.values()) == 40
+    assert counts["strong"] > counts.get("noise", 0)
+    assert len(out["resample_aucs"]) == 40
 
 
 def test_resample_aucs_absent_unless_requested():

@@ -249,6 +249,7 @@ def bootstrap_internal_validation(
     slope_optimisms: list[float] = []
     intercept_optimisms: list[float] = []
     resample_aucs: list[float] = []
+    selection_counts: dict[str, int] = {}
 
     # One index matrix for every resample, drawn from the single master seed
     # (see BOOTSTRAP_SEED) instead of reseeding per-resample. This is what lets
@@ -259,12 +260,25 @@ def bootstrap_internal_validation(
     for i in range(n_bootstrap):
         idx = idx_matrix[i]
         y_boot = y_arr[idx]
-        X_boot = X_orig[idx]
+        if select is None:
+            X_boot, X_score = X_orig[idx], X_orig
+        else:
+            # Re-run the *choosing* on this resample, not just the fitting.
+            boot_frame = model_df.iloc[idx].reset_index(drop=True)
+            cols_i = select(boot_frame, y_boot)
+            if not cols_i:
+                continue
+            for c in cols_i:
+                selection_counts[c] = selection_counts.get(c, 0) + 1
+            X_boot = np.column_stack(
+                [np.ones(n_rows), boot_frame[cols_i].astype(float).to_numpy()])
+            X_score = np.column_stack(
+                [np.ones(n_rows), model_df[cols_i].astype(float).to_numpy()])
 
         try:
             boot_result = sm.Logit(y_boot, X_boot).fit(disp=False)
             pred_boot = np.asarray(boot_result.predict(X_boot), dtype=float)
-            pred_orig = np.asarray(boot_result.predict(X_orig), dtype=float)
+            pred_orig = np.asarray(boot_result.predict(X_score), dtype=float)
 
             if return_resample_aucs:
                 resample_aucs.append(_round_metric(_auc(y_arr, pred_orig), 6))
@@ -375,6 +389,8 @@ def bootstrap_internal_validation(
         # 6 decimals, not the usual 3 — these get differenced against another
         # model's resample_aucs, and 3 decimals would quantise the difference.
         result["resample_aucs"] = resample_aucs
+    if select is not None:
+        result["selection_counts"] = selection_counts
     return result
 
 
