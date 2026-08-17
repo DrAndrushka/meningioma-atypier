@@ -79,7 +79,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
             "Neurosurg Rev 2021;44(2):1109–1117."
         ),
         "cohort": (
-            "565 consecutive intracranial meningiomas; 516 grade 1, 49 (9%) "
+            "565 intracranial meningiomas; 516 grade 1, 49 (9%) "
             "high-grade. Single-centre, Münster, Germany. WHO 2016."
         ),
         "outcome": "High-grade meningioma (WHO 2016 grade 2–3).",
@@ -165,12 +165,18 @@ PUBLISHED_MODELS: dict[str, dict] = {
                 "column": "irregular_tumor_margin",
             },
             {
-                "variable": "Tumor location",
+                "variable": "Tumor location (non-skull base = risk direction)",
                 "meaning": (
                     "Convexity versus other location. Substituted here with "
                     "skull base versus non-skull base — directionally "
                     "equivalent; non-skull-base is the high-grade risk "
-                    "direction in both this paper and Peng 2021."
+                    "direction in both this paper and Peng 2021, so their "
+                    "positive β (+0.545) is a non-skull-base effect. This "
+                    "cohort's skull_base_location is coded the opposite way "
+                    "(True = at skull base) — see peng_2021's note on the "
+                    "same column for the reciprocal-OR treatment; no "
+                    "reciprocal is computed here since this paper reports β, "
+                    "not an OR, and the sign flip is stated instead."
                 ),
                 "beta": 0.545, "or": "", "ci_lo": "", "ci_hi": "", "p": 0.039,
                 "column": "skull_base_location",
@@ -229,17 +235,20 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ),
         "cohort": "65 meningiomas; 39 benign, 26 high-grade. Single-centre, Kanazawa University, Japan.",
         "outcome": "High-grade meningioma.",
-        # Transcribed from the publisher PDF (obtained 2026-08-17), Table 4.
-        # Equation: z = -1.979 + 3.738*TBI + 2.112*heterogeneity. The sign of
-        # the second term reads ambiguously in the extracted text; it is PLUS,
-        # confirmed two ways — reconstructing all four of these probabilities
-        # exactly, and exp(3.738)=42.0, exp(2.112)=8.3 matching the published
-        # odds ratios below.
+        # Transcribed from the publisher PDF (obtained 2026-08-17). Odds ratios
+        # below are Table 3; the logistic equation and its four calibration
+        # probabilities are Table 4. Equation: z = -1.979 + 3.738*TBI +
+        # 2.112*heterogeneity. The sign of the second term reads ambiguously
+        # in the extracted text; it is PLUS, confirmed two ways —
+        # reconstructing all four of these probabilities exactly, and
+        # exp(3.738)=42.0, exp(2.112)=8.3 matching the Table 3 odds ratios.
+        # Interface has the larger aOR (42.0 vs 8.3), so it must give the
+        # larger of the two single-factor probabilities — 85.3%, not 53.3%.
         "performance": (
             "Published logistic equation z = -1.979 + 3.738*TBI + "
             "2.112*heterogeneity. Probability of high grade: 12.1% with "
-            "neither factor present, 53.3% with unclear interface alone, "
-            "85.3% with heterogeneous enhancement alone, 98.0% with both."
+            "neither factor present, 85.3% with unclear interface alone, "
+            "53.3% with heterogeneous enhancement alone, 98.0% with both."
         ),
         "terms": [
             {
@@ -376,13 +385,20 @@ PUBLISHED_MODELS: dict[str, dict] = {
                 "column": "cortical_destruction",
             },
             {
-                "variable": "Tumor location",
+                "variable": "Tumour location (non-skull base = risk direction)",
                 "meaning": (
                     "Skull base versus non-skull base; non-skull base is the "
                     "risk-increasing direction in their coding. This cohort's "
                     "skull_base_location is coded the opposite way (True = at "
-                    "skull base), so the sign here does not carry over "
-                    "directly. Single-predictor AUC 0.583."
+                    "skull base). As published for non-skull base: OR 3.042 "
+                    "(1.223-7.567). Re-expressed for this cohort's coding, "
+                    "where True means at the skull base, that is its "
+                    "reciprocal: OR 0.33 (0.13-0.82). Our fitted estimate "
+                    "should be compared against 0.33, not 3.042 — this is "
+                    "algebra on the published estimate (1/OR, 1/ci_hi, "
+                    "1/ci_lo), not a new number; the or/ci_lo/ci_hi fields "
+                    "below remain the published 3.042 (1.223-7.567) as "
+                    "printed. Single-predictor AUC 0.583."
                 ),
                 "or": 3.042, "ci_lo": 1.223, "ci_hi": 7.567, "p": 0.017,
                 "column": "skull_base_location",

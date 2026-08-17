@@ -1,10 +1,7 @@
 """Tests for config/published_models.py — transcription integrity."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from heavy_machinery.config import load
 
@@ -34,6 +31,15 @@ def test_kawahara_carries_the_transcribed_multivariable_odds_ratios():
     het = next(v for k, v in by_var.items() if "heterogeneous" in k)
     assert (tbi["or"], tbi["ci_lo"], tbi["ci_hi"]) == (42.0, 4.5, 390)
     assert (het["or"], het["ci_lo"], het["ci_hi"]) == (8.3, 1.7, 40.4)
+
+
+def test_kawahara_calibration_probabilities_pair_with_the_larger_odds_ratio():
+    """Interface has the larger aOR (42.0 vs 8.3 for heterogeneity), so it must
+    give the larger single-factor probability. Pins the clause order so the
+    two conditional probabilities cannot silently swap back."""
+    perf = pm.PUBLISHED_MODELS["kawahara_2012"]["performance"]
+    assert "85.3% with unclear interface" in perf
+    assert "53.3% with heterogeneous enhancement" in perf
 
 
 def test_kawahara_surrogate_note_quotes_both_published_effects():
