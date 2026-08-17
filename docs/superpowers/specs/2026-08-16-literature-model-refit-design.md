@@ -132,26 +132,29 @@ new optional fields:
 
 Two papers have deliberate gaps, left empty rather than filled:
 
-- **Kawahara 2012** — no ORs or CIs are available in any open source, so those
-  cells stay empty. What *is* available from the abstract and is recorded
-  instead: n=65 (39 benign, 26 high-grade); four factors assessed — tumour–brain
-  interface on T1WI, capsular enhancement, heterogeneity on T1Gd, tumoral margin
-  on T1Gd — all four significant univariably, with **unclear TBI and
-  heterogeneous enhancement** retained on multivariable analysis; and a joint
-  result of **98% probability of high grade when both are present**. That last
-  number is the only published performance figure for this model and is the one
-  our refit can be read against.
+- **Kawahara 2012** transcribed in full from the publisher PDF (obtained
+  2026-08-17); the cells previously left empty are now filled. Multivariable
+  Table 3: unclear tumour-brain interface aOR 42.0 (4.5-390) p=0.001;
+  heterogeneous enhancement aOR 8.3 (1.7-40.4) p=0.009. n=65, 39 benign and 26
+  high-grade, WHO 2000. Published equation z = -1.979 + 3.738*TBI +
+  2.112*heterogeneity, giving 98% probability of high grade when both factors are
+  present and 12.1% when neither. The sign of the second term is ambiguous in the
+  extracted text and was resolved by reconstructing all four of the paper's own
+  probabilities exactly.
 - **Zhang 2020** reports β coefficients only, no ORs. Its terms carry β with the
   scale named.
 
-**Kawahara needs a stronger surrogate note than the other two.** The paper scored
-tumoral margin and tumour–brain interface as *separate* factors; both were
-significant univariably, and the multivariable model kept the interface while
-margin dropped out. Our refit substitutes `irregular_tumor_margin` for the
-interface — that is, it substitutes the variable this paper specifically
-discarded for the one it retained. Its note must say so. Kawahara also assessed
-capsular enhancement and did not retain it, which is worth stating because
-`lin_2014` does use `capsular_enhancement`.
+**Kawahara needs a stronger surrogate note than the other two, and the PDF lets
+it quote numbers.** The paper scored tumoral margin and tumour-brain interface as
+*separate* factors and published both univariable effects: unclear interface
+OR 71.8 (8.4-612) and irregular margin OR 10.3 (3.2-33), each p<0.001. The
+multivariable model kept the interface and dropped the margin. Our refit
+substitutes `irregular_tumor_margin` for the interface, so it substitutes the
+variable that was roughly sevenfold weaker on the authors' own data and which
+they specifically discarded. The note quotes both numbers rather than asking a
+reader to take the caveat on trust. Kawahara also assessed capsular enhancement
+(OR 19.2) and did not retain it, worth stating because `lin_2014` does use
+`capsular_enhancement`.
 
 ### Comparison layer
 

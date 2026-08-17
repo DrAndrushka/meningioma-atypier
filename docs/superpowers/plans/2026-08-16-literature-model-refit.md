@@ -1272,11 +1272,24 @@ def test_surrogate_note_is_set_exactly_on_the_interface_substitutions():
     assert with_note == {"kawahara_2012", "lin_2014", "peng_2021"}
 
 
-def test_kawahara_has_no_invented_odds_ratios():
-    """No open source carries its ORs. Empty is correct; a number is a bug."""
-    for term in pm.PUBLISHED_MODELS["kawahara_2012"]["terms"]:
-        assert term.get("or") in (None, "")
-        assert term.get("ci_lo") in (None, "")
+def test_kawahara_carries_the_transcribed_multivariable_odds_ratios():
+    """From the publisher PDF, Table 3. Exactly two retained terms; capsular
+    enhancement and tumoral margin were assessed and dropped, so they must NOT
+    appear as model terms."""
+    terms = pm.PUBLISHED_MODELS["kawahara_2012"]["terms"]
+    assert len(terms) == 2
+    by_var = {t["variable"].lower(): t for t in terms}
+    tbi = next(v for k, v in by_var.items() if "interface" in k)
+    het = next(v for k, v in by_var.items() if "heterogeneous" in k)
+    assert (tbi["or"], tbi["ci_lo"], tbi["ci_hi"]) == (42.0, 4.5, 390)
+    assert (het["or"], het["ci_lo"], het["ci_hi"]) == (8.3, 1.7, 40.4)
+
+
+def test_kawahara_surrogate_note_quotes_both_published_effects():
+    """The caveat only lands if it names the published effect of the variable we
+    actually have (margin, 10.3) beside the one we substitute for (71.8)."""
+    note = pm.PUBLISHED_MODELS["kawahara_2012"]["surrogate_note"]
+    assert "10.3" in note and "71.8" in note
 
 
 def test_zhang_carries_beta_not_odds_ratios():
@@ -1369,7 +1382,7 @@ In `meningioma-modelling.ipynb`, replace the `LITERATURE_MODEL_VARIANTS` list bo
 
 - [ ] **Step 4: Add the six published records**
 
-In `heavy_machinery/config/published_models.py`, rename the `radeesri_lekhavat_2023` key to `radeesri_2023` and append the six. Each follows the existing shape; the three interface substitutions add `surrogate_note`. Kawahara's terms carry no `or`/`ci_lo`/`ci_hi`; Zhang's carry `beta` instead. Then add:
+In `heavy_machinery/config/published_models.py`, rename the `radeesri_lekhavat_2023` key to `radeesri_2023` and append the six. Each follows the existing shape; the three interface substitutions add `surrogate_note`. Zhang's terms carry `beta` instead of odds ratios. **Kawahara's odds ratios were transcribed from the publisher PDF on 2026-08-17** and are no longer empty: its two retained terms are unclear tumour-brain interface aOR 42.0 (4.5-390) p=0.001 and heterogeneous enhancement aOR 8.3 (1.7-40.4) p=0.009, from the paper's Table 3. Capsular enhancement and tumoral margin were assessed and dropped, so they must NOT appear as model terms. Then add:
 
 ```python
 # Published models deliberately NOT refit, and why. These reasons otherwise live
@@ -1404,20 +1417,32 @@ NOT_FITTED: dict[str, str] = {
 }
 ```
 
-Kawahara's `surrogate_note` must be the strong one:
+Kawahara's `surrogate_note` is the strong one, and now quotes the paper's own
+numbers for both sides of the substitution:
 
 ```python
         "surrogate_note": (
             "Refit with irregular_tumor_margin standing in for the paper's "
-            "tumour-brain interface. This paper scored tumoral margin and "
-            "tumour-brain interface as two separate factors; both were "
-            "significant univariably and the multivariable model retained the "
-            "interface while margin dropped out. Our substitute is therefore "
-            "the variable these authors specifically discarded, in place of the "
-            "one they kept. The paper also assessed capsular enhancement and "
-            "did not retain it. This is a refit, not an external validation."
+            "tumour-brain interface. These authors scored the two as SEPARATE "
+            "factors and published both: unclear interface OR 71.8 (8.4-612) "
+            "and irregular tumoral margin OR 10.3 (3.2-33), each p<0.001 on "
+            "univariable analysis. Their multivariable model kept the interface "
+            "and dropped the margin. Our substitute is therefore the weaker of "
+            "the two on their own data, by roughly sevenfold, and the one they "
+            "specifically discarded. Expect this refit to underperform the "
+            "published model for that reason alone. They also assessed capsular "
+            "enhancement (OR 19.2, 5.4-69) and did not retain it. This is a "
+            "refit, not an external validation."
         ),
 ```
+
+The published logistic equation is `z = -1.979 + 3.738*TBI + 2.112*heterogeneity`.
+Record it in the entry's `performance` field with the paper's own calibration:
+12.1% probability of high grade when neither factor is present, 53.3% and 85.3%
+for one, 98.0% for both. The sign of the second term is ambiguous in the PDF's
+extracted text; it is PLUS, confirmed by reconstructing all four of those
+probabilities exactly and by exp(3.738) = 42.0 and exp(2.112) = 8.3 matching the
+published odds ratios.
 
 - [ ] **Step 5: Run test to verify it passes**
 
