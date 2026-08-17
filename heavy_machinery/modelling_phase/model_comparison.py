@@ -130,6 +130,7 @@ def fit_single_predictors(
         fit = sm.Logit(y, X).fit(disp=False)
         coefs = {"const": float(fit.params["const"])}
         coefs.update({c: float(fit.params[c]) for c in design_cols})
+        model_pred = np.asarray(fit.predict(X), dtype=float)
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
             n_bootstrap=n_bootstrap, return_resample_aucs=True)
@@ -140,5 +141,61 @@ def fit_single_predictors(
             "n": int(len(model_df)),
             "events": int(y.sum()),
             "resample_aucs": val["resample_aucs"],
+            "pred": [float(v) for v in model_pred],
+            "y": [int(v) for v in y],
         }
+    return out
+
+
+def bootstrap_auc_vector(
+    y: Sequence[int],
+    pred: Sequence[float],
+    *,
+    n_bootstrap: int | None = None,
+) -> list[float]:
+    """AUC of a FIXED model, recomputed on each patient resample.
+
+    This is not the optimism bootstrap. Nothing is refitted: the model stays
+    as it was fitted on the full cohort, and only the patients are resampled.
+    The spread of the resulting AUCs is sampling error of the AUC, which is
+    what a confidence interval for a difference between two models needs.
+
+    The optimism bootstrap answers a different question — how much does this
+    model flatter itself — and for a one-predictor model its per-resample AUC
+    is constant, because AUC is rank-based and cannot see the size of a
+    coefficient. Feeding that vector into a difference would produce an
+    interval with no variance from one side.
+
+    Uses ``model_validation._resample_indices``, so two models scored in the
+    same run see identical patient draws and their difference is paired.
+
+    A resample containing only one outcome class has no defined AUC; it is
+    dropped rather than recorded as 0.5.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    from heavy_machinery.config import load
+    from model_validation import _resample_indices
+
+    if n_bootstrap is None:
+        n_bootstrap = load("analysis").BOOTSTRAP_RESAMPLES
+    y_arr = np.asarray(y, dtype=int)
+    p_arr = np.asarray(pred, dtype=float)
+    if y_arr.size != p_arr.size:
+        raise ValueError(
+            "bootstrap_auc_vector needs one prediction per patient; got "
+            f"{y_arr.size} outcomes and {p_arr.size} predictions."
+        )
+    idx_matrix = _resample_indices(y_arr.size, n_bootstrap)
+    out: list[float] = []
+    for i in range(n_bootstrap):
+        idx = idx_matrix[i]
+        yy = y_arr[idx]
+        if yy.min() == yy.max():
+            continue
+        # Not rounded, unlike the optimism vector's resample_aucs: this vector
+        # is checked against roc_auc_score at rel=1e-9 for pairing (see the
+        # tests), a tolerance six-decimal rounding would fail on any AUC that
+        # isn't a round number.
+        out.append(float(roc_auc_score(yy, p_arr[idx])))
     return out

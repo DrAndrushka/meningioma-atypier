@@ -79,3 +79,62 @@ def test_fit_single_predictors_returns_one_entry_per_predictor(tiny_schema):
     assert out["a"]["auc_corrected"] > out["b"]["auc_corrected"]
     assert len(out["a"]["resample_aucs"]) == 30
     assert out["a"]["n"] == n
+
+
+def test_bootstrap_auc_vector_varies_and_is_deterministic():
+    """A fixed model scored on resampled patients: the AUC must move, because
+    the patients moved. This is what the optimism vector cannot give us for a
+    single predictor, whose refit AUC is constant."""
+    rng = np.random.RandomState(4)
+    n = 200
+    y = rng.binomial(1, 0.4, n)
+    pred = y * 0.5 + rng.uniform(size=n)
+    v1 = mc.bootstrap_auc_vector(y, pred, n_bootstrap=50)
+    v2 = mc.bootstrap_auc_vector(y, pred, n_bootstrap=50)
+    assert len(v1) == 50
+    assert v1 == v2                      # same seed, same answer
+    assert len(set(v1)) > 10             # genuinely varies
+
+
+def test_bootstrap_auc_vector_is_paired_across_two_models():
+    """Two models scored over the same index matrix, so element i of each
+    vector is the same set of patients — which is what makes the difference
+    paired."""
+    import model_validation as mv
+    rng = np.random.RandomState(5)
+    n = 150
+    y = rng.binomial(1, 0.4, n)
+    good = y * 1.0 + rng.uniform(size=n)
+    bad = rng.uniform(size=n)
+    idx = mv._resample_indices(n, 20)
+    va = mc.bootstrap_auc_vector(y, good, n_bootstrap=20)
+    vb = mc.bootstrap_auc_vector(y, bad, n_bootstrap=20)
+    from sklearn.metrics import roc_auc_score
+    assert va[0] == pytest.approx(roc_auc_score(y[idx[0]], good[idx[0]]), rel=1e-9)
+    assert vb[0] == pytest.approx(roc_auc_score(y[idx[0]], bad[idx[0]]), rel=1e-9)
+    d = mc.paired_delta_auc(va, vb)
+    assert d["ci_lo"] > 0                # the good model really is better
+
+
+def test_bootstrap_auc_vector_skips_a_single_class_resample():
+    """A resample can contain only one outcome class; AUC is undefined there.
+    Those resamples are dropped, not recorded as 0.5."""
+    y = np.array([1] + [0] * 39)
+    pred = np.arange(40, dtype=float)
+    v = mc.bootstrap_auc_vector(y, pred, n_bootstrap=200)
+    assert len(v) < 200
+    assert all(np.isfinite(x) for x in v)
+
+
+def test_fit_single_predictors_returns_predictions_for_the_ci():
+    import pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(12)
+    n = 120
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({"event": y.astype(bool), "a": y * 1.1 + rng.normal(size=n)})
+    schema = {"event": ColSpec("event", "binary"), "a": ColSpec("a", "continuous")}
+    out = mc.fit_single_predictors(df, schema, ["a"], "event", n_bootstrap=20)
+    assert len(out["a"]["pred"]) == n
+    assert len(out["a"]["y"]) == n
+    assert set(out["a"]["y"]) <= {0, 1}
