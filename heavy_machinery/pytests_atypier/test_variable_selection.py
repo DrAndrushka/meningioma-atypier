@@ -100,55 +100,66 @@ def test_absent_and_constant_candidates_are_skipped_without_crashing(toy):
     assert "constant_col" not in audited_vars
 
 
-def test_log_scaled_column_is_log1p_transformed_before_scoring():
+def test_column_vector_does_not_transform_a_log_scaled_column():
+    """``_column_vector`` used to re-apply ``log1p(clip(x, 0, None))`` to any
+    column named in ``scales.LOG1P_COLUMNS`` (e.g. ``tumor_volume``),
+    regardless of what scale the values already carried. Both of its
+    consumers, ``roc_auc_score`` in ``rank_candidates`` and the Spearman
+    correlation in the collinearity guard, are rank-based, so a monotone
+    transform like log1p is invisible to them on genuinely raw input — it was
+    always a no-op there, never a needed correction.
+
+    But a caller building a design matrix (``inferential._build_design``) has
+    ALREADY log1p'd and z-scored these columns before fitting. Applying
+    log1p a second time to an already mean-centred column means clipping
+    every below-mean (negative z-score) patient to a tied 0.0, corrupting the
+    ranking — measured at 180/352 patients (51%) for ``tumor_volume`` in the
+    real cohort (Task 13 review round 3, Finding 4). ``_column_vector`` must
+    return the column exactly as given, on any scale.
+    """
+    raw = np.array([0.0, 1.0, 2.0, 3.0, 10.0])
+    df = pd.DataFrame({"tumor_volume": raw})
+    assert vs._column_vector(df, "tumor_volume") == pytest.approx(raw)
+
+    # A model-scale (already log1p'd and z-scored, i.e. mean ~0) version of
+    # the same kind of column must also come back unchanged — not clipped.
+    already_z_scored = np.array([-1.4, -0.6, -0.1, 0.4, 1.7])
+    df2 = pd.DataFrame({"tumor_volume": already_z_scored})
+    assert vs._column_vector(df2, "tumor_volume") == pytest.approx(already_z_scored)
+
+
+def test_rank_candidates_gives_the_same_auc_whether_a_log_scaled_column_is_raw_or_already_model_scaled():
+    """The regression test for Finding 4. ``rank_candidates`` (and therefore
+    the collinearity guard, which reads from the same ``_column_vector``)
+    must agree on a log-scaled column's AUC whether it is handed the raw
+    measurement or that same measurement already log1p'd-and-z-scored, the
+    way a modelling-phase design matrix carries it — because AUC and Spearman
+    rho are both rank-based and log1p is a strictly monotone transform, so it
+    can never change either. That invariant is exactly what broke when
+    ``_column_vector`` re-applied log1p (via ``clip(x, 0, None)``) to input
+    that was already on the model scale.
+    """
     rng = np.random.RandomState(11)
     n = 250
     y = rng.binomial(1, 0.4, n)
-    # includes plenty of negative values so clip(...,0,None) + log1p actually
-    # diverges from the raw scale (a strictly monotonic transform alone would
-    # leave both AUC and Spearman rho unchanged, since both are rank-based)
-    raw = y * 3 + rng.normal(scale=2.0, size=n) - 1.0
-    df = pd.DataFrame({"tumor_volume": raw, "noise": rng.normal(size=n)})
+    # A real tumor_volume is strictly positive, as scales.to_model_scale requires.
+    raw = y * 3.0 + rng.normal(scale=2.0, size=n) + 10.0
+    assert (raw > -1.0).all()
 
-    expected_vector = np.log1p(np.clip(raw, 0.0, None))
-    assert vs._column_vector(df, "tumor_volume") == pytest.approx(expected_vector)
+    noise = rng.normal(size=n)
+    df_raw = pd.DataFrame({"tumor_volume": raw, "noise": noise})
 
-    expected_auc = roc_auc_score(y, expected_vector)
-    raw_auc = roc_auc_score(y, raw)
-    assert expected_auc != pytest.approx(raw_auc)  # sanity: the clip really changes ranks
+    log_scaled = np.log1p(raw)
+    z = (log_scaled - log_scaled.mean()) / log_scaled.std(ddof=1)
+    df_model_scale = pd.DataFrame({"tumor_volume": z, "noise": noise})
 
-    ranked = vs.rank_candidates(df, y, ["tumor_volume", "noise"])
-    assert dict(ranked)["tumor_volume"] == pytest.approx(expected_auc)
-
-
-def test_log_scaled_column_feeds_its_transformed_vector_to_the_collinearity_guard():
-    rng = np.random.RandomState(11)
-    n = 250
-    y = rng.binomial(1, 0.4, n)
-    raw = y * 3 + rng.normal(scale=2.0, size=n) - 1.0
-    transformed = np.log1p(np.clip(raw, 0.0, None))
-    # near-identical to the TRANSFORMED vector, not the raw one — "clone" is
-    # not itself a log-scaled column, so it is compared as-is. If the
-    # collinearity guard ever compared raw tumor_volume against this clone
-    # instead of its log1p'd vector, the reported rho would be measurably
-    # different (0.91 vs 0.95 at this seed), not just numerically identical.
-    clone = transformed + rng.normal(scale=1e-3, size=n)
-    df = pd.DataFrame({"tumor_volume": raw, "tumor_volume_clone": clone})
-
-    picked, audit = vs.select_variables(
-        df, y, ["tumor_volume", "tumor_volume_clone"], k=2, rho_max=0.8)
-    assert len(picked) == 1
-    dropped = next(r for r in audit if not r["kept"])
-    reported_rho = float(dropped["reason"].split("rho=")[1].split(" ")[0])
-
-    rho_if_transformed = abs(pd.Series(transformed).corr(pd.Series(clone), method="spearman"))
-    rho_if_raw = abs(pd.Series(raw).corr(pd.Series(clone), method="spearman"))
-    assert round(rho_if_transformed, 2) != round(rho_if_raw, 2), (
-        "fixture must make the two candidate vectors distinguishable for this "
-        "test to mean anything"
-    )
-    assert reported_rho == pytest.approx(round(rho_if_transformed, 2))
-    assert reported_rho != pytest.approx(round(rho_if_raw, 2))
+    auc_raw = dict(vs.rank_candidates(df_raw, y, ["tumor_volume", "noise"]))["tumor_volume"]
+    auc_model_scale = dict(
+        vs.rank_candidates(df_model_scale, y, ["tumor_volume", "noise"])
+    )["tumor_volume"]
+    assert auc_raw == pytest.approx(auc_model_scale)
+    # Sanity: a real, non-degenerate signal either way, not a coincidental tie.
+    assert 0.5 < auc_raw < 1.0
 
 
 def test_assert_reference_passes_when_the_declared_variable_is_the_top_pick():

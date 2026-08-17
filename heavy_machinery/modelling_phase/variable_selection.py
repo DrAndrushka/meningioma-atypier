@@ -39,8 +39,6 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 
-from scales import is_log_scaled
-
 
 class _NotNumeric(Exception):
     """Internal signal: a candidate column could not be coerced to float.
@@ -57,11 +55,22 @@ def discrimination(auc: float) -> float:
 
 
 def _column_vector(df: pd.DataFrame, col: str) -> np.ndarray:
+    # No log1p here, even for columns scales.is_log_scaled() flags. This
+    # function's only two consumers — roc_auc_score in rank_candidates, and
+    # the Spearman correlation in select_variables' collinearity guard — are
+    # both rank-based, and log1p is a strictly monotone transform, so on
+    # genuinely raw input it can never change either one; applying it was
+    # always a no-op there. But a caller may hand this a column that is
+    # ALREADY on the model scale (inferential._build_design log1p's and then
+    # z-scores these columns before fitting), and re-applying log1p to an
+    # already mean-centred column means clipping every below-mean patient's
+    # negative z-score to a tied 0.0 — silently corrupting the ranking for
+    # roughly half the cohort. Return the column exactly as given.
     try:
         x = df[col].astype(float).to_numpy()
     except (TypeError, ValueError) as exc:
         raise _NotNumeric(col) from exc
-    return np.log1p(np.clip(x, 0.0, None)) if is_log_scaled(col) else x
+    return x
 
 
 def rank_candidates(
