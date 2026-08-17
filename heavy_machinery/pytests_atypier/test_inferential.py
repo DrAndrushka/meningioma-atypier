@@ -274,6 +274,16 @@ def test_run_inferential_clears_stale_artifacts(tiny_df, tiny_schema, tmp_output
     assert (model_dir / "event_new_model_model.json").exists()
 
 
+def test_run_inferential_stage_threads_selection_candidates(tiny_df, tiny_schema, tmp_output):
+    """The selection pool is the EDA predictor list, not the literature union —
+    the variables that win include ones no literature model uses."""
+    import inspect
+    sig = inspect.signature(inf.run_inferential_stage)
+    assert "selection_candidates" in sig.parameters
+    sig2 = inspect.signature(inf.run_inferential)
+    assert "selection_candidates" in sig2.parameters
+
+
 def test_run_inferential_warns_when_selection_candidates_omitted(tiny_df, tiny_schema, tmp_output):
     """Skipping the comparison stage must be loud, not silent — a caller that
     forgets ``selection_candidates`` (e.g. the notebook before Task 13 wires
