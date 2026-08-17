@@ -1071,16 +1071,28 @@ def _published_model_block(model_id: str) -> str:
     if not terms:
         return ""
 
-    table = table_to_html(pd.DataFrame([
+    rows = [
         {
             "Variable in the paper": t.get("variable", ""),
             "What it means": t.get("meaning", ""),
             "Published aOR (95% CI)": _published_or(t),
+            "Published β": t.get("beta", ""),
             "p": human_p(t.get("p")),
             "Column used here": t.get("column", ""),
         }
         for t in terms
-    ]), nowrap_cols=("Published aOR (95% CI)", "p"))
+    ]
+    # A β column is only informative when at least one term in this model
+    # actually published one (Zhang 2020) — otherwise every cell is blank
+    # and the column is pure noise next to the OR column.
+    if not any(r["Published β"] not in (None, "") for r in rows):
+        for r in rows:
+            del r["Published β"]
+
+    table = table_to_html(pd.DataFrame(rows), nowrap_cols=("Published aOR (95% CI)", "p"))
+
+    note = str(published.get("surrogate_note") or "").strip()
+    surrogate_html = warning_box(note) if note else ""
 
     notes: list[str] = []
     for key, label in (("citation", ""), ("outcome", "Outcome"), ("cohort", "Source cohort")):
@@ -1099,11 +1111,32 @@ def _published_model_block(model_id: str) -> str:
 
     return details_block(
         "📖 The published model",
+        surrogate_html +
         "<p>What the source paper actually fitted, quoted as printed. Odds ratios "
         "below are theirs, not ours — read them against the forest plot further "
         "down, which is the same model refitted on this cohort.</p>"
         + table + note_html,
         open=True,
+    )
+
+
+def _not_fitted_block() -> str:
+    """Published models deliberately not refit, and why.
+
+    A reader who knows the literature will ask where Yao or Amano went. Without
+    this they have to assume the models were missed rather than excluded.
+    """
+    excluded = getattr(published_models, "NOT_FITTED", {}) or {}
+    if not excluded:
+        return ""
+    rows = pd.DataFrame(
+        [{"Model": k, "Why it is not refit": v} for k, v in sorted(excluded.items())]
+    )
+    return details_block(
+        "🚫 Published models not refit",
+        "<p>Identified in the literature search and deliberately excluded — "
+        "each needs a variable this cohort does not record.</p>"
+        + table_to_html(rows),
     )
 
 
@@ -2589,6 +2622,8 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                 "🧪 Experimental models",
                 _render_model_blocks(experimental_keys),
             ))
+
+    body.append(_not_fitted_block())
 
     return section_block("🧮 Multivariable modelling", "".join(body))
 

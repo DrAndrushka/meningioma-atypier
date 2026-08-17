@@ -726,6 +726,28 @@ def test_render_inferential_puts_the_experimental_model_last(
     assert html.index("Literature-based models") < html.index("Experimental model")
 
 
+def test_published_block_shows_the_surrogate_note_as_a_warning(monkeypatch):
+    import report as rp
+    monkeypatch.setattr(rp.published_models, "PUBLISHED_MODELS", {
+        "m1": {"citation": "Someone 2020", "terms": [
+            {"variable": "Interface", "meaning": "x", "column": "irregular_tumor_margin"}],
+            "surrogate_note": "Refit with a surrogate; not an external validation."},
+    }, raising=False)
+    monkeypatch.setattr(rp.published_models, "published_model",
+                        lambda mid: rp.published_models.PUBLISHED_MODELS.get(mid))
+    html = rp._published_model_block("m1")
+    assert "not an external validation" in html
+    assert "warn" in html
+
+
+def test_not_fitted_block_lists_every_exclusion(monkeypatch):
+    import report as rp
+    monkeypatch.setattr(rp.published_models, "NOT_FITTED",
+                        {"yao_2022": "needs a 3-level shape"}, raising=False)
+    html = rp._not_fitted_block()
+    assert "yao_2022" in html and "3-level shape" in html
+
+
 def test_render_appendix_lists_the_environment(report_cfg, report_art):
     html = render_appendix(report_cfg, report_art)
     assert isinstance(html, str)
