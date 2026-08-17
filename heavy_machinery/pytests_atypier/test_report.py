@@ -787,6 +787,242 @@ def test_not_fitted_block_lists_every_exclusion(monkeypatch):
     assert "yao_2022" in html and "3-level shape" in html
 
 
+# ---------------------------------------------------------------------------
+# Combined-vs-single AUC comparison and the selection audit (Task 15)
+# ---------------------------------------------------------------------------
+
+def _model_vs_single_row(**overrides):
+    row = {
+        "model_id": "m1", "single": "tumor_volume",
+        "auc_model_corrected": 0.697, "auc_single_corrected": 0.679,
+        "delta_auc_corrected": 0.018, "delta_auc_apparent": 0.026,
+        "delta_ci_lo": -0.006, "delta_ci_hi": 0.057, "d2_p": 0.014873,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_model_vs_single_block_returns_empty_without_a_table(report_art):
+    import report as rp
+    assert rp._model_vs_single_block("m1", report_art) == ""
+
+
+def test_model_vs_single_block_returns_empty_for_a_different_model(report_art):
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
+    assert rp._model_vs_single_block("some_other_model", report_art) == ""
+
+
+def test_model_vs_single_block_shows_both_deltas_and_the_single_predictor(report_art):
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
+    html = rp._model_vs_single_block("m1", report_art)
+    assert "tumor_volume" in html
+    # Corrected point estimate and apparent point estimate are different
+    # numbers and must both appear (0.018 corrected vs 0.026 apparent).
+    assert "0.018" in html
+    assert "0.026" in html
+    assert "-0.006" in html and "0.057" in html
+
+
+def test_model_vs_single_block_puts_the_ci_next_to_apparent_not_corrected(report_art):
+    """Requirement A: the CI is a patient-resampling interval centred on the
+    APPARENT delta, not the optimism-corrected one. A reader who pairs
+    delta_auc_corrected with delta_ci_lo/hi would be silently wrong, so the
+    corrected point estimate and the apparent-delta-with-CI must live in
+    separately headed columns, and the header naming the CI's column must
+    say "apparent", never bare "ΔAUC (95% CI)" that could be misread as
+    belonging to the corrected number."""
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
+    html = rp._model_vs_single_block("m1", report_art)
+    assert "ΔAUC corrected" in html
+    assert "ΔAUC apparent" in html
+    # The table's own "ΔAUC apparent" column header (its last occurrence --
+    # the prose may mention "apparent" earlier) must sit immediately before
+    # the CI value in the data row, not under a bare "corrected" header.
+    apparent_idx = html.rindex("ΔAUC apparent")
+    ci_idx = html.index("-0.006")
+    assert apparent_idx < ci_idx
+    assert ci_idx - apparent_idx < 400
+
+
+def test_model_vs_single_block_paragraph_explains_apparent_vs_corrected(report_art):
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
+    html = rp._model_vs_single_block("m1", report_art)
+    lowered = html.lower()
+    assert "apparent" in lowered and "corrected" in lowered
+    assert "overfitting" in lowered or "optimism" in lowered
+
+
+def test_model_vs_single_block_paragraph_explains_the_p_value_is_a_different_uncorrected_question(report_art):
+    """Requirement B: d2_p is a full-cohort, no-optimism-correction
+    likelihood-ratio test, and it can be significant while the (corrected)
+    ΔAUC's apparent-delta CI spans zero -- as it genuinely does for
+    funari_2023/tumor_volume and spille_2020/edema_volume_cm3. The paragraph
+    must say the two answer different questions and that the p-value carries
+    no optimism correction, so a reader does not conclude one of them is
+    wrong."""
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([
+        _model_vs_single_row(model_id="funari_2023", single="tumor_volume",
+                              delta_auc_corrected=0.018, delta_auc_apparent=0.026,
+                              delta_ci_lo=-0.006, delta_ci_hi=0.057, d2_p=0.014873),
+    ])
+    html = rp._model_vs_single_block("funari_2023", report_art)
+    lowered = html.lower()
+    assert "likelihood" in lowered
+    assert "no optimism correction" in lowered or "not optimism-corrected" in lowered \
+        or "no correction for optimism" in lowered
+    assert "different question" in lowered or "different questions" in lowered
+
+
+def test_model_vs_single_block_multiple_singles_all_render(report_art):
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([
+        _model_vs_single_row(single="tumor_volume"),
+        _model_vs_single_row(single="irregular_tumor_margin", delta_auc_corrected=0.072,
+                              delta_auc_apparent=0.082, delta_ci_lo=0.038, delta_ci_hi=0.128,
+                              d2_p=0.000034),
+    ])
+    html = rp._model_vs_single_block("m1", report_art)
+    assert "tumor_volume" in html and "irregular_tumor_margin" in html
+    assert "beat its own single" in html.lower() or "beat its own single" in html
+
+
+def test_selection_audit_block_names_the_dropped_variable_and_reason(report_art):
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": ""},
+        {"variable": "max_diameter_cm", "auc": 0.675, "discrimination": 0.675,
+         "kept": False, "reason": "rho=0.91 with tumor_volume"},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "max_diameter_cm" in html and "rho=0.91" in html
+
+
+def test_discrimination_is_shown_for_a_protective_variable(report_art):
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "adc_value", "auc": 0.370, "discrimination": 0.630,
+         "kept": True, "reason": ""},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "0.630" in html and "↓" in html
+
+
+def test_selection_audit_block_returns_empty_without_a_table(report_art):
+    import report as rp
+    assert rp._selection_audit_block(report_art) == ""
+
+
+def test_selection_audit_block_shows_resample_selection_counts(report_art):
+    """The counts are the evidence for how stable the chosen six are, so they
+    must be rendered, not just loaded."""
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.678504, "discrimination": 0.678504,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+        {"variable": "max_diameter_cm", "auc": 0.674745, "discrimination": 0.674745,
+         "kept": False, "reason": "rho=0.91 with tumor_volume",
+         "resample_selection_count": 382},
+        {"variable": "cystic_component", "auc": 0.592481, "discrimination": 0.592481,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 342},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "615" in html and "382" in html and "342" in html
+
+
+def test_selection_audit_block_explains_what_a_low_resample_count_means(report_art):
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.678504, "discrimination": 0.678504,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+        {"variable": "max_diameter_cm", "auc": 0.674745, "discrimination": 0.674745,
+         "kept": False, "reason": "rho=0.91 with tumor_volume",
+         "resample_selection_count": 382},
+    ])
+    html = rp._selection_audit_block(report_art)
+    lowered = html.lower()
+    assert "resample" in lowered
+    assert "1000" in html or "1,000" in html
+    assert "stable" in lowered or "unstable" in lowered
+
+
+def test_selection_audit_block_never_renders_nan_or_none_literals(report_art):
+    """Blank/NaN reasons (kept variables have no drop reason) and a missing
+    resample count must never render as the literal text 'nan' or 'None'."""
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+        {"variable": "cystic_component", "auc": 0.592, "discrimination": 0.592,
+         "kept": True, "reason": None},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert ">nan<" not in html
+    assert ">None<" not in html
+
+
+def test_selection_audit_block_missing_resample_count_column_does_not_crash(report_art):
+    """Older / hand-built tables (like the brief's own sample rows) may not
+    carry resample_selection_count at all -- the block must degrade
+    gracefully rather than raising KeyError."""
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": ""},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "tumor_volume" in html
+    assert ">nan<" not in html and ">None<" not in html
+
+
+def test_render_inferential_wires_the_combined_vs_single_and_selection_blocks(report_cfg, report_art):
+    """Integration check: both new blocks must actually be reachable from
+    render_inferential, not just callable in isolation."""
+    import pandas as pd, report as rp
+    report_art.inferential_multivariable = {
+        "high_grade::m1": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+    }
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row(model_id="m1")])
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+    ])
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+    assert "beat its own single" in html
+    assert "How these variables were chosen" in html
+    assert ">nan<" not in html and ">None<" not in html
+
+
+def test_load_artifacts_reads_the_combined_vs_single_tables(report_cfg, tmp_output):
+    import pandas as pd
+    inf_tab = tmp_output / "inferential" / "tables"
+    inf_tab.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([_model_vs_single_row()]).to_csv(
+        inf_tab / "model_vs_single_auc.csv", index=False)
+    pd.DataFrame([{"predictor": "tumor_volume", "n": 352, "events": 105,
+                    "auc_apparent": 0.68, "auc_corrected": 0.679}]).to_csv(
+        inf_tab / "single_predictor_reference.csv", index=False)
+    pd.DataFrame([{"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+                    "kept": True, "reason": "", "resample_selection_count": 615}]).to_csv(
+        inf_tab / "top_variable_selection.csv", index=False)
+    art = load_artifacts(report_cfg)
+    assert art.model_vs_single is not None
+    assert "tumor_volume" in art.model_vs_single["single"].values
+    assert art.single_reference is not None
+    assert "tumor_volume" in art.single_reference["predictor"].values
+    assert art.top_selection is not None
+    assert "tumor_volume" in art.top_selection["variable"].values
+
+
 def test_render_appendix_lists_the_environment(report_cfg, report_art):
     html = render_appendix(report_cfg, report_art)
     assert isinstance(html, str)

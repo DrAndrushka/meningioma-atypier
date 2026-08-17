@@ -743,6 +743,9 @@ class Artifacts:
     inferential_model_links: dict[str, str] = field(default_factory=dict)
     inferential_model_experimental: dict[str, bool] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
+    model_vs_single: pd.DataFrame | None = None
+    single_reference: pd.DataFrame | None = None
+    top_selection: pd.DataFrame | None = None
 
     # Marker panel
     panel_marker: pd.DataFrame | None = None
@@ -936,6 +939,9 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     inf_fig = root / "inferential" / "figures"
     if inf_fig.exists():
         art.inferential_figures = sorted(inf_fig.glob("*.png"))
+    art.model_vs_single = _maybe_read_csv(inf_tab / "model_vs_single_auc.csv", art.warnings)
+    art.single_reference = _maybe_read_csv(inf_tab / "single_predictor_reference.csv", art.warnings)
+    art.top_selection = _maybe_read_csv(inf_tab / "top_variable_selection.csv", art.warnings)
 
     # Marker panel
     panel_tab = root / "panel" / "tables"
@@ -1178,6 +1184,145 @@ def _not_fitted_block() -> str:
         "<p>Identified in the literature search and deliberately excluded — "
         "each needs a variable this cohort does not record.</p>"
         + table_to_html(rows),
+    )
+
+
+def _model_vs_single_block(model_id: str, art: Artifacts) -> str:
+    """Does this combination beat each single predictor it is built from?
+
+    Two different quantities sit side by side here on purpose. ``ΔAUC
+    corrected`` is the optimism-corrected point estimate — both AUCs it is
+    built from already account for the model having seen its own data. The
+    confidence interval belongs to a *different* column, ``ΔAUC
+    apparent`` — the raw, uncorrected gap, resampled across patients to see
+    how far it moves by chance. Pairing the corrected delta with this
+    interval would silently misstate its uncertainty, so the columns are
+    named and separated to make that pairing impossible to make by accident.
+    """
+    tbl = art.model_vs_single
+    if tbl is None or tbl.empty or "model_id" not in tbl.columns:
+        return ""
+    sub = tbl[tbl["model_id"].astype(str) == str(model_id)]
+    if sub.empty:
+        return ""
+
+    def _apparent_ci(r: pd.Series) -> str:
+        app = _coerce_float(r.get("delta_auc_apparent"))
+        lo = _coerce_float(r.get("delta_ci_lo"))
+        hi = _coerce_float(r.get("delta_ci_hi"))
+        if app is None or lo is None or hi is None:
+            return ""
+        return f"{app:.3f} ({lo:.3f}–{hi:.3f})"
+
+    rows = pd.DataFrame([{
+        "Single predictor": r.get("single", ""),
+        "Model AUC (corrected)": format_number(r.get("auc_model_corrected")),
+        "Single AUC (corrected)": format_number(r.get("auc_single_corrected")),
+        "ΔAUC corrected": format_number(r.get("delta_auc_corrected")),
+        "ΔAUC apparent (95% CI)": _apparent_ci(r),
+        "p (D2)": human_p(r.get("d2_p")),
+    } for _, r in sub.iterrows()])
+
+    return details_block(
+        "⚖️ Does the combination beat its own single predictors?",
+        "<p><strong>ΔAUC corrected</strong> is the headline number — "
+        "both AUCs it is built from are optimism-corrected, so it answers "
+        "“does the combination still win once the model's own overfitting "
+        "is removed.” The confidence interval sits beside a "
+        "<em>different</em> column, <strong>ΔAUC apparent</strong> — the "
+        "raw, uncorrected gap, resampled across patients 1000 times to see how "
+        "far it moves by chance alone. The interval was built around the "
+        "apparent delta, never the corrected one, so it is not the corrected "
+        "estimate's margin of error — read the two columns as related but "
+        "separate answers, not as one number with the other's uncertainty.</p>"
+        "<p>The p-value (<strong>D2</strong>) is a likelihood-ratio test, "
+        "pooled across the MICE draws by Rubin's rules, fitted on the full "
+        "cohort with <strong>no optimism correction</strong> at all — a third, "
+        "different question again: whether the combination's extra "
+        "coefficients are jointly non-zero, not whether patient ranking (AUC) "
+        "improves. AUC is a coarse, ranking-based measure that is far less "
+        "sensitive to adding predictors than a likelihood test, so a small "
+        "p-value can appear even when the apparent-ΔAUC interval spans "
+        "zero. That is not a contradiction between the two numbers — it is two "
+        "different questions about the same model, and the p-value carries no "
+        "correction for the optimism that the AUCs were adjusted for.</p>"
+        + table_to_html(rows, nowrap_cols=(
+            "Model AUC (corrected)", "Single AUC (corrected)",
+            "ΔAUC corrected", "ΔAUC apparent (95% CI)", "p (D2)")),
+    )
+
+
+def _selection_audit_block(art: Artifacts) -> str:
+    """Which candidates were considered, kept, and dropped — and why.
+
+    ``Discrimination`` is ``max(AUC, 1−AUC)`` with a ↓ marker on
+    protective variables (raw AUC < 0.5) — without it a protective variable
+    such as ``adc_value`` (raw AUC 0.370) reads as nearly useless instead of
+    the second-best predictor it actually is. ``Selected in resamples`` is
+    ``resample_selection_count`` — how often the bootstrap re-picked each
+    candidate across 1000 resamples of the selection procedure itself; it is
+    the evidence for how stable the chosen six are, and some of that
+    evidence is not reassuring.
+    """
+    tbl = art.top_selection
+    if tbl is None or tbl.empty:
+        return ""
+
+    def _discrimination_cell(r: pd.Series) -> str:
+        disc = _coerce_float(r.get("discrimination"))
+        if disc is None:
+            return ""
+        raw_auc = _coerce_float(r.get("auc"))
+        marker = " ↓" if raw_auc is not None and raw_auc < 0.5 else ""
+        return f"{disc:.3f}{marker}"
+
+    def _reason_cell(r: pd.Series) -> str:
+        v = r.get("reason")
+        if v is None:
+            return ""
+        if isinstance(v, float) and math.isnan(v):
+            return ""
+        s = str(v).strip()
+        return "" if s.lower() == "nan" else s
+
+    def _count_cell(r: pd.Series) -> str:
+        n = _to_int_or_none(r.get("resample_selection_count"))
+        return "" if n is None else str(n)
+
+    rows = pd.DataFrame([{
+        "Variable": r.get("variable", ""),
+        "Discrimination": _discrimination_cell(r),
+        "Kept": "✅" if bool(r.get("kept")) else "—",
+        "Selected in resamples": _count_cell(r),
+        "Why dropped": _reason_cell(r),
+    } for _, r in tbl.iterrows()])
+
+    return details_block(
+        "\U0001f50e How these variables were chosen",
+        "<p>Candidates ranked by discrimination — <code>max(AUC, "
+        "1−AUC)</code>, marked ↓ when the raw AUC is below 0.5 — so "
+        "a protective variable (one where <em>lower</em> values go with the "
+        "outcome) is not discarded for scoring below chance on the raw scale. "
+        "A derived cut-point is skipped when its continuous parent is "
+        "already available, and anything correlated above ρ=0.8 with a "
+        "variable already kept is skipped in favour of the next one that "
+        "clears.</p>"
+        "<p><strong>Selected in resamples</strong> counts how often each "
+        "candidate was independently re-picked by the same selection "
+        "procedure across 1000 bootstrap resamples of the patients — not how "
+        "often it appears in this table (each row appears once, from the "
+        "single full-cohort selection). A count near 1000 means the variable "
+        "was chosen almost every time and the choice is stable; a lower count "
+        "means a different variable could easily have been picked instead on "
+        "a different sample, and the six kept here are not all equally solid: "
+        "<code>cystic_component</code> was only re-picked in about a third of "
+        "resamples, the least stable of the six, and <code>max_diameter_cm</code> "
+        "— a variable the full-cohort selection dropped only for being too "
+        "correlated with <code>tumor_volume</code> (ρ=0.91) — was picked "
+        "almost as often as <code>tumor_volume</code> itself, so which of the "
+        "two ends up in the model is close to a coin flip across resamples.</p>"
+        + table_to_html(rows, nowrap_cols=(
+            "Discrimination", "Kept", "Selected in resamples")),
     )
 
 
@@ -2662,6 +2807,7 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                     nowrap_cols=("β (SE)", "OR (95% CI)", "P")))
                 blocks.append(_render_inferential_interpretation(
                     target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
+                blocks.append(_model_vs_single_block(model_id, art))
             return "".join(blocks)
 
         if literature_keys:
@@ -2675,6 +2821,7 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                 _render_model_blocks(experimental_keys),
             ))
 
+    body.append(_selection_audit_block(art))
     body.append(_not_fitted_block())
 
     return section_block("🧮 Multivariable modelling", "".join(body))
