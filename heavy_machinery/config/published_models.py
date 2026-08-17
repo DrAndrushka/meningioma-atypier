@@ -228,6 +228,16 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ],
     },
     "kawahara_2012": {
+        "cross_reference": (
+            "Capsular enhancement points the OPPOSITE way in Lin et al. 2014, "
+            "also refit here. These authors scored its ABSENCE as the high-grade "
+            "finding (negative capsular enhancement, univariable OR 19.2, "
+            "5.4-69) and did not retain it in their multivariable model; Lin "
+            "scores its PRESENCE at 3 of 12 points toward high grade. Both are "
+            "transcribed correctly — the two papers genuinely disagree on the "
+            "direction of this sign. Our own fitted estimate for the same "
+            "column appears in Lin's odds-ratio table below."
+        ),
         "citation": (
             "Kawahara Y, Nakada M, Hayashi Y, et al. Prediction of high-grade "
             "meningioma by preoperative MRI assessment. "
@@ -287,6 +297,16 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ),
     },
     "lin_2014": {
+        "cross_reference": (
+            "Capsular enhancement points the OPPOSITE way in Kawahara et al. "
+            "2012, also refit here. Lin scores its PRESENCE at 3 of 12 points "
+            "toward high grade; Kawahara scored its ABSENCE as the high-grade "
+            "finding (negative capsular enhancement, univariable OR 19.2, "
+            "5.4-69) and dropped it from their multivariable model. Both are "
+            "transcribed correctly — the two papers genuinely disagree on the "
+            "direction of this sign. See this model's own odds-ratio table "
+            "below for what this cohort makes of it."
+        ),
         "citation": (
             "Lin BJ, Chou KN, Kao HW, et al. Correlation between magnetic "
             "resonance imaging grading and pathological grading in meningioma. "

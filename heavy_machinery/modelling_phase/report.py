@@ -1144,6 +1144,15 @@ def _published_model_block(model_id: str) -> str:
     note = str(published.get("surrogate_note") or "").strip()
     surrogate_html = warning_box(note) if note else ""
 
+    # A note about how this paper sits against ANOTHER paper in the same set.
+    # Rendered as information rather than a warning: nothing here questions the
+    # refit's validity, it flags that two correctly-transcribed papers point
+    # opposite ways on one variable, which a reader comparing their tables
+    # would otherwise have to notice unaided.
+    cross = str(published.get("cross_reference") or "").strip()
+    cross_html = (f'<p class="muted"><strong>Against another paper here:</strong> '
+                  f'{_esc(cross)}</p>') if cross else ""
+
     notes: list[str] = []
     for key, label in (("citation", ""), ("outcome", "Outcome"), ("cohort", "Source cohort")):
         val = str(published.get(key) or "").strip()
@@ -1165,7 +1174,7 @@ def _published_model_block(model_id: str) -> str:
         "<p>What the source paper actually fitted, quoted as printed. Odds ratios "
         "below are theirs, not ours — read them against the forest plot further "
         "down, which is the same model refitted on this cohort.</p>"
-        + table + note_html,
+        + table + note_html + cross_html,
         open=True,
     )
 

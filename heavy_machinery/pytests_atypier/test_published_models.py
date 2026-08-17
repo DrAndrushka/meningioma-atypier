@@ -91,3 +91,20 @@ def test_every_mapped_column_exists_in_the_cohort():
             col = term.get("column")
             if col:
                 assert col in df_cols, f"{mid}: {col} missing from the cohort"
+
+
+def test_kawahara_and_lin_each_flag_their_capsular_enhancement_conflict():
+    """The two papers point opposite ways on capsular enhancement: Kawahara
+    scored its ABSENCE as the high-grade finding, Lin scores its PRESENCE. Both
+    transcriptions are correct, so a reader comparing the two tables sees a
+    contradiction with no explanation unless each entry says so."""
+    for mid, other in (("kawahara_2012", "Lin"), ("lin_2014", "Kawahara")):
+        note = pm.PUBLISHED_MODELS[mid].get("cross_reference", "")
+        assert other in note, mid
+        assert "capsular enhancement" in note.lower(), mid
+        assert "ABSENCE" in note and "PRESENCE" in note, mid
+
+
+def test_only_the_two_conflicting_papers_carry_a_cross_reference():
+    with_x = {k for k, v in pm.PUBLISHED_MODELS.items() if v.get("cross_reference")}
+    assert with_x == {"kawahara_2012", "lin_2014"}
