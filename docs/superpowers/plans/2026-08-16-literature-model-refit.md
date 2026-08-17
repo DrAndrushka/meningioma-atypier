@@ -259,7 +259,7 @@ git commit -m "feat: master bootstrap seed and per-resample AUC vector"
 
 **Interfaces:**
 - Consumes: `resample_aucs` from Task 2.
-- Produces: `paired_delta_auc(aucs_combined, aucs_single, *, alpha=0.05) -> dict` with keys `delta`, `ci_lo`, `ci_hi`, `n_resamples`. Task 11 writes these into `model_vs_single_auc.csv`.
+- Produces: `paired_delta_auc(aucs_combined, aucs_single, *, alpha=0.05) -> dict` with keys `delta`, `ci_lo`, `ci_hi`, `n_resamples`. Task 12 writes these into `model_vs_single_auc.csv`, fed by Task 9's patient-resampling vectors rather than the optimism vectors.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1014,7 +1014,224 @@ git commit -m "feat: lightweight single-predictor fits for the combined-vs-singl
 
 ---
 
-### Task 9: The six new literature model variants
+### Task 9: Patient-resampling AUC vectors for the ΔAUC confidence interval
+
+**Files:**
+- Modify: `heavy_machinery/modelling_phase/model_comparison.py`
+- Test: `heavy_machinery/pytests_atypier/test_model_comparison.py`
+
+**Interfaces:**
+- Consumes: `model_validation._resample_indices` (Task 2), `paired_delta_auc` (Task 3, unchanged).
+- Produces:
+  - `bootstrap_auc_vector(y, pred, *, n_bootstrap=None) -> list[float]`
+  - `fit_single_predictors(...)` gains two keys per entry: `pred` (full-cohort predicted probabilities, `list[float]`) and `y` (`list[int]`).
+
+**Why this task exists.** Task 3's `paired_delta_auc` differences two per-resample AUC vectors. It was originally fed the *optimism* vectors from `bootstrap_internal_validation`, which refits the model inside every resample and scores it on the original cohort. For a one-predictor model that vector is **constant**: AUC is rank-based, a single predictor's fitted probability is monotone in the predictor, so the coefficient's magnitude is invisible and only its sign can change the AUC. Verified empirically — 8 of 12 single predictors produced one value repeated 200 times, and the other 4 produced exactly two mirrored values at the resamples where the coefficient flipped sign.
+
+Two consequences made the original design wrong:
+1. `delta` came out as `mean(combined resample AUCs) − apparent_single`, which is not `auc_model_corrected − auc_single_corrected`, so the published AUC columns would not subtract to the published delta.
+2. With one side constant, the interval carried no variance from the single model. It was the combined model's refit spread shifted by a constant — coefficient instability, not sampling error of a difference — and would exclude zero very readily. Labelling that a 95% CI would be wrong.
+
+This task supplies the right input: **hold both models fixed and resample patients.** Both AUCs then vary, both see the same patients on every draw, and the spread of their difference is genuine sampling error.
+
+`paired_delta_auc` itself does not change. Only what it is given.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+def test_bootstrap_auc_vector_varies_and_is_deterministic():
+    """A fixed model scored on resampled patients: the AUC must move, because
+    the patients moved. This is what the optimism vector cannot give us for a
+    single predictor, whose refit AUC is constant."""
+    rng = np.random.RandomState(4)
+    n = 200
+    y = rng.binomial(1, 0.4, n)
+    pred = y * 0.5 + rng.uniform(size=n)
+    v1 = mc.bootstrap_auc_vector(y, pred, n_bootstrap=50)
+    v2 = mc.bootstrap_auc_vector(y, pred, n_bootstrap=50)
+    assert len(v1) == 50
+    assert v1 == v2                      # same seed, same answer
+    assert len(set(v1)) > 10             # genuinely varies
+
+
+def test_bootstrap_auc_vector_is_paired_across_two_models():
+    """Two models scored over the same index matrix, so element i of each
+    vector is the same set of patients — which is what makes the difference
+    paired."""
+    import model_validation as mv
+    rng = np.random.RandomState(5)
+    n = 150
+    y = rng.binomial(1, 0.4, n)
+    good = y * 1.0 + rng.uniform(size=n)
+    bad = rng.uniform(size=n)
+    idx = mv._resample_indices(n, 20)
+    va = mc.bootstrap_auc_vector(y, good, n_bootstrap=20)
+    vb = mc.bootstrap_auc_vector(y, bad, n_bootstrap=20)
+    from sklearn.metrics import roc_auc_score
+    assert va[0] == pytest.approx(roc_auc_score(y[idx[0]], good[idx[0]]), rel=1e-9)
+    assert vb[0] == pytest.approx(roc_auc_score(y[idx[0]], bad[idx[0]]), rel=1e-9)
+    d = mc.paired_delta_auc(va, vb)
+    assert d["ci_lo"] > 0                # the good model really is better
+
+
+def test_bootstrap_auc_vector_skips_a_single_class_resample():
+    """A resample can contain only one outcome class; AUC is undefined there.
+    Those resamples are dropped, not recorded as 0.5."""
+    y = np.array([1] + [0] * 39)
+    pred = np.arange(40, dtype=float)
+    v = mc.bootstrap_auc_vector(y, pred, n_bootstrap=200)
+    assert len(v) < 200
+    assert all(np.isfinite(x) for x in v)
+
+
+def test_fit_single_predictors_returns_predictions_for_the_ci():
+    import pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(12)
+    n = 120
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({"event": y.astype(bool), "a": y * 1.1 + rng.normal(size=n)})
+    schema = {"event": ColSpec("event", "binary"), "a": ColSpec("a", "continuous")}
+    out = mc.fit_single_predictors(df, schema, ["a"], "event", n_bootstrap=20)
+    assert len(out["a"]["pred"]) == n
+    assert len(out["a"]["y"]) == n
+    assert set(out["a"]["y"]) <= {0, 1}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_model_comparison.py -k "bootstrap_auc_vector or returns_predictions" -q`
+Expected: FAIL — `AttributeError: module 'model_comparison' has no attribute 'bootstrap_auc_vector'`
+
+- [ ] **Step 3: Implement `bootstrap_auc_vector`**
+
+Append to `model_comparison.py`:
+
+```python
+def bootstrap_auc_vector(
+    y: Sequence[int],
+    pred: Sequence[float],
+    *,
+    n_bootstrap: int | None = None,
+) -> list[float]:
+    """AUC of a FIXED model, recomputed on each patient resample.
+
+    This is not the optimism bootstrap. Nothing is refitted: the model stays
+    as it was fitted on the full cohort, and only the patients are resampled.
+    The spread of the resulting AUCs is sampling error of the AUC, which is
+    what a confidence interval for a difference between two models needs.
+
+    The optimism bootstrap answers a different question — how much does this
+    model flatter itself — and for a one-predictor model its per-resample AUC
+    is constant, because AUC is rank-based and cannot see the size of a
+    coefficient. Feeding that vector into a difference would produce an
+    interval with no variance from one side.
+
+    Uses ``model_validation._resample_indices``, so two models scored in the
+    same run see identical patient draws and their difference is paired.
+
+    A resample containing only one outcome class has no defined AUC; it is
+    dropped rather than recorded as 0.5.
+    """
+    import numpy as np
+    from sklearn.metrics import roc_auc_score
+
+    from heavy_machinery.config import load
+    from model_validation import _resample_indices
+
+    if n_bootstrap is None:
+        n_bootstrap = load("analysis").BOOTSTRAP_RESAMPLES
+    y_arr = np.asarray(y, dtype=int)
+    p_arr = np.asarray(pred, dtype=float)
+    if y_arr.size != p_arr.size:
+        raise ValueError(
+            "bootstrap_auc_vector needs one prediction per patient; got "
+            f"{y_arr.size} outcomes and {p_arr.size} predictions."
+        )
+    idx_matrix = _resample_indices(y_arr.size, n_bootstrap)
+    out: list[float] = []
+    for i in range(n_bootstrap):
+        idx = idx_matrix[i]
+        yy = y_arr[idx]
+        if yy.min() == yy.max():
+            continue
+        out.append(round(float(roc_auc_score(yy, p_arr[idx])), 6))
+    return out
+```
+
+- [ ] **Step 4: Have `fit_single_predictors` hand back its predictions**
+
+In `fit_single_predictors`, the per-predictor dict gains `"pred"` and `"y"`. Compute the full-cohort predicted probabilities from the model already being fitted there, and drop the dead work at the same time: `bootstrap_internal_validation` accepts a `coefficients` argument and never reads it, so the dict assembled for it is discarded. Keep the `sm.Logit` fit — it is now needed for `pred` — but stop building the throwaway `coefs` mapping beyond what the call signature requires.
+
+```python
+        y = model_df[target].astype(int).to_numpy()
+        X = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
+        fit = sm.Logit(y, X).fit(disp=False)
+        pred = np.asarray(fit.predict(X), dtype=float)
+        coefs = {"const": float(fit.params["const"])}
+        coefs.update({c: float(fit.params[c]) for c in design_cols})
+        val = bootstrap_internal_validation(
+            model_df, target, design_cols, coefs,
+            n_bootstrap=n_bootstrap, return_resample_aucs=True)
+        auc_row = next(m for m in val["metrics"] if m["metric"] == "AUC")
+        out[pred_name] = {
+            "auc_apparent": float(auc_row["apparent"]),
+            "auc_corrected": float(auc_row["optimism_corrected"]),
+            "n": int(len(model_df)),
+            "events": int(y.sum()),
+            "resample_aucs": val["resample_aucs"],
+            "pred": [float(v) for v in pred],
+            "y": [int(v) for v in y],
+        }
+```
+
+Add `import numpy as np` at module level if it is not already there.
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `python3 -m pytest heavy_machinery/pytests_atypier/test_model_comparison.py -q`
+Expected: PASS — 13 tests.
+
+- [ ] **Step 6: Verify on real data that the interval now has two-sided variance**
+
+```bash
+python3 - <<'PY'
+import sys
+from pathlib import Path
+sys.path[:0] = [str(Path('heavy_machinery')/d) for d in
+                ('modelling_phase','cleaning_phase','config')]
+sys.path.insert(0, '.')
+import numpy as np
+import missingness_resolution as mr, model_comparison as mc
+from dataset_handoff import load_modelling_handoff
+_, schema, _ = load_modelling_handoff(Path('output'))
+d = mr.load_modeling_frames(Path('output'))[0]
+out = mc.fit_single_predictors(
+    d, schema, ["tumor_volume", "calcification"], "high_grade", n_bootstrap=200)
+for name, r in out.items():
+    opt = r["resample_aucs"]
+    samp = mc.bootstrap_auc_vector(r["y"], r["pred"], n_bootstrap=200)
+    print(f"{name:22s} optimism vector: {len(set(opt))} distinct   "
+          f"patient-resample vector: {len(set(samp))} distinct "
+          f"[{min(samp):.3f}, {max(samp):.3f}]")
+PY
+```
+
+Expected: the optimism vector has 1–2 distinct values for each; the
+patient-resample vector has well over a hundred and a visible range. That
+contrast is the whole reason this task exists — paste it into the report.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add heavy_machinery/modelling_phase/model_comparison.py \
+        heavy_machinery/pytests_atypier/test_model_comparison.py
+git commit -m "feat: patient-resampling AUC vectors so the delta-AUC CI has two-sided variance"
+```
+
+---
+
+### Task 10: The six new literature model variants
 
 **Files:**
 - Modify: `meningioma-modelling.ipynb` (the `LITERATURE_MODEL_VARIANTS = [` cell)
@@ -1216,7 +1433,7 @@ git commit -m "feat: six more literature models, with their published records an
 
 ---
 
-### Task 10: Render `surrogate_note`, `NOT_FITTED` and β-only terms
+### Task 11: Render `surrogate_note`, `NOT_FITTED` and β-only terms
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/report.py:1050-1100`
@@ -1310,7 +1527,7 @@ git commit -m "feat: render surrogate notes, beta-only terms and the not-refit l
 
 ---
 
-### Task 11: Wire the comparison into the inferential stage
+### Task 12: Wire the comparison into the inferential stage
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/inferential.py:869-1005`
@@ -1318,7 +1535,7 @@ git commit -m "feat: render surrogate notes, beta-only terms and the not-refit l
 - Test: `heavy_machinery/pytests_atypier/test_model_comparison.py`
 
 **Interfaces:**
-- Consumes: Tasks 3, 4, 5, 7, 8.
+- Consumes: Tasks 3, 4, 5, 7, 8, 9.
 - Produces: three CSVs under `output/inferential/tables/` — `single_predictor_reference.csv`, `model_vs_single_auc.csv`, `top_variable_selection.csv`. Task 12 renders them.
 - `run_comparison_stage(cohort_df, schema, variants, target, tabs_dir, *, n_bootstrap) -> dict[str, pd.DataFrame]`.
 
@@ -1349,7 +1566,12 @@ def test_run_comparison_stage_writes_all_three_tables(tmp_path):
     assert (tmp_path / "top_variable_selection.csv").exists()
     vs_tbl = out["model_vs_single_auc"]
     assert set(vs_tbl["single"]) == {"a", "b"}
-    assert {"delta_auc", "delta_ci_lo", "delta_ci_hi", "d2_p"} <= set(vs_tbl.columns)
+    assert {"delta_auc_corrected", "delta_auc_apparent", "delta_ci_lo",
+            "delta_ci_hi", "n_resamples", "d2_p"} <= set(vs_tbl.columns)
+    # The published AUC columns must subtract to the published point estimate.
+    row = vs_tbl.iloc[0]
+    assert row["delta_auc_corrected"] == pytest.approx(
+        row["auc_model_corrected"] - row["auc_single_corrected"], abs=1e-9)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1483,20 +1705,54 @@ def run_comparison_stage(
             n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
         combined_auc = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["optimism_corrected"]
+        # Predictions of the full-cohort fit, held fixed. The confidence
+        # interval comes from resampling PATIENTS against these, not from the
+        # optimism vector: a one-predictor model's optimism AUC is constant
+        # (AUC is rank-based and cannot see a coefficient's size), so
+        # differencing optimism vectors would leave the interval with no
+        # variance from the single side at all.
+        y_full = model_df[target].astype(int).to_numpy()
+        pred_combined = np.asarray(fit.predict(X), dtype=float)
+        boot_combined = bootstrap_auc_vector(
+            y_full, pred_combined, n_bootstrap=n_bootstrap)
+        auc_model_apparent = next(
+            m for m in val["metrics"] if m["metric"] == "AUC")["apparent"]
         for single in preds:
             if single not in fitted:
+                warnings.warn(
+                    f"No single-predictor fit for {single!r}; the "
+                    f"{mid} vs {single} comparison row is missing.",
+                    stacklevel=2,
+                )
                 continue
-            d = paired_delta_auc(val["resample_aucs"], fitted[single]["resample_aucs"])
+            boot_single = bootstrap_auc_vector(
+                fitted[single]["y"], fitted[single]["pred"], n_bootstrap=n_bootstrap)
+            if len(boot_combined) != len(boot_single):
+                raise RuntimeError(
+                    f"Unpaired resample vectors for {mid} vs {single}: "
+                    f"{len(boot_combined)} and {len(boot_single)}. Both models "
+                    "must be scored over the same patient draws."
+                )
+            d = paired_delta_auc(boot_combined, boot_single)
             chi2s, k = _nested_chi2_per_imputation(
                 frames, schema, target, preds, single)
             p = d2_pool(chi2s, k)["p"] if chi2s else float("nan")
+            # Two deltas on purpose, each meaning what it says. The corrected
+            # one is the point estimate and is exactly the difference of the
+            # two corrected AUC columns, so a reader can check the arithmetic.
+            # The apparent one is what the confidence interval is centred on,
+            # because the interval measures sampling error, not optimism.
             rows.append({
                 "model_id": mid, "single": single,
                 "auc_model_corrected": round(float(combined_auc), 3),
                 "auc_single_corrected": round(fitted[single]["auc_corrected"], 3),
-                "delta_auc": round(d["delta"], 3),
+                "delta_auc_corrected": round(
+                    float(combined_auc) - fitted[single]["auc_corrected"], 3),
+                "delta_auc_apparent": round(
+                    float(auc_model_apparent) - fitted[single]["auc_apparent"], 3),
                 "delta_ci_lo": round(d["ci_lo"], 3),
                 "delta_ci_hi": round(d["ci_hi"], 3),
+                "n_resamples": d["n_resamples"],
                 "d2_p": p,
             })
     vs_tbl = pd.DataFrame(rows)
@@ -1534,7 +1790,7 @@ git commit -m "feat: write the single-predictor, delta-AUC and selection-audit t
 
 ---
 
-### Task 12: Replace the frozen top-N lists with the computed selection
+### Task 13: Replace the frozen top-N lists with the computed selection
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/inferential.py` (`run_inferential`, `run_inferential_stage` — thread `selection_candidates`)
@@ -1688,7 +1944,7 @@ git commit -m "feat: compute top_6_variables and top_1_variable instead of freez
 
 ---
 
-### Task 13: Slim the odds-ratio table to four columns
+### Task 14: Slim the odds-ratio table to four columns
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/inferential.py` (rename `_forest_row_label` → `predictor_label`)
@@ -1898,7 +2154,7 @@ git commit -m "refactor: odds-ratio table down to Predictor, beta (SE), OR (95% 
 
 ---
 
-### Task 14: Render the comparison tables and the direction column
+### Task 15: Render the comparison tables and the direction column
 
 **Files:**
 - Modify: `heavy_machinery/modelling_phase/report.py` (`Artifacts`, `load_artifacts`, `render_inferential`)
@@ -2037,7 +2293,7 @@ git commit -m "feat: render combined-vs-single tables and the selection audit"
 
 ---
 
-### Task 15: Full clean pipeline run and verification
+### Task 16: Full clean pipeline run and verification
 
 **Files:**
 - Modify: none (verification only)
@@ -2115,8 +2371,8 @@ git add -A && git commit -m "chore: full clean pipeline run with the literature 
 
 ## Self-Review
 
-**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 11; reference declaration → Task 7; lightweight singles → Task 8; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; top-N lists computed → Task 12; table slimmed to four columns → Task 13; direction column → Task 14; `age_ge75` → Task 1; six literature models + `published_models` → Task 9; `NOT_FITTED` and `surrogate_note` → Tasks 9, 10; three CSV artifacts → Task 11; report blocks → Tasks 10, 13, 14; clean run → Task 15.
+**Spec coverage.** Every spec section maps to a task: B=1000/seed 20260801 → Task 2; ΔAUC combined-vs-each-single → Tasks 3, 9, 12; reference declaration → Task 7; lightweight singles → Task 8; ΔAUC CI from patient resampling → Task 9; optimism-corrected ΔAUC → Task 3; D2 → Task 4; MICE unchanged → no task by design; selection-inside-bootstrap → Task 6; ρ=0.8 and both guards → Task 5; top-N lists computed → Task 13; table slimmed to four columns → Task 14; direction column → Task 15; `age_ge75` → Task 1; six literature models + `published_models` → Task 10; `NOT_FITTED` and `surrogate_note` → Tasks 10, 11; three CSV artifacts → Task 12; report blocks → Tasks 11, 14, 15; clean run → Task 16.
 
 **Gap found and closed:** the spec's comparison-figure change (11 rows, reference row distinguished) has no task. `model_comparison_figure` already takes whatever entries it is handed, so the row count follows automatically from the model list — but the reference-row styling does not. Deferred deliberately: it is cosmetic, and `_COMPARISON_METRICS` is untouched by this plan. Recorded here rather than silently dropped.
 
-**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8, 11). `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 11's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 11, 12 and 14. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
+**Type consistency.** `resample_aucs` is `list[float]` everywhere (Tasks 2, 3, 8). It feeds the optimism metrics only; the ΔAUC interval uses Task 9's `bootstrap_auc_vector` instead, because a one-predictor model's `resample_aucs` is constant. `select` takes `(frame, y_array)` and returns `list[str]` in both Task 6's hook and Task 12's caller. Audit rows carry exactly `variable`, `auc`, `discrimination`, `kept`, `reason` in Tasks 5, 12, 13 and 15. `CUTPOINT_PARENT` lives in `analysis.py` and is read by name in Tasks 5 and 11.
