@@ -274,6 +274,48 @@ def test_run_inferential_clears_stale_artifacts(tiny_df, tiny_schema, tmp_output
     assert (model_dir / "event_new_model_model.json").exists()
 
 
+def test_run_inferential_warns_when_selection_candidates_omitted(tiny_df, tiny_schema, tmp_output):
+    """Skipping the comparison stage must be loud, not silent — a caller that
+    forgets ``selection_candidates`` (e.g. the notebook before Task 13 wires
+    it through) should see a warning, not just three missing files."""
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    with pytest.warns(UserWarning, match="selection_candidates"):
+        run_inferential(
+            frames, schema,
+            targets=["event"], predictors=["age"],
+            positive_class={"event": True},
+            output_root=tmp_output,
+        )
+
+
+def test_run_inferential_clears_stale_comparison_tables_when_stage_is_skipped(
+    tiny_df, tiny_schema, tmp_output,
+):
+    """A run without ``selection_candidates`` writes no new comparison tables,
+    but it must not leave a PREVIOUS run's comparison tables sitting on disk —
+    the report would render them as current numbers for a stage that did not
+    run this time."""
+    frames, schema = _make_imputed(tiny_df, tiny_schema)
+    tabs = tmp_output / "inferential" / "tables"
+    tabs.mkdir(parents=True, exist_ok=True)
+    stale = tabs / "model_vs_single_auc.csv"
+    stale.write_text("model_id,single\nold_model,old_predictor\n")
+    other_stale = tabs / "single_predictor_reference.csv"
+    other_stale.write_text("predictor\nold_predictor\n")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        run_inferential(
+            frames, schema,
+            targets=["event"], predictors=["age"],
+            positive_class={"event": True},
+            output_root=tmp_output,
+        )
+
+    assert not stale.exists()
+    assert not other_stale.exists()
+
+
 def test_run_inferential_loads_from_disk(tiny_df, tiny_schema, tmp_output):
     import missingness_resolution as mr
 

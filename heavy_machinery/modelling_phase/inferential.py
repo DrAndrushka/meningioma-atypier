@@ -221,11 +221,23 @@ _PER_MODEL_TABLE_SUFFIXES = (
     "__calculator.json",
 )
 
+# Written by the comparison stage. Cleared here for the same reason the
+# per-model tables are: a run that skips or fails must not leave the
+# previous run's headline numbers on disk for the report to pick up.
+_COMPARISON_TABLES = (
+    "single_predictor_reference.csv",
+    "model_vs_single_auc.csv",
+    "top_variable_selection.csv",
+)
+
 
 def _clear_inferential_artifacts(figs_dir: Path, tabs_dir: Path) -> None:
     """Drop per-variant inferential outputs so a re-run cannot leave stale models."""
     for path in tabs_dir.iterdir():
-        if path.is_file() and any(path.name.endswith(s) for s in _PER_MODEL_TABLE_SUFFIXES):
+        if path.is_file() and (
+            any(path.name.endswith(s) for s in _PER_MODEL_TABLE_SUFFIXES)
+            or path.name in _COMPARISON_TABLES
+        ):
             path.unlink()
     for pattern in ("*__forest.png", "*__forest.tif", "*__forest.eps", "*__forest.svg"):
         for path in figs_dir.glob(pattern):
@@ -962,14 +974,22 @@ def run_inferential(
     )
     _write_performance_figures(artifact_paths, figs_dir, model_variants)
 
-    if selection_candidates is not None:
+    if selection_candidates is None:
         # Only run when the caller supplies a real candidate pool (the
         # notebook's EDA predictor list). Legacy/unit-test call sites that
         # fit a couple of ad-hoc predictors on a 4-row fixture have no
         # meaningful "does combining beat the best single" question to
         # answer, and ``vs.assert_reference`` would reject their top pick
         # against ``analysis.REFERENCE_VARIABLE`` (a real cohort column)
-        # regardless of which toy predictor won.
+        # regardless of which toy predictor won. ``_clear_inferential_artifacts``
+        # already removed any comparison tables from a previous run, so a
+        # skip here leaves no stale numbers behind — just none at all.
+        warnings.warn(
+            "No selection_candidates given — the combined-vs-single comparison "
+            "stage is skipped and its three tables are not written.",
+            stacklevel=2,
+        )
+    else:
         from model_comparison import run_comparison_stage
 
         run_comparison_stage(
