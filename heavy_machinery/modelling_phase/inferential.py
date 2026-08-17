@@ -971,6 +971,13 @@ def run_inferential(
         cohort_df=imputed_frames[0],
         schema=schema,
         vif_threshold=vif_threshold,
+        # Same candidate pool and same data-selected model id as
+        # run_comparison_stage below, so a data-selected model's calculator
+        # artifact carries the *same* optimism-corrected AUC as the
+        # combined-vs-single comparison table publishes for it, rather than
+        # a second, uncorrected one (see model_calculator.write_streamlit_artifacts).
+        selection_candidates=selection_candidates,
+        selected_model_ids={"top_6_variables"},
     )
     _write_performance_figures(artifact_paths, figs_dir, model_variants)
 

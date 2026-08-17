@@ -174,3 +174,39 @@ def test_assert_reference_raises_when_something_else_is_picked_first():
 def test_assert_reference_raises_on_an_empty_pick():
     with pytest.raises(ValueError, match="reference variable"):
         vs.assert_reference([])
+
+
+def test_assert_reference_without_audit_skips_the_discrimination_drift_check():
+    """Backward compatible: no audit means no drift check, only the top-pick
+    check above -- existing call sites that never pass one keep working."""
+    vs.assert_reference(["tumor_volume", "adc_value"], None)
+
+
+def test_assert_reference_passes_when_discrimination_matches_the_declared_value():
+    """Item 6, final whole-branch review: analysis.REFERENCE_VARIABLE_DISCRIMINATION
+    (0.679) is wired into assert_reference as a drift check rather than sitting
+    unread. An audit row within tolerance of the declared value must not raise."""
+    from heavy_machinery.config import load
+    declared = load("analysis").REFERENCE_VARIABLE_DISCRIMINATION
+    audit = [{"variable": "tumor_volume", "discrimination": declared, "kept": True}]
+    vs.assert_reference(["tumor_volume", "adc_value"], audit)
+
+
+def test_assert_reference_raises_when_reference_discrimination_drifts():
+    """A real change in the reference's underlying strength (a data fix, a
+    derivation bug) must not pass silently just because it is still ranked
+    first -- the declared 0.679 has to mean something once it is checked."""
+    from heavy_machinery.config import load
+    declared = load("analysis").REFERENCE_VARIABLE_DISCRIMINATION
+    audit = [{"variable": "tumor_volume", "discrimination": declared + 0.05,
+              "kept": True}]
+    with pytest.raises(ValueError, match="REFERENCE_VARIABLE_DISCRIMINATION"):
+        vs.assert_reference(["tumor_volume", "adc_value"], audit)
+
+
+def test_assert_reference_skips_the_drift_check_when_the_reference_has_no_audit_row():
+    """An audit that never scored the reference at all (e.g. a hand-built
+    partial audit) must not raise on a check it has no data for -- that is a
+    silent no-op, not a false positive."""
+    audit = [{"variable": "adc_value", "discrimination": 0.630, "kept": True}]
+    vs.assert_reference(["tumor_volume", "adc_value"], audit)

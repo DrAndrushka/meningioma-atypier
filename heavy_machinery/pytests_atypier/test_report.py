@@ -944,6 +944,32 @@ def test_selection_audit_block_names_the_dropped_variable_and_reason(report_art)
     assert "max_diameter_cm" in html and "rho=0.91" in html
 
 
+def test_selection_audit_block_renders_a_resample_only_row_with_blank_kept_cell(report_art):
+    """Finding 3, final whole-branch review: a candidate the full-cohort
+    audit walk never reached has NaN in every one of auc/discrimination/kept/
+    reason, not just the ones already known to render blank. ``bool(NaN)`` is
+    truthy, so a naive ``"✅" if bool(kept) else "—"`` would mislabel a
+    never-evaluated candidate "kept" -- the Kept cell for such a row must be
+    blank, not "✅" and not the literal string "nan"."""
+    import re
+
+    import pandas as pd, report as rp
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": "", "resample_selection_count": 900},
+        {"variable": "hyperostosis", "auc": float("nan"),
+         "discrimination": float("nan"), "kept": float("nan"),
+         "reason": float("nan"), "resample_selection_count": 316},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "hyperostosis" in html and "316" in html
+    row_html = re.search(
+        r"<tr[^>]*>(?:(?!</tr>).)*hyperostosis(?:(?!</tr>).)*</tr>", html, re.S)
+    assert row_html is not None
+    assert "✅" not in row_html.group(0)
+    assert "nan" not in row_html.group(0).lower()
+
+
 def test_discrimination_is_shown_for_a_protective_variable(report_art):
     import pandas as pd, report as rp
     report_art.top_selection = pd.DataFrame([
@@ -979,28 +1005,54 @@ def test_selection_audit_block_shows_resample_selection_counts(report_art):
 def test_selection_audit_block_explains_what_a_low_resample_count_means(report_art):
     import pandas as pd, report as rp
     n_resamples = 1000
-    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row(n_resamples=n_resamples)])
     report_art.top_selection = pd.DataFrame([
         {"variable": "tumor_volume", "auc": 0.678504, "discrimination": 0.678504,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615,
+         "resample_selection_total": n_resamples},
         {"variable": "max_diameter_cm", "auc": 0.674745, "discrimination": 0.674745,
          "kept": False, "reason": "rho=0.91 with tumor_volume",
-         "resample_selection_count": 382},
+         "resample_selection_count": 382, "resample_selection_total": n_resamples},
     ])
     html = rp._selection_audit_block(report_art)
     lowered = html.lower()
     assert "resample" in lowered
-    # The resample total must come from model_vs_single_auc.csv's n_resamples
-    # column, not a literal "1000" -- assert against the value actually in
-    # the fixture's data, and prove it moves with the data in a second call.
+    # The resample total must come from top_variable_selection.csv's OWN
+    # resample_selection_total column (Item 4, final whole-branch review) --
+    # never a literal "1000" and never model_vs_single_auc.csv's n_resamples
+    # (see the dedicated "not borrowed" test below) -- assert against the
+    # value actually in the fixture's data, and prove it moves with the data
+    # in a second call.
     assert str(n_resamples) in html
     assert "stable" in lowered or "unstable" in lowered
 
-    other = pd.DataFrame([_model_vs_single_row(n_resamples=250)])
-    report_art.model_vs_single = other
+    other = report_art.top_selection.copy()
+    other["resample_selection_total"] = 250
+    report_art.top_selection = other
     html2 = rp._selection_audit_block(report_art)
     assert "250" in html2
     assert str(n_resamples) not in html2
+
+
+def test_selection_audit_block_denominator_is_not_borrowed_from_model_vs_single(
+    report_art,
+):
+    """Item 4, final whole-branch review: model_vs_single_auc.csv's
+    n_resamples counts PATIENT resamples that kept both outcome classes;
+    top_variable_selection.csv's own resample_selection_total counts
+    SELECTION resamples from a different loop with different drop rules.
+    Both are 1000 in production today, which is exactly why a fixture where
+    they DIFFER is the only way to catch one silently standing in for the
+    other."""
+    import pandas as pd, report as rp
+    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row(n_resamples=1000)])
+    report_art.top_selection = pd.DataFrame([
+        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615,
+         "resample_selection_total": 777},
+    ])
+    html = rp._selection_audit_block(report_art)
+    assert "Selected in resamples (of 777)" in html
+    assert "Selected in resamples (of 1000)" not in html
 
 
 def test_selection_audit_block_derives_the_collinearity_sentence_from_the_table(report_art):
@@ -1087,10 +1139,10 @@ def test_selection_audit_block_explains_cutpoint_zero_is_structural(report_art):
 
 def test_selection_audit_block_header_shows_the_resample_denominator_when_known(report_art):
     import pandas as pd, report as rp
-    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row(n_resamples=1000)])
     report_art.top_selection = pd.DataFrame([
         {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
+         "kept": True, "reason": float("nan"), "resample_selection_count": 615,
+         "resample_selection_total": 1000},
     ])
     html = rp._selection_audit_block(report_art)
     assert "Selected in resamples (of 1000)" in html

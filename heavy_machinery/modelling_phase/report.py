@@ -1189,20 +1189,46 @@ def _not_fitted_block() -> str:
 
 
 def _n_resamples(art: Artifacts) -> int | None:
-    """The bootstrap resample count shared by the combined-vs-single
-    comparison and the variable-selection audit, read from
+    """The combined-vs-single comparison's own resample count, read from
     ``model_vs_single_auc.csv``'s own ``n_resamples`` column.
 
-    Both tables come from the same run's bootstrap loop, so this is the one
-    place either block's prose sources the resample count from — never a
-    literal ``1000``, which would silently drift out of sync with a re-run
-    that changes it. Returns ``None`` (rather than guessing) if the column
-    is missing or does not agree on a single value.
+    This is the PATIENT-resampling loop's count (``model_comparison
+    .bootstrap_auc_vector``) — how many patient resamples kept both outcome
+    classes and so had a defined AUC. It is used only for the "⚖️ Does the
+    combination beat its own single predictors?" block's prose. It must
+    never be reused as the denominator for the *selection* audit block below
+    — that is a different loop with different drop rules; see
+    :func:`_selection_n_resamples`. Returns ``None`` (rather than guessing)
+    if the column is missing or does not agree on a single value.
     """
     tbl = art.model_vs_single
     if tbl is None or tbl.empty or "n_resamples" not in tbl.columns:
         return None
     vals = {v for v in (_to_int_or_none(x) for x in tbl["n_resamples"]) if v is not None}
+    return vals.pop() if len(vals) == 1 else None
+
+
+def _selection_n_resamples(art: Artifacts) -> int | None:
+    """The variable-selection audit's own resample count, read from
+    ``top_variable_selection.csv``'s own ``resample_selection_total`` column
+    — never ``model_vs_single_auc.csv``'s ``n_resamples`` (see
+    :func:`_n_resamples`).
+
+    These are two different bootstrap loops with two different drop rules —
+    patient resamples that kept both outcome classes, versus selection
+    resamples whose selector returned a non-empty pick — that happen to both
+    equal ``analysis.BOOTSTRAP_RESAMPLES`` today. Sourcing one block's
+    denominator from the other table is exactly the "two numbers, one name"
+    pattern that has already caused separate defects on this branch, so this
+    reads its own column even though the values agree right now. Returns
+    ``None`` if the column is missing, empty, or does not agree on a single
+    value (e.g. no model in this run was data-selected).
+    """
+    tbl = art.top_selection
+    if tbl is None or tbl.empty or "resample_selection_total" not in tbl.columns:
+        return None
+    vals = {v for v in (_to_int_or_none(x) for x in tbl["resample_selection_total"])
+            if v is not None}
     return vals.pop() if len(vals) == 1 else None
 
 
@@ -1373,11 +1399,24 @@ def _selection_audit_block(art: Artifacts) -> str:
         s = str(v).strip()
         return "" if s.lower() == "nan" else s
 
+    def _kept_cell(r: pd.Series) -> str:
+        v = r.get("kept")
+        # Tri-state, not boolean: a candidate the full-cohort walk never
+        # reached (it won a resample but ranked below the k-th pick, or
+        # lower — see model_comparison.run_comparison_stage) has no verdict
+        # at all, and that is a third thing, not the same as "considered and
+        # dropped". ``None``/NaN must render blank here, not "—": plain
+        # ``bool(v)`` would silently read NaN as truthy and mislabel a
+        # never-evaluated row "✅ kept".
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+        return "✅" if bool(v) else "—"
+
     def _count_cell(r: pd.Series) -> str:
         n = _to_int_or_none(r.get("resample_selection_count"))
         return "" if n is None else str(n)
 
-    n_res = _n_resamples(art)
+    n_res = _selection_n_resamples(art)
     count_header = (f"Selected in resamples (of {n_res})" if n_res is not None
                      else "Selected in resamples")
     resamples_phrase = (f"{n_res} bootstrap resamples" if n_res is not None
@@ -1387,7 +1426,7 @@ def _selection_audit_block(art: Artifacts) -> str:
     rows = pd.DataFrame([{
         "Variable": r.get("variable", ""),
         "Discrimination": _discrimination_cell(r),
-        "Kept": "✅" if bool(r.get("kept")) else "—",
+        "Kept": _kept_cell(r),
         count_header: _count_cell(r),
         "Why dropped": _reason_cell(r),
     } for _, r in tbl.iterrows()])
@@ -1407,17 +1446,26 @@ def _selection_audit_block(art: Artifacts) -> str:
         "<p><strong>Selected in resamples</strong> counts how often each "
         "candidate was independently re-picked by the same selection "
         f"procedure across {resamples_phrase} of the patients — not how "
-        "often it appears in this table (each row appears once, from the "
-        "single full-cohort selection). Cut-point candidates (e.g. a row "
-        "reading “cut-point of …”) show 0 here not because they lost every "
-        "resample narrowly, but because the derived-cut-point guard drops "
-        "them deterministically whenever their continuous parent is already "
-        "a candidate — a structural zero, not evidence of instability. "
+        "often it appears in this table (each row appears once). Cut-point "
+        "candidates (e.g. a row reading “cut-point of …”) show 0 here not "
+        "because they lost every resample narrowly, but because the "
+        "derived-cut-point guard drops them deterministically whenever "
+        "their continuous parent is already a candidate — a structural "
+        "zero, not evidence of instability. "
         f"Among the rest, a count {near_n_phrase} means the variable was "
         "chosen almost every time and the choice is stable; a lower count "
         "means a different variable could easily have been picked instead on "
         "a different sample, and the six kept here are not all equally "
-        "solid." + (f" {collinearity_sentence}" if collinearity_sentence else "")
+        "solid.</p>"
+        "<p>The full-cohort selection walk above stops as soon as it has "
+        "picked its target count, so a candidate ranked below that cutoff "
+        "gets no full-cohort verdict at all — blank Discrimination, Kept and "
+        "Why-dropped cells, never a fabricated one — even though it still "
+        "competes fresh inside every bootstrap resample. Any such candidate "
+        "that won at least one resample is still listed below the audited "
+        "rows, because a candidate several other resamples would have chosen "
+        "is part of the evidence for how settled the chosen six really "
+        "are." + (f" {collinearity_sentence}" if collinearity_sentence else "")
         + "</p>"
         + table_to_html(rows, nowrap_cols=(
             "Discrimination", "Kept", count_header)),

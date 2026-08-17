@@ -49,6 +49,34 @@ def test_kawahara_surrogate_note_quotes_both_published_effects():
     assert "10.3" in note and "71.8" in note
 
 
+def test_kawahara_surrogate_note_capsular_enhancement_or_is_negative():
+    """Final whole-branch review, Blocker 2: OR 19.2 (5.4-69) is published for
+    NEGATIVE capsular enhancement -- its absence. Dropping "negative" reverses
+    the clinical claim, and it also makes this paper read as agreeing with
+    lin_2014 (which fits capsular_enhancement as PRESENT scoring toward high
+    grade in this same report) when the two published findings actually point
+    opposite directions."""
+    note = pm.PUBLISHED_MODELS["kawahara_2012"]["surrogate_note"]
+    assert "19.2" in note
+    idx = note.index("19.2")
+    assert "negative capsular enhancement" in note[:idx]
+
+
+def test_kawahara_cohort_states_its_who_grading_edition():
+    """The grading criteria changed across WHO editions (see radeesri_2023,
+    which states 2021); a cohort description without one is not comparable to
+    a cohort description that has one."""
+    assert "WHO 2000" in pm.PUBLISHED_MODELS["kawahara_2012"]["cohort"]
+
+
+def test_kawahara_surrogate_note_has_no_unsourced_p_value():
+    """"each p<0.001" for the Table 2 univariable capsular-enhancement/margin
+    odds ratios could not be confirmed in any reachable source and must not
+    appear in a manuscript-facing string."""
+    note = pm.PUBLISHED_MODELS["kawahara_2012"]["surrogate_note"]
+    assert "p<0.001" not in note
+
+
 def test_zhang_carries_beta_not_odds_ratios():
     for term in pm.PUBLISHED_MODELS["zhang_2020"]["terms"]:
         assert term.get("beta") is not None

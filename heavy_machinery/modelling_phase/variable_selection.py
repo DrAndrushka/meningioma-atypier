@@ -33,7 +33,7 @@ is absent from the results.
 """
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -166,12 +166,59 @@ def select_variables(
     return picked, audit
 
 
-def assert_reference(picked: Sequence[str]) -> None:
+def bootstrap_reselect(
+    frame: pd.DataFrame,
+    y_boot: Sequence[int],
+    *,
+    candidates: Sequence[str],
+    k: int,
+    rho_max: float,
+    cutpoint_parent: Mapping[str, str] | None,
+) -> list[str]:
+    """``select=`` hook for ``model_validation.bootstrap_internal_validation``.
+
+    Re-runs :func:`select_variables` on one bootstrap resample and returns
+    just the picked columns. Module-level and built with
+    ``functools.partial`` over plain data (a list of names, two numbers, and
+    a dict) rather than as a closure, because the data-selected model's
+    validation is sometimes shipped to a ``joblib`` worker process (see
+    ``model_calculator.enrich_streamlit_artifacts``), and a closure cannot be
+    pickled across a process boundary — only this function's *arguments*
+    need to be.
+
+    Both callers that re-run selection inside a bootstrap — the
+    combined-vs-single comparison table and the Streamlit calculator export
+    — call this same function with the same arguments, so the same
+    resample produces the same pick in both places and their
+    optimism-corrected AUCs cannot drift apart from each other.
+    """
+    sub, _ = select_variables(
+        frame, y_boot, [c for c in candidates if c in frame.columns],
+        k=k, rho_max=rho_max, cutpoint_parent=dict(cutpoint_parent or {}))
+    return sub
+
+
+def assert_reference(
+    picked: Sequence[str],
+    audit: Sequence[dict[str, Any]] | None = None,
+    *,
+    discrimination_tol: float = 0.01,
+) -> None:
     """Raise unless the declared reference variable is the first kept pick.
 
     Checks the list *after* both guards, not the raw ranking. A derived
     cut-point can top the raw ranking and still be dropped by guard 1, and the
     reference has to be a variable the pipeline would actually fit.
+
+    ``audit`` — the second return value of :func:`select_variables`, from the
+    SAME call that produced ``picked`` — is optional, but when given this
+    also raises if the reference's discrimination in THIS run has drifted
+    from the declared ``analysis.REFERENCE_VARIABLE_DISCRIMINATION`` by more
+    than ``discrimination_tol``. Without this, a real change in the
+    reference's underlying strength (a data fix, a schema change, a bug in a
+    derived column) would pass silently as long as the reference was still
+    ranked first — the declared discrimination existed only as a comment
+    justifying the choice, never actually checked against a re-run.
     """
     from heavy_machinery.config import load
 
@@ -188,3 +235,18 @@ def assert_reference(picked: Sequence[str]) -> None:
             f"analysis.REFERENCE_VARIABLE deliberately rather than letting the "
             f"denominator move on its own."
         )
+    if audit is not None:
+        declared_disc = load("analysis").REFERENCE_VARIABLE_DISCRIMINATION
+        row = next((r for r in audit if r.get("variable") == declared), None)
+        actual = row.get("discrimination") if row is not None else None
+        if actual is not None and abs(float(actual) - declared_disc) > discrimination_tol:
+            raise ValueError(
+                f"analysis.REFERENCE_VARIABLE_DISCRIMINATION is declared as "
+                f"{declared_disc}, but {declared!r} scored "
+                f"{float(actual):.3f} discrimination in this run — a drift "
+                f"of {abs(float(actual) - declared_disc):.3f}, more than the "
+                f"{discrimination_tol} tolerance. Update the declared value "
+                "deliberately if this is a real, intended change, rather "
+                "than letting a data or derivation change move the "
+                "reference's justification silently."
+            )

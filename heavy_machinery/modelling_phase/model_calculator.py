@@ -594,8 +594,24 @@ def write_streamlit_artifacts(
     predictors: Sequence[str] | None = None,
     vif_threshold: float = 5.0,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
+    selection_candidates: Sequence[str] | None = None,
+    selected_model_ids: set[str] | None = None,
+    k_top: int = 6,
+    rho_max: float = 0.8,
 ) -> list[Path]:
-    """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta."""
+    """Write ``output/inferential/model_artifacts/<target>_model.json`` from inferential calculator meta.
+
+    ``selection_candidates``/``selected_model_ids``/``k_top``/``rho_max`` mirror
+    ``model_comparison.run_comparison_stage``'s own arguments and exist for the
+    same reason: a data-selected model (one whose ``model_id`` is in
+    ``selected_model_ids``, e.g. ``top_6_variables``) re-runs its own variable
+    selection inside every bootstrap resample here too, so this function's
+    optimism-corrected AUC for that model is the *same* correction — not a
+    second, uncorrected one — as the comparison stage publishes for it. Without
+    this, the two paths validate the same model two different ways and the
+    report ends up quoting two different "optimism-corrected AUC" numbers for
+    the same fold (see model_validation.enrich_streamlit_artifact).
+    """
     from missingness_resolution import read_mice_manifest
     from model_validation import (
         build_complete_case_frame,
@@ -620,7 +636,7 @@ def write_streamlit_artifacts(
     # Pass 1 — assemble each model's artifact and design matrix. Cheap, and it
     # collects the whole work list so the expensive bootstraps can share a pool.
     plan: list[tuple[Path, dict]] = []
-    jobs: list[tuple[int, dict, pd.DataFrame, list[str]]] = []
+    jobs: list[tuple[int, dict, pd.DataFrame, list[str], Any]] = []
     for meta_path in sorted(tabs_dir.glob("*__calculator.json")):
         base = meta_path.stem.replace("__calculator", "")
         target, model_id = parse_artifact_base(base, known_targets)
@@ -655,7 +671,39 @@ def write_streamlit_artifacts(
                     target,
                     vif_threshold=vif_threshold,
                 )
-                jobs.append((len(plan), artifact, model_df, design_cols))
+                selector = None
+                if (
+                    selected_model_ids and model_id in selected_model_ids
+                    and selection_candidates
+                ):
+                    from functools import partial
+
+                    import variable_selection as vs
+
+                    # build_complete_case_frame above returns only this
+                    # model's own (VIF-pruned) design columns, which would
+                    # leave the selector choosing k out of the same k already
+                    # in model_df — a no-op that silently collapses the
+                    # optimism correction to fit-only. Same fix as
+                    # model_comparison.run_comparison_stage, applied here so
+                    # this path's bootstrap sees the full candidate pool too.
+                    extra = [
+                        c for c in selection_candidates
+                        if c in cohort_df.columns and c not in model_df.columns
+                    ]
+                    if extra:
+                        model_df = pd.concat(
+                            [model_df, cohort_df.loc[model_df.index, extra]],
+                            axis=1,
+                        )
+                    selector = partial(
+                        vs.bootstrap_reselect,
+                        candidates=list(selection_candidates),
+                        k=k_top,
+                        rho_max=rho_max,
+                        cutpoint_parent=analysis.CUTPOINT_PARENT,
+                    )
+                jobs.append((len(plan), artifact, model_df, design_cols, selector))
             except (ValueError, RuntimeError):
                 pass  # no design matrix — the plain artifact still gets written
 
@@ -664,7 +712,7 @@ def write_streamlit_artifacts(
 
     # Pass 2 — the bootstrap validations, which are the expensive part.
     validated = enrich_streamlit_artifacts(
-        [(a, m, d) for _, a, m, d in jobs],
+        [(a, m, d, s) for _, a, m, d, s in jobs],
         n_bootstrap=n_bootstrap,
         missing_data_policy=policy_text,
     )

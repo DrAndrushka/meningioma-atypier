@@ -14,6 +14,7 @@ classify is easy for both.
 from __future__ import annotations
 
 import warnings
+from functools import partial
 from typing import Any, Sequence
 
 import numpy as np
@@ -290,7 +291,7 @@ def run_comparison_stage(
         cohort_df, y_all, cand, k=k_top,
         rho_max=0.8, cutpoint_parent=analysis.CUTPOINT_PARENT)
     if assert_reference:
-        vs.assert_reference(picked)
+        vs.assert_reference(picked, audit)
     sel_tbl = pd.DataFrame(audit)
     # Write deferred until after the per-variant loop below: the loop is
     # where the one data-selected model's bootstrap actually re-runs this
@@ -305,6 +306,16 @@ def run_comparison_stage(
     # every count then defaults to 0 below — a stable column, not a schema
     # that only appears for runs that happen to have a selected model.
     resample_selection_counts: dict[str, int] = {}
+    # Denominator for `resample_selection_count`, from the SAME selection
+    # bootstrap loop that produced `resample_selection_counts` above — never
+    # `model_vs_single_auc.csv`'s own `n_resamples`, which counts a different
+    # thing (patient resamples that kept both outcome classes, from the
+    # paired delta-AUC loop below) with different drop rules. The two happen
+    # to both be `n_bootstrap` most of the time, which is exactly why reading
+    # one as a stand-in for the other went unnoticed for four tasks. Stays
+    # ``None`` if no model in this run is data-selected, matching
+    # `resample_selection_counts` staying empty.
+    resample_selection_total: int | None = None
     for v in variants:
         mid, preds = _mid(v), _pred(v)
         try:
@@ -313,15 +324,16 @@ def run_comparison_stage(
         except (ValueError, RuntimeError):
             continue
         # The one data-selected model re-runs its own selection inside every
-        # resample, so its optimism covers the picking and not just the fitting.
+        # resample, so its optimism covers the picking and not just the
+        # fitting. ``vs.bootstrap_reselect`` (module-level, picklable) is the
+        # same hook ``model_calculator.write_streamlit_artifacts`` wires in
+        # for the same model, so the two paths cannot compute two different
+        # "optimism-corrected AUC" numbers for it (see model_calculator.py).
         selector = None
         if selected_model_ids and mid in selected_model_ids:
-            def selector(frame, y_boot, _cand=cand, _k=k_top):
-                sub, _ = vs.select_variables(
-                    frame, y_boot, [c for c in _cand if c in frame.columns],
-                    k=_k, rho_max=0.8,
-                    cutpoint_parent=analysis.CUTPOINT_PARENT)
-                return sub
+            selector = partial(
+                vs.bootstrap_reselect, candidates=cand, k=k_top,
+                rho_max=0.8, cutpoint_parent=analysis.CUTPOINT_PARENT)
         # build_complete_case_frame returns only the model's own (VIF-pruned)
         # design columns, which would leave the selector above choosing k out
         # of the same k already in model_df — a no-op that silently collapses
@@ -346,10 +358,12 @@ def run_comparison_stage(
             n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
         if selector is not None:
             # Only the selected model's bootstrap re-runs selection at all, so
-            # this is the one place `selection_counts` can come from. There is
-            # exactly one such model per run (`selected_model_ids` names it),
-            # so there is no multi-model tally to merge here.
+            # this is the one place `selection_counts`/`selection_resamples`
+            # can come from. There is exactly one such model per run
+            # (`selected_model_ids` names it), so there is no multi-model
+            # tally to merge here.
             resample_selection_counts = val.get("selection_counts", {})
+            resample_selection_total = val.get("selection_resamples")
         combined_auc = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["optimism_corrected"]
         # Predictions of the full-cohort fit, held fixed. The confidence
@@ -405,16 +419,52 @@ def run_comparison_stage(
     vs_tbl = pd.DataFrame(rows)
     vs_tbl.to_csv(tabs_dir / "model_vs_single_auc.csv", index=False)
 
+    # The full-cohort audit walk above (``vs.select_variables``) stops as soon
+    # as k are picked, so a candidate ranked k+1 or lower there gets no
+    # audit row at all — no discrimination, no kept/dropped verdict, no
+    # reason — even though every candidate competes fresh inside every
+    # bootstrap resample and some of those never-audited candidates win a
+    # real share of them. Leaving them out of the table would make the six
+    # chosen variables look far more settled than the resample counts show
+    # they are, so every candidate that won at least one resample gets its
+    # own row here too. It has no full-cohort verdict to report, so those
+    # cells are left blank (NaN/None) rather than invented — never a
+    # fabricated auc/discrimination/kept/reason. Audited rows keep their
+    # walk order; these resample-only rows are appended after, sorted by
+    # how many resamples they won (most first), so the ordering itself is
+    # legible rather than incidental.
+    audited_vars = set(sel_tbl["variable"]) if not sel_tbl.empty else set()
+    extra_vars = sorted(
+        (v for v in resample_selection_counts if v not in audited_vars),
+        key=lambda v: (-resample_selection_counts[v], v),
+    )
+    if extra_vars:
+        extra_rows = pd.DataFrame([{
+            "variable": v, "auc": float("nan"), "discrimination": float("nan"),
+            "kept": None, "reason": None,
+        } for v in extra_vars])
+        sel_tbl = pd.concat([sel_tbl, extra_rows], ignore_index=True)
+
     # How many of the bootstrap's resamples re-selected each variable — the
     # evidence for how firmly the six were chosen, not just that they were.
-    # Default is 0, not NaN/blank: a candidate no resample ever picked lost
-    # every single one, which is a real, meaningful outcome, and a blank
-    # would misread as "not evaluated" rather than "evaluated and rejected
-    # every time." Present for every row regardless of whether any model in
-    # this run had a selector, so the column's schema never depends on that.
+    # Default is 0, not NaN/blank, for an AUDITED candidate: one no resample
+    # ever picked lost every single one, which is a real, meaningful outcome,
+    # and a blank would misread as "not evaluated" rather than "evaluated and
+    # rejected every time." (The resample-only rows just added above always
+    # have a real, non-zero count by construction, so this default never
+    # actually fires for them.) Present for every row regardless of whether
+    # any model in this run had a selector, so the column's schema never
+    # depends on that.
     sel_tbl["resample_selection_count"] = (
         sel_tbl["variable"].map(resample_selection_counts).fillna(0).astype(int)
     )
+    # The selection block's own denominator (see where `resample_selection_total`
+    # is declared above) — the same value on every row, like `n_resamples` in
+    # model_vs_single_auc.csv, but read from its OWN column, never that one.
+    # ``None`` (no data-selected model this run) broadcasts to blank/NaN
+    # rather than a fabricated 0, so the report can tell "no selection
+    # bootstrap ran" apart from "it ran zero resamples".
+    sel_tbl["resample_selection_total"] = resample_selection_total
     sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
 
     return {"single_predictor_reference": single_tbl,

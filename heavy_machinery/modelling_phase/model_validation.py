@@ -250,6 +250,18 @@ def bootstrap_internal_validation(
     intercept_optimisms: list[float] = []
     resample_aucs: list[float] = []
     selection_counts: dict[str, int] = {}
+    # Denominator for `selection_counts`, sourced from THIS loop and no other:
+    # how many resamples the selector actually ran on and returned a non-empty
+    # pick for (the same event that increments selection_counts below, so the
+    # two can never drift apart). This is deliberately NOT `n_bootstrap` (a
+    # resample whose selector returns nothing is never tallied) and NOT
+    # `successful_bootstraps` (a resample can be tallied here and still have
+    # its fit fail afterwards — see the comment at the tally site). Reusing
+    # either of those, or a resample count from an unrelated bootstrap loop
+    # such as the paired patient-resampling one in model_comparison.py, is
+    # exactly the "two numbers, one name" pattern that has already caused
+    # separate defects on this branch.
+    selection_resamples = 0
 
     # One index matrix for every resample, drawn from the single master seed
     # (see BOOTSTRAP_SEED) instead of reseeding per-resample. This is what lets
@@ -273,6 +285,7 @@ def bootstrap_internal_validation(
             # then fails and the resample is skipped. So sum(selection_counts
             # .values()) counts attempted selections, not successful ones —
             # it is not, in general, successful_bootstraps * k.
+            selection_resamples += 1
             for c in cols_i:
                 selection_counts[c] = selection_counts.get(c, 0) + 1
             X_boot = np.column_stack(
@@ -398,6 +411,11 @@ def bootstrap_internal_validation(
         # How many resamples *attempted* each variable — see the tally site
         # above for why a resample whose fit later fails is still counted.
         result["selection_counts"] = selection_counts
+        # The denominator for `selection_counts`, from this same loop — never
+        # `bootstrap_resamples`/`successful_bootstraps` above, and never a
+        # count from a caller's own, unrelated resampling loop. See the
+        # comment where `selection_resamples` is declared.
+        result["selection_resamples"] = selection_resamples
     return result
 
 
@@ -543,8 +561,18 @@ def enrich_streamlit_artifact(
     *,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
     missing_data_policy: str | None = None,
+    select=None,
 ) -> dict[str, Any]:
-    """Add validation charts, prose, shrinkage, and recalibrated coefficients."""
+    """Add validation charts, prose, shrinkage, and recalibrated coefficients.
+
+    ``select``, when given, is forwarded to :func:`bootstrap_internal_validation`
+    so a data-selected model (e.g. ``top_6_variables``) re-runs its own
+    variable picking inside every resample here too — the same correction
+    ``model_comparison.run_comparison_stage`` applies for its own bootstrap of
+    the same model. Without this, the two paths would validate the same model
+    two different ways and publish two different "optimism-corrected AUC"
+    numbers for it.
+    """
     target = str(artifact["target"])
     validation = bootstrap_internal_validation(
         model_df,
@@ -552,6 +580,7 @@ def enrich_streamlit_artifact(
         design_cols,
         artifact["coefficients"],
         n_bootstrap=n_bootstrap,
+        select=select,
     )
     shrunk_coefs, processing = shrink_and_recalibrate_coefficients(
         artifact["coefficients"],
@@ -660,31 +689,51 @@ def _enrich_or_keep(
     *,
     n_bootstrap: int,
     missing_data_policy: str | None = None,
+    select=None,
 ) -> dict[str, Any]:
     """Enrich one artifact, falling back to the plain artifact if validation fails.
 
     Module-level (not a closure) so it can be shipped to a worker process.
+    ``select`` (when given) must itself be picklable for the same reason —
+    see ``variable_selection.bootstrap_reselect``, the only hook this is
+    used with today.
     """
     try:
         return enrich_streamlit_artifact(
             artifact, model_df, design_cols,
             n_bootstrap=n_bootstrap,
             missing_data_policy=missing_data_policy,
+            select=select,
         )
     except (ValueError, RuntimeError):
         return artifact
 
 
 def enrich_streamlit_artifacts(
-    jobs: Sequence[tuple[dict[str, Any], pd.DataFrame, list[str]]],
+    jobs: Sequence[
+        tuple[dict[str, Any], pd.DataFrame, list[str]]
+        | tuple[dict[str, Any], pd.DataFrame, list[str], Any]
+    ],
     *,
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
     missing_data_policy: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Validate several models, concurrently when that is safe. Order is preserved."""
+    """Validate several models, concurrently when that is safe. Order is preserved.
+
+    Each job is a 3-tuple ``(artifact, model_df, design_cols)`` or, for a
+    model whose validation must re-run variable selection inside every
+    resample (see ``model_comparison.run_comparison_stage``), a 4-tuple with
+    a picklable ``select`` callable as the last element. The 4th element
+    defaults to ``None`` when omitted, so existing 3-tuple call sites are
+    unaffected.
+    """
     if not jobs:
         return []
-    n_workers = validation_workers(len(jobs))
+    normalized = [
+        (job[0], job[1], job[2], job[3] if len(job) > 3 else None)
+        for job in jobs
+    ]
+    n_workers = validation_workers(len(normalized))
     if n_workers == 1:
         # No pool, no process startup — the same code path as before.
         return [
@@ -692,14 +741,15 @@ def enrich_streamlit_artifacts(
                 a, m, d,
                 n_bootstrap=n_bootstrap,
                 missing_data_policy=missing_data_policy,
+                select=s,
             )
-            for a, m, d in jobs
+            for a, m, d, s in normalized
         ]
 
     from joblib import Parallel, delayed, parallel_config
 
     print(
-        f"🔀 Validating {len(jobs)} models on {n_workers} processes "
+        f"🔀 Validating {len(normalized)} models on {n_workers} processes "
         f"({os.cpu_count()} cores, {RESERVED_CORES} held back)…",
         flush=True,
     )
@@ -712,7 +762,8 @@ def enrich_streamlit_artifacts(
                     a, m, d,
                     n_bootstrap=n_bootstrap,
                     missing_data_policy=missing_data_policy,
+                    select=s,
                 )
-                for a, m, d in jobs
+                for a, m, d, s in normalized
             )
         )

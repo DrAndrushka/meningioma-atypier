@@ -137,6 +137,96 @@ def test_write_streamlit_artifacts(tmp_path: Path):
     assert json.loads(paths[0].read_text())["target"] == "event"
 
 
+def test_selected_model_auc_agrees_between_comparison_and_calculator_paths(tmp_path: Path):
+    """Blocker 1 (final whole-branch review): a data-selected model (e.g.
+    ``top_6_variables``) is validated on two independent paths --
+    ``model_comparison.run_comparison_stage`` (writes ``model_vs_single_auc.csv``,
+    which the comparison figure and comparison table read) and
+    ``model_calculator.write_streamlit_artifacts`` (writes the calculator JSON,
+    which the ROC figure annotation and the Streamlit calculator read). Both
+    claim to report "optimism-corrected AUC" for the same model on the same
+    cohort. Before this fix, only the comparison path re-ran variable
+    selection inside its bootstrap; the calculator path validated the fixed,
+    already-picked columns and published a different, uncorrected number for
+    the same fold. This pins the two paths to the same number.
+    """
+    import numpy as np
+    import pandas as pd
+    from schema_infer import ColSpec
+
+    import model_comparison as mc
+    import variable_selection as vs
+
+    rng = np.random.RandomState(3)
+    n = 220
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.2 + rng.normal(size=n),
+        "b": y * 0.9 + rng.normal(size=n),
+        "c": y * 0.6 + rng.normal(size=n),
+        "d": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c", "d")}}
+    candidates = ["a", "b", "c", "d"]
+    n_bootstrap = 25
+
+    # Full-cohort selection picks the top 2 -- whatever they are -- and the
+    # multivariable model is fitted on exactly those, same as the notebook
+    # fits top_6_variables on vs.select_variables's own pick.
+    picked, _ = vs.select_variables(df, y, candidates, k=2, rho_max=0.8)
+    assert len(picked) == 2
+    variants = [{"model_id": "top_6_variables", "predictors": picked}]
+
+    # Path 1: the combined-vs-single comparison stage.
+    comparison_dir = tmp_path / "comparison_tables"
+    mc.run_comparison_stage(
+        df, schema, variants, "event", comparison_dir,
+        n_bootstrap=n_bootstrap, candidates=candidates, k_top=2,
+        assert_reference=False, selected_model_ids={"top_6_variables"})
+    vs_tbl = pd.read_csv(comparison_dir / "model_vs_single_auc.csv")
+    comparison_auc = float(vs_tbl["auc_model_corrected"].iloc[0])
+
+    # Path 2: the Streamlit calculator export, built the way
+    # inferential.run_inferential actually calls it -- a calculator.json meta
+    # file plus the same cohort/schema/candidates, asked to re-select inside
+    # its own bootstrap for the same model_id.
+    output_root = tmp_path / "output"
+    tabs_dir = output_root / "inferential" / "tables"
+    tabs_dir.mkdir(parents=True)
+    meta = {
+        "target": "event",
+        "model_id": "top_6_variables",
+        "intercept": 0.0,
+        "terms": [
+            {"name": p, "kind": "continuous", "coef": 0.1, "z_mu": 0.0, "z_sd": 1.0}
+            for p in picked
+        ],
+    }
+    (tabs_dir / "event__top_6_variables__calculator.json").write_text(
+        json.dumps(meta), encoding="utf-8")
+    write_streamlit_artifacts(
+        output_root,
+        cohort_df=df,
+        schema=schema,
+        n_bootstrap=n_bootstrap,
+        selection_candidates=candidates,
+        selected_model_ids={"top_6_variables"},
+        k_top=2,
+    )
+    art_path = (
+        output_root / "inferential" / "model_artifacts"
+        / "event_top_6_variables_model.json"
+    )
+    artifact = json.loads(art_path.read_text())
+    auc_row = next(
+        m for m in artifact["validation"]["metrics"] if m["metric"] == "AUC")
+    calculator_auc = float(auc_row["optimism_corrected"])
+
+    assert calculator_auc == pytest.approx(comparison_auc, abs=1e-9)
+
+
 def test_resolve_streamlit_artifact_path_prefers_experimental_model_1(tmp_path: Path):
     art_dir = tmp_path / "inferential" / "model_artifacts"
     art_dir.mkdir(parents=True)

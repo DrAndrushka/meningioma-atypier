@@ -233,7 +233,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
             "meningioma by preoperative MRI assessment. "
             "J Neurooncol 2012;108(1):147–152."
         ),
-        "cohort": "65 meningiomas; 39 benign, 26 high-grade. Single-centre, Kanazawa University, Japan.",
+        "cohort": "65 meningiomas; 39 benign, 26 high-grade. Single-centre, Kanazawa University, Japan. WHO 2000.",
         "outcome": "High-grade meningioma.",
         # Transcribed from the publisher PDF (obtained 2026-08-17). Odds ratios
         # below are Table 3; the logistic equation and its four calibration
@@ -276,14 +276,14 @@ PUBLISHED_MODELS: dict[str, dict] = {
             "Refit with irregular_tumor_margin standing in for the paper's "
             "tumour-brain interface. These authors scored the two as SEPARATE "
             "factors and published both: unclear interface OR 71.8 (8.4-612) "
-            "and irregular tumoral margin OR 10.3 (3.2-33), each p<0.001 on "
-            "univariable analysis. Their multivariable model kept the interface "
+            "and irregular tumoral margin OR 10.3 (3.2-33) on univariable "
+            "analysis. Their multivariable model kept the interface "
             "and dropped the margin. Our substitute is therefore the weaker of "
             "the two on their own data, by roughly sevenfold, and the one they "
             "specifically discarded. Expect this refit to underperform the "
-            "published model for that reason alone. They also assessed capsular "
-            "enhancement (OR 19.2, 5.4-69) and did not retain it. This is a "
-            "refit, not an external validation."
+            "published model for that reason alone. They also assessed negative "
+            "capsular enhancement (OR 19.2, 5.4-69) and did not retain it. This "
+            "is a refit, not an external validation."
         ),
     },
     "lin_2014": {

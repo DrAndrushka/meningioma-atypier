@@ -31,7 +31,7 @@ it reaches the report without depending on anyone remembering it.
 | Selection guard 1 | Drop a derived cut-point when its **continuous parent** is a candidate | The parent carries more information and does not stack cut-point optimism on model optimism (source spec footnote 4). |
 | Selection guard 2 | Drop a candidate **collinear (ρ>0.8)** with one already picked, and take the next one that is not | Without it the top 6 by AUC is four tumour-size variables at ρ up to 0.91. |
 | Selection audit | Every drop **recorded and footnoted** | A selection nobody can see is a selection nobody can check. |
-| Single-predictor models | **Lightweight** — AUC only | 22 models otherwise means 22 report folds and 22 comparison rows. |
+| Single-predictor models | **Lightweight** — AUC only | 38 models (11 combined + 27 singles; see "Model inventory" below) otherwise means 38 report folds instead of 11. |
 | ΔAUC scale | **Optimism-corrected**, differenced within resamples | Combined models have more parameters, so apparent ΔAUC overstates the very effect being claimed. |
 | Nested test | **D2 pooling** (Li, Meng, Raghunathan & Rubin 1991) | A valid pooled LR test across 20 MICE draws otherwise needs Meng–Rubin D3. D2 is standard, citable, and ~20 lines. Label the column D2. |
 | MICE | **unchanged** | Already m=20, maxit=20, seed=42 — matches the spec exactly. |
@@ -46,50 +46,70 @@ it reaches the report without depending on anyone remembering it.
 2. **`radeesri_lekhavat_2023` renamed `radeesri_2023`** to match the spec's IDs.
    Its predictors are unchanged and already correct.
 
-## Model inventory — 22 fits
+## Model inventory — 11 combined models, 27 singles, 47 comparison rows
 
-**7 literature models.** `radeesri_2023` (exists), `spille_2020`, `zhang_2020`,
+*(Updated 2026-08-17, final whole-branch review, Item 5: this section
+originally said "22 fits" and listed 12 singles from before `top_1_variable`
+and `top_6_variables` were wired through `run_comparison_stage`/
+`write_streamlit_artifacts` as real fitted variants. The counts below are
+read off a clean three-notebook run, not estimated.)*
+
+**7 literature models.** `radeesri_2023`, `spille_2020`, `zhang_2020`,
 `funari_2023`, `kawahara_2012`, `lin_2014`, `peng_2021`.
 
-**3 experimental models.** `experimental_model_1` and `experimental_model_2` are
-unchanged. `top_6_signs` becomes **computed** rather than a frozen list — see
-"Data-driven selection" — and is renamed `top_6_variables`, because under AUC
-ranking four of its six are continuous measurements rather than binary signs.
+**2 experimental models.** `experimental_model_1`, `experimental_model_2` —
+hand-picked predictor sets, unchanged by this design.
 
-**`top_1_variable` is not a separate fit.** It is the label for whichever single
-predictor tops the AUC ranking, which is currently `tumor_volume` — already one
-of the 12 singles below. It is therefore that model, promoted to a row in the
-comparison figure and used as the ΔAUC denominator, not an extra fit. This is
-the change that makes the reference and the top-1 model the same object rather
-than two choices that could disagree.
+**2 data-selected models.** `top_1_variable` and `top_6_variables` — both ARE
+separate fits (each gets its own report fold, forest plot, VIF table, and
+calculator artifact), contrary to this section's earlier claim that
+`top_1_variable` was folded into the reference rather than fitted. The
+reference/ΔAUC-denominator role and the fitted model are the same object
+(`tumor_volume` today), but that object is still one of the 11 rows here, not
+a label pinned onto another model's row.
 
-**12 single-predictor models** — the union of every predictor appearing in any
-literature model:
+11 total: 7 + 2 + 2.
 
-| Predictor | Feeds |
-|---|---|
-| `necrosis_or_hemorrhage` | Radeesri |
-| `hyperostosis` | Radeesri |
-| `perifocal_edema` | Radeesri, Zhang, Funari |
-| `edema_volume_cm3` | Spille |
-| `heterogeneous_enhancement` | Spille, Kawahara, Lin |
-| `calcification` | Zhang |
-| `irregular_tumor_margin` | Zhang, Funari, Kawahara, Lin, Peng |
-| `skull_base_location` | Zhang, Peng |
-| `tumor_volume` | Funari — and currently `top_1_variable`, the reference |
-| `cortical_destruction` | Peng |
-| `capsular_enhancement` | Lin |
-| `age_ge75` | Lin |
+**27 single-predictor models — the union of every predictor across ALL 11
+combined models above, not just the 7 literature ones.** The extra 15 beyond
+the literature union come from `experimental_model_1`/`experimental_model_2`
+(hand-picked, e.g. `dural_tail`, `mass_effect`, `dwi_hyperintensity`) and from
+`top_6_variables`' own data-driven picks that no literature model uses (e.g.
+`adc_value`, `cystic_component`, `skull_base_location` — the reason
+`run_comparison_stage`'s candidate pool is explicitly documented as not the
+literature union):
 
-All 12 are new fits — none is currently modelled alone.
+`adc_value`, `adc_value_le0.72`, `age`, `age_ge75`, `calcification`,
+`capsular_enhancement`, `cortical_destruction`, `cystic_component`,
+`dural_tail`, `dwi_hyperintensity`, `edema_volume_cm3`,
+`edema_volume_ge4.76`, `hemorrhage`, `heterogeneous_enhancement`,
+`hyperostosis`, `irregular_tumor_margin`, `male`, `mass_effect`,
+`necrosis_or_hemorrhage`, `perifocal_edema`, `skull_base_location`,
+`t1_hypointensity`, `t2_hyperintensity`, `transfalcine_extension`,
+`transsinus_extension`, `tumor_volume`, `tumor_volume_ge15.1`.
 
-**New or changed: 19 of the 22** — 12 singles, 6 literature models, and
-`top_6_variables` refitted on a different predictor set. Only `radeesri_2023`,
-`experimental_model_1` and `experimental_model_2` are untouched.
+**47 combined-vs-single comparison rows** — one per (combined model, single
+predictor it is built from) pair: `experimental_model_1` 9, `experimental_model_2`
+10, `zhang_2020` 4, `lin_2014` 4, `funari_2023` 3, `peng_2021` 3, `radeesri_2023`
+3, `top_6_variables` 6, `kawahara_2012` 2, `spille_2020` 2, `top_1_variable` 1.
+
+**Selection audit table — 12 full-cohort rows, 26 total.** `top_variable_selection
+.csv`'s full-cohort walk (`vs.select_variables` over `EDA_PREDICTORS`, k=6)
+stops as soon as six are kept, producing 12 rows — 6 kept, 6 dropped for a
+cut-point/collinearity reason. Since Task-16-review Finding 3, every OTHER
+candidate that won at least one of `top_6_variables`' bootstrap resamples
+also gets a row (blank auc/discrimination/kept/reason — the full-cohort walk
+never reached it), appended after the audited 12 and sorted by resample count.
+21 candidates win at least one resample in production (7 already among the 12,
+14 not), for 26 rows total today; the exact extra-row count is a property of
+the data and the bootstrap seed, not a fixed constant.
 
 `recurrent_meningioma`, the old `top_1_sign`, drops out of the model list
 entirely: it was top by LR+ but ranks 13th by AUC, and appears in no literature
-model. It remains in the marker panel, where LR+ is the right metric.
+model. It remains in the marker panel, where LR+ is the right metric — though
+it is the single highest resample-selection-count variable (326 of 1000) that
+never enters the full-cohort audit's own 12 rows, exactly the instability
+Finding 3 above makes visible.
 
 ## Architecture
 
@@ -147,20 +167,28 @@ Two papers have deliberate gaps, left empty rather than filled:
 **Kawahara needs a stronger surrogate note than the other two, and the PDF lets
 it quote numbers.** The paper scored tumoral margin and tumour-brain interface as
 *separate* factors and published both univariable effects: unclear interface
-OR 71.8 (8.4-612) and irregular margin OR 10.3 (3.2-33), each p<0.001. The
+OR 71.8 (8.4-612) and irregular margin OR 10.3 (3.2-33). The
 multivariable model kept the interface and dropped the margin. Our refit
 substitutes `irregular_tumor_margin` for the interface, so it substitutes the
 variable that was roughly sevenfold weaker on the authors' own data and which
 they specifically discarded. The note quotes both numbers rather than asking a
-reader to take the caveat on trust. Kawahara also assessed capsular enhancement
-(OR 19.2) and did not retain it, worth stating because `lin_2014` does use
-`capsular_enhancement`.
+reader to take the caveat on trust. Kawahara also assessed **negative**
+capsular enhancement (OR 19.2, 5.4-69) and did not retain it, worth stating
+because `lin_2014` does use `capsular_enhancement` — coded PRESENT, the
+opposite direction, so the two papers do not agree with each other here.
+
+*(Corrected 2026-08-17, final whole-branch review, Blocker 2: the word
+"negative" — the published OR is for the ABSENCE of capsular enhancement —
+was missing here and in `published_models.py`'s `kawahara_2012` entry, which
+reversed the clinical claim. The "each p<0.001" attached to the two
+univariable ORs above could not be confirmed in any reachable source and has
+been dropped rather than left unsourced.)*
 
 ### Comparison layer
 
 Pairing is sound because every model is fitted on the same patients: bootstrap
 validation runs on `imputed_frames[0]`, which has no missing values, so the
-complete-case frame is all 352 rows for all 22 models. Differences are therefore
+complete-case frame is all 352 rows for all 11 combined models and 27 singles. Differences are therefore
 genuinely paired, not two independent estimates.
 
 `bootstrap_internal_validation` gains an option to return its **per-resample AUC
@@ -170,7 +198,7 @@ that difference distribution.
 
 A new module, `heavy_machinery/modelling_phase/model_comparison.py`, owns:
 
-- fitting and validating the 12 singles
+- fitting and validating the singles (27 today — see "Model inventory" above)
 - the paired ΔAUC with CI
 - D2 pooling for the nested LR test
 - the reference declaration check
@@ -264,10 +292,12 @@ combined-vs-single comparison, and the `surrogate_note` where one is set. No new
 top-level section.
 
 The existing `high_grade__model_comparison.png` grows to **11 rows** — 7
-literature, 3 experimental, 1 reference (`top_1_variable`, which is the
-`tumor_volume` single promoted to its own row) — keeping its three panels of apparent
-versus optimism-corrected AUC, Brier and calibration slope. The reference row is
-visually distinguished. One figure, not two: 11 rows fits without crowding.
+literature, 2 experimental, 2 data-selected (`top_1_variable`, `top_6_variables`;
+see "Model inventory" above — `top_1_variable` is a fitted row like any other,
+not a label promoted onto another model's row) — keeping its three panels of
+apparent versus optimism-corrected AUC, Brier and calibration slope. The
+reference row (`top_1_variable`) is visually distinguished. One figure, not
+two: 11 rows fits without crowding.
 
 ## Testing
 
@@ -280,9 +310,13 @@ visually distinguished. One figure, not two: 11 rows fits without crowding.
 
 ## Cost
 
-Modelling phase goes from ~13 s to roughly **90 seconds** (22 models × 1000
-resamples, 4 workers). Cut-point phase is unchanged in cost; only its seed usage
-is confirmed. A full clean pipeline run stays under two minutes.
+Modelling phase goes from ~13 s to roughly **90 seconds** (pre-implementation
+estimate; the model count it was based on, 22, is superseded — see "Model
+inventory" above, now 11 combined + 27 singles). Cut-point phase is unchanged
+in cost; only its seed usage is confirmed. Measured on the final
+whole-branch-review clean run (2026-08-17): `meningioma-modelling.ipynb`
+end-to-end (EDA, all 38 model fits/bootstraps, marker panel, report build)
+took ~116 s.
 
 ## Out of scope
 

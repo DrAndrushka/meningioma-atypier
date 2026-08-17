@@ -515,6 +515,68 @@ def test_parallel_and_sequential_validation_agree(tiny_model_df, monkeypatch):
     assert [s["validation"] for s in seq] == [p["validation"] for p in par]
 
 
+def test_enrich_streamlit_artifacts_select_hook_survives_parallel_workers(monkeypatch):
+    """Blocker 1 (final review): the data-selected model's ``select=`` hook is
+    the 4th element of a job tuple, and it has to reach the worker that
+    actually runs the resample -- including a ``joblib`` process worker, which
+    can only receive something picklable. ``variable_selection.bootstrap_reselect``
+    plus ``functools.partial`` is that picklable hook; a closure would not
+    survive this. This forces the parallel path (2 workers) and checks the
+    selector actually ran (``selection_counts`` present and non-empty) rather
+    than silently being dropped.
+    """
+    from functools import partial
+
+    import variable_selection as vs
+
+    rng = np.random.default_rng(3)
+    n = 150
+    y = rng.integers(0, 2, n)
+    df = pd.DataFrame({
+        "event": y,
+        "a": y * 1.2 + rng.normal(size=n),
+        "b": y * 0.7 + rng.normal(size=n),
+        "c": rng.normal(size=n),
+    })
+    meta = {
+        "target": "event",
+        "intercept": -0.2,
+        "terms": [{"name": "a", "kind": "binary", "coef": 0.3}],
+    }
+    art = calculator_meta_to_streamlit_artifact(meta, n=len(df), events=int(y.sum()))
+    selector = partial(
+        vs.bootstrap_reselect, candidates=["a", "b", "c"], k=1, rho_max=0.8,
+        cutpoint_parent={},
+    )
+    jobs = [(art, df, ["a"], selector)]
+
+    monkeypatch.setenv(mv.WORKERS_ENV, "2")
+    # n_workers is capped at len(jobs), so add a second, selector-less job to
+    # actually force the joblib pool (validation_workers(1) == 1 always).
+    plain_meta = {
+        "target": "event",
+        "intercept": -0.2,
+        "terms": [{"name": "a", "kind": "binary", "coef": 0.3}],
+    }
+    plain_art = calculator_meta_to_streamlit_artifact(
+        plain_meta, n=len(df), events=int(y.sum()))
+    jobs.append((plain_art, df, ["a"]))
+
+    out = mv.enrich_streamlit_artifacts(jobs, n_bootstrap=25)
+    assert len(out) == 2
+    selected_validation = out[0]["validation"]
+    assert selected_validation.get("bootstrap_resamples") == 25
+    # `selection_counts` only appears when `select=` actually ran inside the
+    # bootstrap (see bootstrap_internal_validation). If the partial had
+    # failed to pickle across the joblib process boundary, this key would be
+    # silently absent instead of the run raising -- so its presence, with at
+    # least one candidate counted, is the real proof the hook executed.
+    assert selected_validation.get("selection_counts")
+    assert sum(selected_validation["selection_counts"].values()) > 0
+    # The second job carried no selector and must show none.
+    assert "selection_counts" not in out[1]["validation"]
+
+
 def test_a_model_that_cannot_be_validated_keeps_its_plain_artifact(monkeypatch):
     """One unfittable model must not take the other six down with it."""
     monkeypatch.setenv(mv.WORKERS_ENV, "1")

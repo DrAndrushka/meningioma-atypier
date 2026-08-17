@@ -214,13 +214,97 @@ def test_run_comparison_stage_counts_resample_reselections_per_variable(tmp_path
     assert sel_tbl["resample_selection_count"].notna().all()
     assert (sel_tbl["resample_selection_count"] >= 0).all()
     # The full-cohort winner (rank 1 in `audit`/`sel_tbl`) is a strong signal
-    # and should win at least some resamples.
-    top_row = sel_tbl.loc[sel_tbl["kept"]].sort_values("discrimination").iloc[-1]
+    # and should win at least some resamples. ``kept`` is tri-state now
+    # (True / False / None for a resample-only row the full-cohort walk
+    # never reached — see the "== True" rather than bare truthiness, which
+    # would raise on a None entry in the mask).
+    top_row = sel_tbl.loc[sel_tbl["kept"] == True].sort_values(  # noqa: E712
+        "discrimination").iloc[-1]
     assert top_row["resample_selection_count"] > 0
 
     saved = pd.read_csv(tmp_path / "top_variable_selection.csv")
     assert "resample_selection_count" in saved.columns
     assert saved["resample_selection_count"].notna().all()
+
+
+def test_run_comparison_stage_selection_audit_includes_resample_only_winners(
+    tmp_path, monkeypatch,
+):
+    """Finding 3, final whole-branch review: the full-cohort audit walk in
+    ``vs.select_variables`` stops the instant it has picked k variables, so a
+    candidate ranked below that cutoff never gets an audit row -- even though
+    it still competes fresh inside every bootstrap resample and can win some
+    of them. Before this fix those wins were silently dropped from
+    ``top_variable_selection.csv``, understating how unstable the choice
+    really was. This checks such a candidate gets its own row (blank
+    auc/discrimination/kept/reason, not fabricated; real, non-zero count),
+    appended after the audited rows, while a candidate that won nothing stays
+    absent entirely.
+    """
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    import model_validation as mv
+
+    rng = np.random.RandomState(11)
+    n = 200
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.4 + rng.normal(size=n),   # clear full-cohort winner
+        "b": rng.normal(size=n),
+        "c": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c")}}
+    variants = [{"model_id": "sel", "predictors": ["a"]}]
+
+    real = mv.bootstrap_internal_validation
+
+    def fake(model_df, target, design_cols, coefficients, **kwargs):
+        result = real(model_df, target, design_cols, coefficients, **kwargs)
+        if kwargs.get("select") is not None:
+            # Force a known tally: "b" wins some resamples despite never
+            # entering the full-cohort walk (k=1, "a" always wins that
+            # outright); "c" wins none and must not appear at all.
+            result["selection_counts"] = {"a": 35, "b": 5}
+        return result
+
+    monkeypatch.setattr(mv, "bootstrap_internal_validation", fake)
+
+    out = mc.run_comparison_stage(
+        df, schema, variants, "event", tmp_path,
+        n_bootstrap=40, candidates=["a", "b", "c"], k_top=1,
+        assert_reference=False, selected_model_ids={"sel"})
+
+    sel_tbl = out["top_variable_selection"]
+    # Audited rows keep their walk order; the resample-only row is appended
+    # after -- and only ONE audit row exists at all, because k=1 stops the
+    # walk right after "a".
+    assert list(sel_tbl["variable"]) == ["a", "b"]
+
+    audited = sel_tbl.iloc[0]
+    assert audited["variable"] == "a"
+    assert bool(audited["kept"]) is True
+    assert audited["resample_selection_count"] == 35
+
+    extra = sel_tbl.iloc[1]
+    assert extra["variable"] == "b"
+    assert extra["resample_selection_count"] == 5
+    # No full-cohort verdict is fabricated for a candidate the walk never saw.
+    assert pd.isna(extra["auc"])
+    assert pd.isna(extra["discrimination"])
+    assert extra["kept"] is None or pd.isna(extra["kept"])
+    assert extra["reason"] is None or pd.isna(extra["reason"])
+
+    # "c" won nothing and was never audited -- it must not appear at all.
+    assert "c" not in set(sel_tbl["variable"])
+
+    saved = pd.read_csv(tmp_path / "top_variable_selection.csv")
+    assert list(saved["variable"]) == ["a", "b"]
+    b_row = saved.loc[saved["variable"] == "b"].iloc[0]
+    assert pd.isna(b_row["auc"])
+    assert pd.isna(b_row["kept"])
+    assert b_row["resample_selection_count"] == 5
 
 
 def test_run_comparison_stage_widens_the_selected_models_frame_with_candidates(
