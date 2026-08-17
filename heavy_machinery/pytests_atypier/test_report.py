@@ -1442,3 +1442,53 @@ def test_the_footnote_names_what_was_dropped_and_what_replaced_it():
     )
     assert "Replaced by derived flags" in html
     assert "Male" in html
+
+
+def test_model_overview_block_carries_both_comparators(report_cfg, report_art):
+    """The overview's whole point is that the two Δ columns answer different
+    questions and often disagree — a model can beat its own best ingredient and
+    still lose to the shared reference. Both must render, side by side."""
+    import pandas as pd, report as rp
+    report_art.model_overview = pd.DataFrame([{
+        "model_id": "zhang_2020", "n_predictors": 4,
+        "auc_apparent": 0.703, "auc_corrected": 0.688,
+        "best_own_single": "irregular_tumor_margin", "best_own_auc_corrected": 0.625,
+        "delta_own_corrected": 0.063, "delta_own_apparent": 0.080,
+        "delta_own_ci_lo": 0.031, "delta_own_ci_hi": 0.132,
+        "reference": "tumor_volume", "reference_auc_corrected": 0.679,
+        "delta_ref_corrected": 0.009, "delta_ref_apparent": 0.024,
+        "delta_ref_ci_lo": -0.045, "delta_ref_ci_hi": 0.094,
+    }])
+    html = rp._model_overview_block(report_art)
+    assert "+0.063 (+0.031 to +0.132)" in html      # beats its own ingredient
+    assert "+0.009 (-0.045 to +0.094)" in html      # but not tumour volume
+    assert "Tumor volume" in html                    # reference named in a header
+
+
+def test_model_overview_block_leaves_a_one_predictor_model_empty(report_art):
+    """A one-predictor model has no combination to test. Its Δ cells must be
+    blank rather than zero — zero would claim the comparison was made and came
+    out even."""
+    import pandas as pd, report as rp
+    report_art.model_overview = pd.DataFrame([{
+        "model_id": "top_1_variable", "n_predictors": 1,
+        "auc_apparent": 0.679, "auc_corrected": 0.660,
+        "best_own_single": None, "best_own_auc_corrected": None,
+        "delta_own_corrected": None, "delta_own_apparent": None,
+        "delta_own_ci_lo": None, "delta_own_ci_hi": None,
+        "reference": None, "reference_auc_corrected": None,
+        "delta_ref_corrected": None, "delta_ref_apparent": None,
+        "delta_ref_ci_lo": None, "delta_ref_ci_hi": None,
+    }])
+    html = rp._model_overview_block(report_art)
+    assert "0.660" in html
+    assert ">nan<" not in html and ">None<" not in html
+    assert "+0.000" not in html
+
+
+def test_delta_cell_formats_point_estimate_then_interval():
+    import report as rp
+    assert rp._delta_cell(0.063, 0.031, 0.132) == "+0.063 (+0.031 to +0.132)"
+    assert rp._delta_cell(-0.051, -0.105, 0.036) == "-0.051 (-0.105 to +0.036)"
+    assert rp._delta_cell(0.063, None, None) == "+0.063"
+    assert rp._delta_cell(None, 0.0, 1.0) == ""

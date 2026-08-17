@@ -300,6 +300,7 @@ def run_comparison_stage(
     # written, not written separately.
 
     rows = []
+    overview_material: dict[str, dict] = {}
     # How often each candidate was re-picked across the data-selected model's
     # bootstrap resamples (see the loop below). Stays {} if no model in this
     # run is in `selected_model_ids` (or the one that is fails to fit), and
@@ -384,6 +385,18 @@ def run_comparison_stage(
             y_full, pred_combined, n_bootstrap=n_bootstrap)
         auc_model_apparent = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["apparent"]
+        # Kept for the overview table built after this loop: it compares every
+        # model against a SHARED reference single as well as against its own
+        # best ingredient, and a model that does not contain the reference
+        # (most of them) has no row in the per-model comparison above to
+        # derive that from.
+        overview_material[mid] = {
+            "preds": list(preds),
+            "n_predictors": len(design_cols),
+            "auc_apparent": float(auc_model_apparent),
+            "auc_corrected": float(combined_auc),
+            "boot": boot_combined,
+        }
         if len(preds) == 1:
             # A one-predictor model IS its own only single, so the comparison
             # is the model against itself: delta exactly 0, a zero-width
@@ -432,6 +445,71 @@ def run_comparison_stage(
             })
     vs_tbl = pd.DataFrame(rows)
     vs_tbl.to_csv(tabs_dir / "model_vs_single_auc.csv", index=False)
+
+    # ---- Overview: one row per model, two comparators ------------------------
+    #
+    # The per-model table above answers "did combining THESE variables help?" —
+    # each model against its own best ingredient, which is the comparison Zhang
+    # 2020 and Peng 2021 published. It cannot answer "is this model worth more
+    # than the single best variable in the cohort?", because most models do not
+    # contain that variable and so have no row for it.
+    #
+    # Both questions are worth asking and they do not have the same answer, so
+    # the overview carries both deltas side by side. The shared comparator is
+    # the declared reference (``analysis.REFERENCE_VARIABLE``), the same one
+    # every delta elsewhere is measured against.
+    reference = analysis.REFERENCE_VARIABLE
+    ref_fit = fitted.get(reference)
+    ov_rows = []
+    for mid, mat in overview_material.items():
+        row = {
+            "model_id": mid,
+            "n_predictors": mat["n_predictors"],
+            "auc_apparent": round(mat["auc_apparent"], 3),
+            "auc_corrected": round(mat["auc_corrected"], 3),
+        }
+        # --- against the model's own strongest ingredient ---
+        own = [(s, fitted[s]) for s in mat["preds"] if s in fitted]
+        if len(mat["preds"]) > 1 and own:
+            best, bf = max(own, key=lambda kv: kv[1]["auc_corrected"])
+            d = paired_delta_auc(
+                mat["boot"],
+                bootstrap_auc_vector(bf["y"], bf["pred"], n_bootstrap=n_bootstrap))
+            row.update({
+                "best_own_single": best,
+                "best_own_auc_corrected": round(bf["auc_corrected"], 3),
+                "delta_own_corrected": round(
+                    mat["auc_corrected"] - bf["auc_corrected"], 3),
+                "delta_own_apparent": round(
+                    mat["auc_apparent"] - bf["auc_apparent"], 3),
+                "delta_own_ci_lo": round(d["ci_lo"], 3),
+                "delta_own_ci_hi": round(d["ci_hi"], 3),
+            })
+        # A one-predictor model has no combination to test, so the own-single
+        # half is genuinely empty rather than zero — see the skip above.
+        # --- against the shared reference single ---
+        is_reference_model = (
+            len(mat["preds"]) == 1 and mat["preds"][0] == reference
+        )
+        if ref_fit is not None and not is_reference_model:
+            d = paired_delta_auc(
+                mat["boot"],
+                bootstrap_auc_vector(
+                    ref_fit["y"], ref_fit["pred"], n_bootstrap=n_bootstrap))
+            row.update({
+                "reference": reference,
+                "reference_auc_corrected": round(ref_fit["auc_corrected"], 3),
+                "delta_ref_corrected": round(
+                    mat["auc_corrected"] - ref_fit["auc_corrected"], 3),
+                "delta_ref_apparent": round(
+                    mat["auc_apparent"] - ref_fit["auc_apparent"], 3),
+                "delta_ref_ci_lo": round(d["ci_lo"], 3),
+                "delta_ref_ci_hi": round(d["ci_hi"], 3),
+            })
+        ov_rows.append(row)
+    ov_tbl = pd.DataFrame(ov_rows).sort_values(
+        "auc_corrected", ascending=False, ignore_index=True)
+    ov_tbl.to_csv(tabs_dir / "model_overview.csv", index=False)
 
     # The full-cohort audit walk above (``vs.select_variables``) stops as soon
     # as k are picked, so a candidate ranked k+1 or lower there gets no
@@ -482,6 +560,7 @@ def run_comparison_stage(
     sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
 
     return {"single_predictor_reference": single_tbl,
+            "model_overview": ov_tbl,
             "model_vs_single_auc": vs_tbl,
             "top_variable_selection": sel_tbl,
             "top_variables": picked}

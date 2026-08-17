@@ -745,6 +745,7 @@ class Artifacts:
     inferential_model_experimental: dict[str, bool] = field(default_factory=dict)
     inferential_figures: list[Path] = field(default_factory=list)
     model_vs_single: pd.DataFrame | None = None
+    model_overview: pd.DataFrame | None = None
     single_reference: pd.DataFrame | None = None
     top_selection: pd.DataFrame | None = None
 
@@ -941,6 +942,7 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     if inf_fig.exists():
         art.inferential_figures = sorted(inf_fig.glob("*.png"))
     art.model_vs_single = _maybe_read_csv(inf_tab / "model_vs_single_auc.csv", art.warnings)
+    art.model_overview = _maybe_read_csv(inf_tab / "model_overview.csv", art.warnings)
     art.single_reference = _maybe_read_csv(inf_tab / "single_predictor_reference.csv", art.warnings)
     art.top_selection = _maybe_read_csv(inf_tab / "top_variable_selection.csv", art.warnings)
 
@@ -1477,6 +1479,85 @@ def _render_model_performance(stem: str, art: Artifacts) -> str:
         '(in-sample) and therefore optimistic — the optimism-corrected '
         'statistics are quoted on each figure.</p>'
         + svg_grid(figs),
+    )
+
+
+def _delta_cell(corrected: Any, lo: Any, hi: Any) -> str:
+    """``+0.063 (+0.031 to +0.132)`` — point estimate then its interval.
+
+    Same shape as :func:`_or_ci` uses for odds ratios, so the two read alike.
+    The two numbers are different quantities: the leading value is the
+    optimism-corrected point estimate, the interval is the patient-resampling
+    spread of the APPARENT difference. The block's prose says so; the cell
+    keeps them together because they describe one comparison.
+    """
+    c = _coerce_float(corrected)
+    if c is None:
+        return ""
+    l, h = _coerce_float(lo), _coerce_float(hi)
+    if l is None or h is None:
+        return f"{c:+.3f}"
+    return f"{c:+.3f} ({l:+.3f} to {h:+.3f})"
+
+
+def _model_overview_block(art: Artifacts) -> str:
+    """Every model, both comparators, at the top of the section.
+
+    The per-model tables further down each answer "did combining THESE
+    variables help?" — a model against its own best ingredient, which is the
+    comparison Zhang 2020 and Peng 2021 published. That question is answered
+    once per model, in eleven separate folds, which makes the models hard to
+    read against each other and cannot answer the other obvious question: is a
+    given model worth more than the single strongest variable in the cohort?
+    Most models do not contain that variable, so nothing below has a row for
+    it. This table carries both, one row per model.
+    """
+    tbl = art.model_overview
+    if tbl is None or tbl.empty:
+        return ""
+    def _named(v: Any) -> str:
+        """A real name, or "". Missing arrives as NaN from a CSV and as None
+        from an in-memory frame; both must render as an empty cell, never as
+        the strings "nan" or "None"."""
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            return ""
+        s = str(v).strip()
+        return "" if s.lower() in ("", "nan", "none") else s
+
+    ref = next((s for s in (_named(r) for r in tbl.get("reference", [])) if s), "")
+    rows = pd.DataFrame([{
+        "Model": prettify_label(str(r["model_id"])),
+        "Predictors": _fmt_count(r.get("n_predictors")),
+        "AUC (corrected)": _fmt3(r.get("auc_corrected")),
+        "Its best single": (prettify_label(_named(r.get("best_own_single")))
+                            if _named(r.get("best_own_single")) else ""),
+        "ΔAUC vs its best single": _delta_cell(
+            r.get("delta_own_corrected"), r.get("delta_own_ci_lo"), r.get("delta_own_ci_hi")),
+        f"ΔAUC vs {prettify_label(ref)}" if ref else "ΔAUC vs reference": _delta_cell(
+            r.get("delta_ref_corrected"), r.get("delta_ref_ci_lo"), r.get("delta_ref_ci_hi")),
+    } for _, r in tbl.iterrows()])
+    return details_block(
+        "📋 All models at a glance — is one variable as good as the whole model?",
+        "<p>One row per model, ordered by optimism-corrected AUC. The two Δ "
+        "columns answer different questions and often disagree. <strong>Its "
+        "best single</strong> is the strongest variable the model itself "
+        "contains, so that column asks whether combining <em>those</em> "
+        "variables helped — the comparison Zhang 2020 and Peng 2021 published. "
+        f"<strong>{_esc(prettify_label(ref))}</strong> is the same single "
+        "predictor for every row, so that column asks whether the model is "
+        "worth more than the best one variable available in this cohort at "
+        "all; most models do not contain it, which is why no table below "
+        "reports it.</p>"
+        "<p>In each Δ cell the first number is the optimism-corrected point "
+        "estimate and the interval beneath it is the patient-resampling spread "
+        "of the <em>apparent</em> difference — a sampling interval, not that "
+        "estimate's margin of error. An interval spanning zero means this "
+        "cohort cannot separate the two. A one-predictor model has no "
+        "combination to test, so its cells are empty rather than zero.</p>"
+        + table_to_html(rows, nowrap_cols=(
+            "Predictors", "AUC (corrected)", "ΔAUC vs its best single",
+            f"ΔAUC vs {prettify_label(ref)}" if ref else "ΔAUC vs reference")),
+        open=True,
     )
 
 
@@ -2845,6 +2926,7 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
             art.inferential_model_experimental,
         )
         body.append(f"<h3>🎯 Target: <code>{_esc(target)}</code></h3>")
+        body.append(_model_overview_block(art))
         body.append(_render_model_comparison(target, art))
 
         literature_keys = [
