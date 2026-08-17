@@ -838,6 +838,7 @@ def run_inferential(
     positive_class: dict | None = None,
     vif_threshold: float = 5.0,
     output_root: Path | str = "output",
+    selection_candidates: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """
     Run multivariable logistic regression per target × model variant with Rubin
@@ -853,6 +854,12 @@ def run_inferential(
 
     Stale per-variant CSV/SVG/JSON in ``output/inferential/`` is removed before
     each run so renamed or dropped models cannot linger in the report or calculator.
+
+    ``selection_candidates`` is the EDA predictor pool handed to
+    ``model_comparison.run_comparison_stage`` for its own top-k variable
+    selection (combined-vs-single comparison tables). It is independent of
+    ``predictors=``/``variants=``, which choose the multivariable models
+    actually fitted here.
     """
     output_root = Path(output_root)
     if imputed_frames is None:
@@ -955,6 +962,23 @@ def run_inferential(
     )
     _write_performance_figures(artifact_paths, figs_dir, model_variants)
 
+    if selection_candidates is not None:
+        # Only run when the caller supplies a real candidate pool (the
+        # notebook's EDA predictor list). Legacy/unit-test call sites that
+        # fit a couple of ad-hoc predictors on a 4-row fixture have no
+        # meaningful "does combining beat the best single" question to
+        # answer, and ``vs.assert_reference`` would reject their top pick
+        # against ``analysis.REFERENCE_VARIABLE`` (a real cohort column)
+        # regardless of which toy predictor won.
+        from model_comparison import run_comparison_stage
+
+        run_comparison_stage(
+            imputed_frames[0], schema, model_variants, targets[0], tabs_dir,
+            frames=imputed_frames,
+            candidates=selection_candidates,   # EDA predictor pool, from the notebook
+            selected_model_ids={"top_6_variables"},
+        )
+
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]
     _format_inferential_table(combined).to_csv(
@@ -972,11 +996,15 @@ def run_inferential_stage(
     positive_class: dict | None = None,
     vif_threshold: float = 5.0,
     output_root: Path | str = "output",
+    selection_candidates: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Notebook entry point: load MICE parquets, fit Rubin-pooled models, write artifacts.
 
     Writes ``output/inferential/tables/``, ``figures/``, and
     ``output/inferential/model_artifacts/*.json`` (Streamlit calculator).
+
+    ``selection_candidates`` is passed through to ``run_inferential`` for the
+    combined-vs-single comparison stage's own variable selection.
     """
     from statsmodels.tools.sm_exceptions import ConvergenceWarning as SMConvergenceWarning
 
@@ -991,4 +1019,5 @@ def run_inferential_stage(
             positive_class=positive_class,
             vif_threshold=vif_threshold,
             output_root=output_root,
+            selection_candidates=selection_candidates,
         )

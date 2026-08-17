@@ -13,6 +13,7 @@ classify is easy for both.
 """
 from __future__ import annotations
 
+import warnings
 from typing import Any, Sequence
 
 import numpy as np
@@ -199,3 +200,182 @@ def bootstrap_auc_vector(
         # isn't a round number.
         out.append(float(roc_auc_score(yy, p_arr[idx])))
     return out
+
+
+def _nested_chi2_per_imputation(
+    frames, schema, target: str, full_cols: Sequence[str], single: str,
+) -> tuple[list[float], int]:
+    """Per-draw LR chi-square for the full model against one of its predictors."""
+    import statsmodels.api as sm
+    from model_validation import build_complete_case_frame
+
+    stats: list[float] = []
+    k = max(len(full_cols) - 1, 1)
+    for frame in frames:
+        try:
+            df_full, cols_full = build_complete_case_frame(
+                frame, schema, list(full_cols), target)
+            df_red, cols_red = build_complete_case_frame(
+                frame, schema, [single], target)
+        except (ValueError, RuntimeError):
+            continue
+        y = df_full[target].astype(int).to_numpy()
+        ll_full = sm.Logit(
+            y, sm.add_constant(df_full[cols_full].astype(float), has_constant="add")
+        ).fit(disp=False).llf
+        ll_red = sm.Logit(
+            y, sm.add_constant(df_red[cols_red].astype(float), has_constant="add")
+        ).fit(disp=False).llf
+        stats.append(2.0 * (ll_full - ll_red))
+        k = max(len(cols_full) - len(cols_red), 1)
+    return stats, k
+
+
+def run_comparison_stage(
+    cohort_df,
+    schema,
+    variants: Sequence[Any],
+    target: str,
+    tabs_dir,
+    *,
+    n_bootstrap: int | None = None,
+    candidates: Sequence[str] | None = None,
+    k_top: int = 6,
+    frames: Sequence[Any] | None = None,
+    assert_reference: bool = True,
+    selected_model_ids: set[str] | None = None,
+):
+    """Fit the singles, difference every model against its own, write 3 tables."""
+    from pathlib import Path
+
+    import pandas as pd
+    import variable_selection as vs
+    from heavy_machinery.config import load
+    from model_validation import (
+        build_complete_case_frame,
+        bootstrap_internal_validation,
+    )
+
+    analysis = load("analysis")
+    if n_bootstrap is None:
+        n_bootstrap = analysis.BOOTSTRAP_RESAMPLES
+    tabs_dir = Path(tabs_dir)
+    tabs_dir.mkdir(parents=True, exist_ok=True)
+    frames = list(frames) if frames is not None else [cohort_df]
+
+    def _pred(v):
+        return list(v["predictors"] if isinstance(v, dict) else v.predictors)
+
+    def _mid(v):
+        return str(v["model_id"] if isinstance(v, dict) else v.model_id)
+
+    singles = sorted({p for v in variants for p in _pred(v)})
+    # ``candidates`` is the selection pool and is NOT the literature union: the
+    # six that win include adc_value and cystic_component, which appear in no
+    # literature model. The notebook passes its EDA predictor list.
+    fitted = fit_single_predictors(
+        cohort_df, schema, singles, target, n_bootstrap=n_bootstrap)
+
+    single_tbl = pd.DataFrame([
+        {"predictor": p, "n": d["n"], "events": d["events"],
+         "auc_apparent": round(d["auc_apparent"], 3),
+         "auc_corrected": round(d["auc_corrected"], 3)}
+        for p, d in sorted(fitted.items())
+    ])
+    single_tbl.to_csv(tabs_dir / "single_predictor_reference.csv", index=False)
+
+    y_all = cohort_df[target].astype(int).to_numpy()
+    cand = list(candidates) if candidates is not None else singles
+    picked, audit = vs.select_variables(
+        cohort_df, y_all, cand, k=k_top,
+        rho_max=0.8, cutpoint_parent=analysis.CUTPOINT_PARENT)
+    if assert_reference:
+        vs.assert_reference(picked)
+    sel_tbl = pd.DataFrame(audit)
+    sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
+
+    rows = []
+    for v in variants:
+        mid, preds = _mid(v), _pred(v)
+        try:
+            model_df, design_cols = build_complete_case_frame(
+                cohort_df, schema, preds, target)
+        except (ValueError, RuntimeError):
+            continue
+        import statsmodels.api as sm
+        y = model_df[target].astype(int).to_numpy()
+        X = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
+        fit = sm.Logit(y, X).fit(disp=False)
+        coefs = {"const": float(fit.params.iloc[0])}
+        coefs.update({c: float(fit.params[c]) for c in design_cols})
+        # The one data-selected model re-runs its own selection inside every
+        # resample, so its optimism covers the picking and not just the fitting.
+        selector = None
+        if selected_model_ids and mid in selected_model_ids:
+            def selector(frame, y_boot, _cand=cand, _k=k_top):
+                sub, _ = vs.select_variables(
+                    frame, y_boot, [c for c in _cand if c in frame.columns],
+                    k=_k, rho_max=0.8,
+                    cutpoint_parent=analysis.CUTPOINT_PARENT)
+                return sub
+        val = bootstrap_internal_validation(
+            model_df, target, design_cols, coefs,
+            n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
+        combined_auc = next(
+            m for m in val["metrics"] if m["metric"] == "AUC")["optimism_corrected"]
+        # Predictions of the full-cohort fit, held fixed. The confidence
+        # interval comes from resampling PATIENTS against these, not from the
+        # optimism vector: a one-predictor model's optimism AUC is constant
+        # (AUC is rank-based and cannot see a coefficient's size), so
+        # differencing optimism vectors would leave the interval with no
+        # variance from the single side at all.
+        y_full = model_df[target].astype(int).to_numpy()
+        pred_combined = np.asarray(fit.predict(X), dtype=float)
+        boot_combined = bootstrap_auc_vector(
+            y_full, pred_combined, n_bootstrap=n_bootstrap)
+        auc_model_apparent = next(
+            m for m in val["metrics"] if m["metric"] == "AUC")["apparent"]
+        for single in preds:
+            if single not in fitted:
+                warnings.warn(
+                    f"No single-predictor fit for {single!r}; the "
+                    f"{mid} vs {single} comparison row is missing.",
+                    stacklevel=2,
+                )
+                continue
+            boot_single = bootstrap_auc_vector(
+                fitted[single]["y"], fitted[single]["pred"], n_bootstrap=n_bootstrap)
+            if len(boot_combined) != len(boot_single):
+                raise RuntimeError(
+                    f"Unpaired resample vectors for {mid} vs {single}: "
+                    f"{len(boot_combined)} and {len(boot_single)}. Both models "
+                    "must be scored over the same patient draws."
+                )
+            d = paired_delta_auc(boot_combined, boot_single)
+            chi2s, k = _nested_chi2_per_imputation(
+                frames, schema, target, preds, single)
+            p = d2_pool(chi2s, k)["p"] if chi2s else float("nan")
+            # Two deltas on purpose, each meaning what it says. The corrected
+            # one is the point estimate and is exactly the difference of the
+            # two corrected AUC columns, so a reader can check the arithmetic.
+            # The apparent one is what the confidence interval is centred on,
+            # because the interval measures sampling error, not optimism.
+            rows.append({
+                "model_id": mid, "single": single,
+                "auc_model_corrected": round(float(combined_auc), 3),
+                "auc_single_corrected": round(fitted[single]["auc_corrected"], 3),
+                "delta_auc_corrected": round(
+                    float(combined_auc) - fitted[single]["auc_corrected"], 3),
+                "delta_auc_apparent": round(
+                    float(auc_model_apparent) - fitted[single]["auc_apparent"], 3),
+                "delta_ci_lo": round(d["ci_lo"], 3),
+                "delta_ci_hi": round(d["ci_hi"], 3),
+                "n_resamples": d["n_resamples"],
+                "d2_p": p,
+            })
+    vs_tbl = pd.DataFrame(rows)
+    vs_tbl.to_csv(tabs_dir / "model_vs_single_auc.csv", index=False)
+    return {"single_predictor_reference": single_tbl,
+            "model_vs_single_auc": vs_tbl,
+            "top_variable_selection": sel_tbl,
+            "top_variables": picked}

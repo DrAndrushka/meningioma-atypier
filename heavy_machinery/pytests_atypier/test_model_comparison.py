@@ -138,3 +138,35 @@ def test_fit_single_predictors_returns_predictions_for_the_ci():
     assert len(out["a"]["pred"]) == n
     assert len(out["a"]["y"]) == n
     assert set(out["a"]["y"]) <= {0, 1}
+
+
+def test_run_comparison_stage_writes_all_three_tables(tmp_path):
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(5)
+    n = 220
+    y = rng.binomial(1, 0.35, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.2 + rng.normal(size=n),
+        "b": y * 0.5 + rng.normal(size=n),
+        "c": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c")}}
+    variants = [{"model_id": "m1", "predictors": ["a", "b"]}]
+    out = mc.run_comparison_stage(
+        df, schema, variants, "event", tmp_path,
+        n_bootstrap=30, candidates=["a", "b", "c"], k_top=2,
+        assert_reference=False)
+    assert (tmp_path / "single_predictor_reference.csv").exists()
+    assert (tmp_path / "model_vs_single_auc.csv").exists()
+    assert (tmp_path / "top_variable_selection.csv").exists()
+    vs_tbl = out["model_vs_single_auc"]
+    assert set(vs_tbl["single"]) == {"a", "b"}
+    assert {"delta_auc_corrected", "delta_auc_apparent", "delta_ci_lo",
+            "delta_ci_hi", "n_resamples", "d2_p"} <= set(vs_tbl.columns)
+    # The published AUC columns must subtract to the published point estimate.
+    row = vs_tbl.iloc[0]
+    assert row["delta_auc_corrected"] == pytest.approx(
+        row["auc_model_corrected"] - row["auc_single_corrected"], abs=1e-9)
