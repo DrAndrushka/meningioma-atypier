@@ -18,6 +18,7 @@ import json
 import math
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -1187,6 +1188,37 @@ def _not_fitted_block() -> str:
     )
 
 
+def _n_resamples(art: Artifacts) -> int | None:
+    """The bootstrap resample count shared by the combined-vs-single
+    comparison and the variable-selection audit, read from
+    ``model_vs_single_auc.csv``'s own ``n_resamples`` column.
+
+    Both tables come from the same run's bootstrap loop, so this is the one
+    place either block's prose sources the resample count from — never a
+    literal ``1000``, which would silently drift out of sync with a re-run
+    that changes it. Returns ``None`` (rather than guessing) if the column
+    is missing or does not agree on a single value.
+    """
+    tbl = art.model_vs_single
+    if tbl is None or tbl.empty or "n_resamples" not in tbl.columns:
+        return None
+    vals = {v for v in (_to_int_or_none(x) for x in tbl["n_resamples"]) if v is not None}
+    return vals.pop() if len(vals) == 1 else None
+
+
+def _fmt3(x: Any) -> str:
+    """Fixed three-decimal formatting (never drops trailing zeros).
+
+    Unlike ``format_number`` — which trims trailing zeros and collapses an
+    exact 0.000 to the bare integer ``0`` — this keeps a column's precision
+    uniform so it reads as one measurement scale next to a neighbouring
+    column, and keeps an exact zero legible as a value rather than looking
+    like a blank cell.
+    """
+    v = _coerce_float(x)
+    return "" if v is None else f"{v:.3f}"
+
+
 def _model_vs_single_block(model_id: str, art: Artifacts) -> str:
     """Does this combination beat each single predictor it is built from?
 
@@ -1217,11 +1249,14 @@ def _model_vs_single_block(model_id: str, art: Artifacts) -> str:
     rows = pd.DataFrame([{
         "Single predictor": r.get("single", ""),
         "Model AUC (corrected)": format_number(r.get("auc_model_corrected")),
-        "Single AUC (corrected)": format_number(r.get("auc_single_corrected")),
-        "ΔAUC corrected": format_number(r.get("delta_auc_corrected")),
+        "Single AUC (corrected)": _fmt3(r.get("auc_single_corrected")),
+        "ΔAUC corrected": _fmt3(r.get("delta_auc_corrected")),
         "ΔAUC apparent (95% CI)": _apparent_ci(r),
         "p (D2)": human_p(r.get("d2_p")),
     } for _, r in sub.iterrows()])
+
+    n_res = _n_resamples(art)
+    resample_phrase = f"{n_res} times" if n_res is not None else "many times"
 
     return details_block(
         "⚖️ Does the combination beat its own single predictors?",
@@ -1230,11 +1265,12 @@ def _model_vs_single_block(model_id: str, art: Artifacts) -> str:
         "“does the combination still win once the model's own overfitting "
         "is removed.” The confidence interval sits beside a "
         "<em>different</em> column, <strong>ΔAUC apparent</strong> — the "
-        "raw, uncorrected gap, resampled across patients 1000 times to see how "
-        "far it moves by chance alone. The interval was built around the "
-        "apparent delta, never the corrected one, so it is not the corrected "
-        "estimate's margin of error — read the two columns as related but "
-        "separate answers, not as one number with the other's uncertainty.</p>"
+        f"raw, uncorrected gap, resampled across patients {resample_phrase} to "
+        "see how far it moves by chance alone. The interval was built around "
+        "the apparent delta, never the corrected one, so it is not the "
+        "corrected estimate's margin of error — read the two columns as "
+        "related but separate answers, not as one number with the other's "
+        "uncertainty.</p>"
         "<p>The p-value (<strong>D2</strong>) is a likelihood-ratio test, "
         "pooled across the MICE draws by Rubin's rules, fitted on the full "
         "cohort with <strong>no optimism correction</strong> at all — a third, "
@@ -1246,9 +1282,61 @@ def _model_vs_single_block(model_id: str, art: Artifacts) -> str:
         "zero. That is not a contradiction between the two numbers — it is two "
         "different questions about the same model, and the p-value carries no "
         "correction for the optimism that the AUCs were adjusted for.</p>"
+        "<p>No confidence interval is available for <strong>ΔAUC "
+        "corrected</strong> itself — it is reported only as a point "
+        "estimate. Neither the apparent-delta interval above nor the "
+        "D2 p-value fills that gap, so do not drift back to either one as a "
+        "stand-in margin of error for the corrected number.</p>"
         + table_to_html(rows, nowrap_cols=(
             "Model AUC (corrected)", "Single AUC (corrected)",
             "ΔAUC corrected", "ΔAUC apparent (95% CI)", "p (D2)")),
+    )
+
+
+_COLLINEARITY_REASON_RE = re.compile(
+    r"(?:rho|ρ)\s*=\s*([\d.]+)\s+with\s+(\S+)", re.IGNORECASE)
+
+
+def _dropped_for_collinearity_sentence(tbl: pd.DataFrame) -> str:
+    """Names the highest-count dropped-for-collinearity variable against the
+    kept variable it lost to, with both resample counts read straight from
+    ``tbl`` — never typed — so the claim can't silently fall out of step
+    with the numbers in the row directly below it (e.g. after Task 16's
+    clean re-run changes the counts). Returns ``""`` if no candidate was
+    dropped for collinearity, rather than describing a pair that isn't
+    there.
+    """
+    if "reason" not in tbl.columns:
+        return ""
+    best: tuple[int, str, str, str] | None = None
+    for _, r in tbl.iterrows():
+        if bool(r.get("kept")):
+            continue
+        reason = r.get("reason")
+        if reason is None or (isinstance(reason, float) and math.isnan(reason)):
+            continue
+        m = _COLLINEARITY_REASON_RE.search(str(reason))
+        if not m:
+            continue
+        count = _to_int_or_none(r.get("resample_selection_count")) or 0
+        if best is None or count > best[0]:
+            best = (count, str(r.get("variable", "")), m.group(1), m.group(2))
+    if best is None:
+        return ""
+    dropped_count, dropped_var, rho, partner_var = best
+    partner_rows = tbl[tbl["variable"].astype(str) == partner_var]
+    if partner_rows.empty:
+        return ""
+    partner_count = _to_int_or_none(partner_rows.iloc[0].get("resample_selection_count"))
+    if partner_count is None:
+        return ""
+    return (
+        f"<code>{dropped_var}</code> — dropped by the full-cohort selection "
+        f"only for being too correlated with <code>{partner_var}</code> "
+        f"(ρ={rho}) — still won {dropped_count} resamples to "
+        f"<code>{partner_var}</code>'s {partner_count}: between them they "
+        "account for most of the resamples, so which of the two lands in "
+        "the model depends substantially on the sample."
     )
 
 
@@ -1260,7 +1348,7 @@ def _selection_audit_block(art: Artifacts) -> str:
     such as ``adc_value`` (raw AUC 0.370) reads as nearly useless instead of
     the second-best predictor it actually is. ``Selected in resamples`` is
     ``resample_selection_count`` — how often the bootstrap re-picked each
-    candidate across 1000 resamples of the selection procedure itself; it is
+    candidate across the selection procedure's bootstrap resamples; it is
     the evidence for how stable the chosen six are, and some of that
     evidence is not reassuring.
     """
@@ -1289,13 +1377,22 @@ def _selection_audit_block(art: Artifacts) -> str:
         n = _to_int_or_none(r.get("resample_selection_count"))
         return "" if n is None else str(n)
 
+    n_res = _n_resamples(art)
+    count_header = (f"Selected in resamples (of {n_res})" if n_res is not None
+                     else "Selected in resamples")
+    resamples_phrase = (f"{n_res} bootstrap resamples" if n_res is not None
+                         else "the selection procedure's bootstrap resamples")
+    near_n_phrase = f"near {n_res}" if n_res is not None else "near the resample total"
+
     rows = pd.DataFrame([{
         "Variable": r.get("variable", ""),
         "Discrimination": _discrimination_cell(r),
         "Kept": "✅" if bool(r.get("kept")) else "—",
-        "Selected in resamples": _count_cell(r),
+        count_header: _count_cell(r),
         "Why dropped": _reason_cell(r),
     } for _, r in tbl.iterrows()])
+
+    collinearity_sentence = _dropped_for_collinearity_sentence(tbl)
 
     return details_block(
         "\U0001f50e How these variables were chosen",
@@ -1309,20 +1406,21 @@ def _selection_audit_block(art: Artifacts) -> str:
         "clears.</p>"
         "<p><strong>Selected in resamples</strong> counts how often each "
         "candidate was independently re-picked by the same selection "
-        "procedure across 1000 bootstrap resamples of the patients — not how "
+        f"procedure across {resamples_phrase} of the patients — not how "
         "often it appears in this table (each row appears once, from the "
-        "single full-cohort selection). A count near 1000 means the variable "
-        "was chosen almost every time and the choice is stable; a lower count "
+        "single full-cohort selection). Cut-point candidates (e.g. a row "
+        "reading “cut-point of …”) show 0 here not because they lost every "
+        "resample narrowly, but because the derived-cut-point guard drops "
+        "them deterministically whenever their continuous parent is already "
+        "a candidate — a structural zero, not evidence of instability. "
+        f"Among the rest, a count {near_n_phrase} means the variable was "
+        "chosen almost every time and the choice is stable; a lower count "
         "means a different variable could easily have been picked instead on "
-        "a different sample, and the six kept here are not all equally solid: "
-        "<code>cystic_component</code> was only re-picked in about a third of "
-        "resamples, the least stable of the six, and <code>max_diameter_cm</code> "
-        "— a variable the full-cohort selection dropped only for being too "
-        "correlated with <code>tumor_volume</code> (ρ=0.91) — was picked "
-        "almost as often as <code>tumor_volume</code> itself, so which of the "
-        "two ends up in the model is close to a coin flip across resamples.</p>"
+        "a different sample, and the six kept here are not all equally "
+        "solid." + (f" {collinearity_sentence}" if collinearity_sentence else "")
+        + "</p>"
         + table_to_html(rows, nowrap_cols=(
-            "Discrimination", "Kept", "Selected in resamples")),
+            "Discrimination", "Kept", count_header)),
     )
 
 
