@@ -323,16 +323,21 @@ def run_comparison_stage(
                 cohort_df, schema, preds, target)
         except (ValueError, RuntimeError):
             continue
-        # The one data-selected model re-runs its own selection inside every
+        # A data-selected model re-runs its own selection inside every
         # resample, so its optimism covers the picking and not just the
         # fitting. ``vs.bootstrap_reselect`` (module-level, picklable) is the
         # same hook ``model_calculator.write_streamlit_artifacts`` wires in
-        # for the same model, so the two paths cannot compute two different
-        # "optimism-corrected AUC" numbers for it (see model_calculator.py).
+        # for the same models, so the two paths cannot compute two different
+        # "optimism-corrected AUC" numbers for one (see model_calculator.py).
+        #
+        # ``k`` comes from the model itself, not from a parameter. A model that
+        # was built by picking N variables must re-pick N inside each resample,
+        # and deriving it here means the number cannot drift out of step with
+        # the model the way a separately-declared default could.
         selector = None
         if selected_model_ids and mid in selected_model_ids:
             selector = partial(
-                vs.bootstrap_reselect, candidates=cand, k=k_top,
+                vs.bootstrap_reselect, candidates=cand, k=len(design_cols),
                 rho_max=0.8, cutpoint_parent=analysis.CUTPOINT_PARENT)
         # build_complete_case_frame returns only the model's own (VIF-pruned)
         # design columns, which would leave the selector above choosing k out
@@ -356,12 +361,13 @@ def run_comparison_stage(
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
             n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
-        if selector is not None:
-            # Only the selected model's bootstrap re-runs selection at all, so
-            # this is the one place `selection_counts`/`selection_resamples`
-            # can come from. There is exactly one such model per run
-            # (`selected_model_ids` names it), so there is no multi-model
-            # tally to merge here.
+        if selector is not None and len(design_cols) == k_top:
+            # `top_variable_selection.csv` audits ONE walk: the full-cohort
+            # k=k_top selection above. Its resample-count column must therefore
+            # come from the model that re-picks that same k, not from another
+            # data-selected model picking a different number — a k=1 model's
+            # counts describe a different question ("which single variable
+            # wins?") and would silently overwrite the k=k_top tally.
             resample_selection_counts = val.get("selection_counts", {})
             resample_selection_total = val.get("selection_resamples")
         combined_auc = next(
@@ -378,6 +384,14 @@ def run_comparison_stage(
             y_full, pred_combined, n_bootstrap=n_bootstrap)
         auc_model_apparent = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["apparent"]
+        if len(preds) == 1:
+            # A one-predictor model IS its own only single, so the comparison
+            # is the model against itself: delta exactly 0, a zero-width
+            # interval and p=1. That row answers nothing and occupies space in
+            # the headline table, so it is not written. Its single still has a
+            # row in single_predictor_reference.csv, and still serves as a
+            # yardstick for every combined model that contains it.
+            continue
         for single in preds:
             if single not in fitted:
                 warnings.warn(

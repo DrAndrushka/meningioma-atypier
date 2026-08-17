@@ -356,3 +356,77 @@ def test_run_comparison_stage_widens_the_selected_models_frame_with_candidates(
 
     assert seen_columns, "bootstrap_internal_validation was never called with select= set"
     assert seen_columns["cols"] >= {"event", "a", "b", "c", "d"}
+
+
+def _toy_cohort(n=220, seed=5):
+    """Three continuous predictors of decreasing strength, plus the outcome."""
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(seed)
+    y = rng.binomial(1, 0.35, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.2 + rng.normal(size=n),
+        "b": y * 0.5 + rng.normal(size=n),
+        "c": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c")}}
+    return df, schema
+
+
+def test_a_one_predictor_model_gets_no_self_comparison_row():
+    """A model with a single predictor IS that predictor, so comparing the two
+    yields delta exactly 0, a zero-width interval and p=1 -- a tautology in the
+    headline table. It must not be written. The multi-predictor model beside it
+    still gets its rows, so this is a targeted skip, not a broken loop."""
+    import tempfile
+    from pathlib import Path
+    df, schema = _toy_cohort()
+    variants = [{"model_id": "solo", "predictors": ["a"]},
+                {"model_id": "pair", "predictors": ["a", "b"]}]
+    with tempfile.TemporaryDirectory() as d:
+        out = mc.run_comparison_stage(
+            df, schema, variants, "event", Path(d),
+            n_bootstrap=30, candidates=["a", "b", "c"], k_top=2,
+            assert_reference=False)
+    vs_tbl = out["model_vs_single_auc"]
+    assert "solo" not in set(vs_tbl["model_id"])
+    assert set(vs_tbl[vs_tbl.model_id == "pair"]["single"]) == {"a", "b"}
+    # The skipped model's predictor is still a yardstick everywhere else.
+    assert "a" in set(out["single_predictor_reference"]["predictor"])
+
+
+def test_selector_k_comes_from_the_model_not_from_k_top():
+    """Two data-selected models of different sizes must each re-pick their OWN
+    number of variables inside the bootstrap. Deriving k from the model (rather
+    than from the k_top parameter, which belongs to the full-cohort audit walk)
+    is what lets a 1-variable and a 6-variable model share one code path."""
+    import tempfile
+    from pathlib import Path
+    seen = {}
+    real = mc.vs.bootstrap_reselect if hasattr(mc, "vs") else None
+    import variable_selection as vs_mod
+    original = vs_mod.bootstrap_reselect
+
+    def spy(frame, y_boot, *, candidates, k, rho_max, cutpoint_parent):
+        seen.setdefault(k, 0)
+        seen[k] += 1
+        return original(frame, y_boot, candidates=candidates, k=k,
+                        rho_max=rho_max, cutpoint_parent=cutpoint_parent)
+
+    df, schema = _toy_cohort()
+    variants = [{"model_id": "solo", "predictors": ["a"]},
+                {"model_id": "pair", "predictors": ["a", "b"]}]
+    vs_mod.bootstrap_reselect = spy
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            mc.run_comparison_stage(
+                df, schema, variants, "event", Path(d),
+                n_bootstrap=20, candidates=["a", "b", "c"], k_top=2,
+                selected_model_ids={"solo", "pair"}, assert_reference=False)
+    finally:
+        vs_mod.bootstrap_reselect = original
+    # k=1 for the one-predictor model, k=2 for the two-predictor one. If k came
+    # from k_top both would be 2 and this would show a single key.
+    assert set(seen) == {1, 2}, seen

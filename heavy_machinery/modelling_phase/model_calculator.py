@@ -696,10 +696,16 @@ def write_streamlit_artifacts(
                             [model_df, cohort_df.loc[model_df.index, extra]],
                             axis=1,
                         )
+                    # k comes from the model itself, not from ``k_top``: a
+                    # model built by picking N variables must re-pick N inside
+                    # each resample. Deriving it keeps this path in step with
+                    # ``model_comparison.run_comparison_stage``, which does the
+                    # same, so the two cannot publish different corrected AUCs
+                    # for one model just because a k default drifted.
                     selector = partial(
                         vs.bootstrap_reselect,
                         candidates=list(selection_candidates),
-                        k=k_top,
+                        k=len(design_cols),
                         rho_max=rho_max,
                         cutpoint_parent=analysis.CUTPOINT_PARENT,
                     )

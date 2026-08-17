@@ -977,7 +977,7 @@ def run_inferential(
         # combined-vs-single comparison table publishes for it, rather than
         # a second, uncorrected one (see model_calculator.write_streamlit_artifacts).
         selection_candidates=selection_candidates,
-        selected_model_ids={"top_6_variables"},
+        selected_model_ids={"top_6_variables", "top_1_variable"},
     )
     _write_performance_figures(artifact_paths, figs_dir, model_variants)
 
@@ -1003,7 +1003,7 @@ def run_inferential(
             imputed_frames[0], schema, model_variants, targets[0], tabs_dir,
             frames=imputed_frames,
             candidates=selection_candidates,   # EDA predictor pool, from the notebook
-            selected_model_ids={"top_6_variables"},
+            selected_model_ids={"top_6_variables", "top_1_variable"},
         )
 
     combined = pd.concat(all_rows, ignore_index=True)
