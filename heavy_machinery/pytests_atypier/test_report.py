@@ -1492,3 +1492,20 @@ def test_delta_cell_formats_point_estimate_then_interval():
     assert rp._delta_cell(-0.051, -0.105, 0.036) == "-0.051 (-0.105 to +0.036)"
     assert rp._delta_cell(0.063, None, None) == "+0.063"
     assert rp._delta_cell(None, 0.0, 1.0) == ""
+
+
+def test_comparison_block_explains_a_calibration_slope_above_one(tmp_path, report_art):
+    """Two of the eleven models come out marginally above 1.0 on the corrected
+    calibration slope. Read naively that says "under-confident"; it actually
+    means a two-predictor model on 352 patients had nothing to overfit, so the
+    correction landed on 1.0 plus noise. The block must say so, or the number
+    reads as a finding."""
+    import report as rp
+    fig = tmp_path / "high_grade__model_comparison.png"
+    fig.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    report_art.inferential_figures = [fig]
+    html = rp._render_model_comparison("high_grade", report_art)
+    assert "no optimism to remove" in html
+    assert "not that the model is under-confident" in html
+    # And it must not claim the apparent slope was measured — it is asserted.
+    assert "exactly 1.0 for every model by construction" in html

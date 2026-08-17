@@ -1574,6 +1574,15 @@ def _render_model_comparison(target: str, art: Artifacts) -> str:
         '<p>Every variant on the same three axes. The gap between the hollow '
         '(apparent) and filled (optimism-corrected) markers is how much of each '
         "model's performance was overfitting.</p>"
+        '<p>On the calibration panel, a slope below 1 means over-confidence — '
+        'predicted risks spread too wide, the usual signature of overfitting. '
+        'The <em>apparent</em> slope is exactly 1.0 for every model by '
+        'construction, on the cohort and on each resample alike, so the '
+        'corrected value is simply the average slope of the resample-fitted '
+        'models measured here. Nothing holds that below 1: a model with little '
+        'to overfit lands on 1.0 plus noise, so a corrected slope sitting '
+        '<strong>marginally above 1 means there was almost no optimism to '
+        'remove</strong> — not that the model is under-confident.</p>'
         '<div class="figure-card">'
         + _figure_img_html(fig)
         + f'<div class="caption">{_esc(prettify_caption(fig.stem))}</div>'
