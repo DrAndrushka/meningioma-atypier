@@ -302,12 +302,6 @@ def run_comparison_stage(
                 cohort_df, schema, preds, target)
         except (ValueError, RuntimeError):
             continue
-        import statsmodels.api as sm
-        y = model_df[target].astype(int).to_numpy()
-        X = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
-        fit = sm.Logit(y, X).fit(disp=False)
-        coefs = {"const": float(fit.params.iloc[0])}
-        coefs.update({c: float(fit.params[c]) for c in design_cols})
         # The one data-selected model re-runs its own selection inside every
         # resample, so its optimism covers the picking and not just the fitting.
         selector = None
@@ -318,6 +312,25 @@ def run_comparison_stage(
                     k=_k, rho_max=0.8,
                     cutpoint_parent=analysis.CUTPOINT_PARENT)
                 return sub
+        # build_complete_case_frame returns only the model's own (VIF-pruned)
+        # design columns, which would leave the selector above choosing k out
+        # of the same k already in model_df — a no-op that silently collapses
+        # the optimism correction to fit-only. Widen the frame the bootstrap
+        # sees with the rest of the candidate pool; design_cols (what the
+        # apparent fit below, and the non-select resamples inside
+        # bootstrap_internal_validation, index) is left untouched.
+        if selector is not None:
+            extra = [c for c in cand
+                     if c in cohort_df.columns and c not in model_df.columns]
+            if extra:
+                model_df = pd.concat(
+                    [model_df, cohort_df.loc[model_df.index, extra]], axis=1)
+        import statsmodels.api as sm
+        y = model_df[target].astype(int).to_numpy()
+        X = sm.add_constant(model_df[design_cols].astype(float), has_constant="add")
+        fit = sm.Logit(y, X).fit(disp=False)
+        coefs = {"const": float(fit.params.iloc[0])}
+        coefs.update({c: float(fit.params[c]) for c in design_cols})
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
             n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)

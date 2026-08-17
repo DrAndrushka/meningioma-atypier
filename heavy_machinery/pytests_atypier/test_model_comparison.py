@@ -170,3 +170,54 @@ def test_run_comparison_stage_writes_all_three_tables(tmp_path):
     row = vs_tbl.iloc[0]
     assert row["delta_auc_corrected"] == pytest.approx(
         row["auc_model_corrected"] - row["auc_single_corrected"], abs=1e-9)
+
+
+def test_run_comparison_stage_widens_the_selected_models_frame_with_candidates(
+    tmp_path, monkeypatch,
+):
+    """``build_complete_case_frame`` returns only the model's OWN design
+    columns. For the one model in ``selected_model_ids``, the selector that
+    re-runs inside every bootstrap resample must be able to choose from the
+    full candidate pool, not just re-pick the same columns already in the
+    frame -- otherwise it is choosing k out of k, a no-op that silently
+    drops the optimism correction to fit-only (Task 13 review, Finding 1).
+
+    This spies on the ``model_df`` actually handed to
+    ``bootstrap_internal_validation`` for the selected model and checks every
+    candidate column made it in, not just the model's own two.
+    """
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    import model_validation as mv
+
+    rng = np.random.RandomState(7)
+    n = 200
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.1 + rng.normal(size=n),
+        "b": y * 0.6 + rng.normal(size=n),
+        "c": y * 0.9 + rng.normal(size=n),
+        "d": rng.normal(size=n),
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c", "d")}}
+    variants = [{"model_id": "sel", "predictors": ["a", "b"]}]
+
+    seen_columns = {}
+    real = mv.bootstrap_internal_validation
+
+    def spy(model_df, target, design_cols, coefficients, **kwargs):
+        if kwargs.get("select") is not None:
+            seen_columns["cols"] = set(model_df.columns)
+        return real(model_df, target, design_cols, coefficients, **kwargs)
+
+    monkeypatch.setattr(mv, "bootstrap_internal_validation", spy)
+
+    mc.run_comparison_stage(
+        df, schema, variants, "event", tmp_path,
+        n_bootstrap=15, candidates=["a", "b", "c", "d"], k_top=2,
+        assert_reference=False, selected_model_ids={"sel"})
+
+    assert seen_columns, "bootstrap_internal_validation was never called with select= set"
+    assert seen_columns["cols"] >= {"event", "a", "b", "c", "d"}
