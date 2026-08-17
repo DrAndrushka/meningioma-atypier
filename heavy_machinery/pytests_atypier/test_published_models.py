@@ -83,14 +83,6 @@ def test_zhang_carries_beta_not_odds_ratios():
         assert term.get("or") in (None, "")
 
 
-def test_not_fitted_records_every_excluded_model_with_a_reason():
-    assert set(pm.NOT_FITTED) == {
-        "azeemuddin_2018", "yao_2022", "amano_2022",
-        "duarte_gomes_quintas_neves_2026", "hale_2018",
-    }
-    assert all(v.strip() for v in pm.NOT_FITTED.values())
-
-
 def test_every_mapped_column_exists_in_the_cohort():
     df_cols = set(__import__("pandas").read_parquet(
         Path("output/datasets/unimputed_df.parquet")).columns)

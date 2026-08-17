@@ -1168,26 +1168,6 @@ def _published_model_block(model_id: str) -> str:
     )
 
 
-def _not_fitted_block() -> str:
-    """Published models deliberately not refit, and why.
-
-    A reader who knows the literature will ask where Yao or Amano went. Without
-    this they have to assume the models were missed rather than excluded.
-    """
-    excluded = getattr(published_models, "NOT_FITTED", {}) or {}
-    if not excluded:
-        return ""
-    rows = pd.DataFrame(
-        [{"Model": k, "Why it is not refit": v} for k, v in sorted(excluded.items())]
-    )
-    return details_block(
-        "🚫 Published models not refit",
-        "<p>Identified in the literature search and deliberately excluded — "
-        "each needs a variable this cohort does not record.</p>"
-        + table_to_html(rows),
-    )
-
-
 def _n_resamples(art: Artifacts) -> int | None:
     """The combined-vs-single comparison's own resample count, read from
     ``model_vs_single_auc.csv``'s own ``n_resamples`` column.
@@ -2968,7 +2948,6 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
             ))
 
     body.append(_selection_audit_block(art))
-    body.append(_not_fitted_block())
 
     return section_block("🧮 Multivariable modelling", "".join(body))
 

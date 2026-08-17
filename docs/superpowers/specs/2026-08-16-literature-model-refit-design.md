@@ -139,17 +139,12 @@ fallback question is re-raised if the cohort changes.
 ### Model layer
 
 `LITERATURE_MODEL_VARIANTS` gains 6 entries in the existing 5-tuple form.
-`config/published_models.py` gains the 6 papers in its existing shape, plus two
-new optional fields:
+`config/published_models.py` gains the 6 papers in its existing shape, plus one
+new optional field:
 
 - `surrogate_note` — set on `kawahara_2012`, `lin_2014` and `peng_2021`, stating
   the interface substitution and that the refit is not an external validation.
   Rendered above the model's table.
-- `NOT_FITTED` — a sibling dict recording the five models deliberately excluded
-  (Azeemuddin 2018, Yao 2022, Amano 2022, Duarte Gomes / Quintas-Neves 2026,
-  Hale 2018) and the reason for each. These reasons currently exist only in a
-  commit message; config is where someone about to re-add one would look.
-
 Two papers have deliberate gaps, left empty rather than filled:
 
 - **Kawahara 2012** transcribed in full from the publisher PDF (obtained

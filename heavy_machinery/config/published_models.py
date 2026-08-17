@@ -417,36 +417,6 @@ PUBLISHED_MODELS: dict[str, dict] = {
 }
 
 
-# Published models deliberately NOT refit, and why. These reasons otherwise live
-# only in a commit message, and this file is where someone about to re-add one
-# would look.
-NOT_FITTED: dict[str, str] = {
-    "azeemuddin_2018": (
-        "No multivariable model exists in the paper — it is an ADC "
-        "mean-comparison study. Previously mis-attributed in this pipeline."
-    ),
-    "yao_2022": (
-        "Needs a 3-level shape (regular / lobulated / irregular) and oedema "
-        "categorised by maximum diameter in mm. We hold binary shape and volume "
-        "only, and the published effect concentrates in the >40 mm stratum. "
-        "Cite in Discussion."
-    ),
-    "amano_2022": (
-        "The final model requires symptomatic presentation, which this cohort "
-        "does not record. Oedema volume is not a substitute: it is already in "
-        "the model as an imaging term and is causally downstream of symptoms. "
-        "Cite in Discussion."
-    ),
-    "duarte_gomes_quintas_neves_2026": (
-        "Requires normalised ADC (ratio to contralateral white matter) and "
-        "midline shift in mm. We hold absolute ADC and binary mass effect."
-    ),
-    "hale_2018": (
-        "The final multivariable model collapses to a single predictor "
-        "(peritumoral edema), so it is a single-predictor benchmark rather than "
-        "a multivariable refit."
-    ),
-}
 
 
 def published_model(model_id: str) -> dict | None:

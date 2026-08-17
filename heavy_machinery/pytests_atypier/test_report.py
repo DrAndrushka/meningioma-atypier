@@ -779,18 +779,6 @@ def test_published_block_shows_the_surrogate_note_as_a_warning(monkeypatch):
     assert "warn" in html
 
 
-def test_not_fitted_block_lists_every_exclusion(monkeypatch):
-    import report as rp
-    monkeypatch.setattr(rp.published_models, "NOT_FITTED",
-                        {"yao_2022": "needs a 3-level shape"}, raising=False)
-    html = rp._not_fitted_block()
-    assert "yao_2022" in html and "3-level shape" in html
-
-
-# ---------------------------------------------------------------------------
-# Combined-vs-single AUC comparison and the selection audit (Task 15)
-# ---------------------------------------------------------------------------
-
 def _model_vs_single_row(**overrides):
     row = {
         "model_id": "m1", "single": "tumor_volume",
