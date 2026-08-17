@@ -170,6 +170,57 @@ def test_run_comparison_stage_writes_all_three_tables(tmp_path):
     row = vs_tbl.iloc[0]
     assert row["delta_auc_corrected"] == pytest.approx(
         row["auc_model_corrected"] - row["auc_single_corrected"], abs=1e-9)
+    # No model here is in selected_model_ids (default None), so nothing
+    # re-runs selection inside its bootstrap. The column must still be
+    # present with a stable schema -- all zeros, not absent -- because a
+    # reader (or a downstream loader) should never see the column vanish
+    # just because this run happened not to have a data-selected model.
+    sel_tbl = out["top_variable_selection"]
+    assert "resample_selection_count" in sel_tbl.columns
+    assert (sel_tbl["resample_selection_count"] == 0).all()
+
+
+def test_run_comparison_stage_counts_resample_reselections_per_variable(tmp_path):
+    """Finding 3 (Task 13 review round 2): the counts bootstrap_internal_validation
+    already computes (``selection_counts``) were being thrown away -- the CSV
+    write happened before the per-variant loop that produces them. This checks
+    the column actually lands in the file with real, non-zero counts for
+    variables the selector chose, and a stable 0 (not NaN/blank) for a
+    candidate that never won a single resample.
+    """
+    import numpy as np, pandas as pd
+    from schema_infer import ColSpec
+    rng = np.random.RandomState(9)
+    n = 250
+    y = rng.binomial(1, 0.4, n)
+    df = pd.DataFrame({
+        "event": y.astype(bool),
+        "a": y * 1.3 + rng.normal(size=n),
+        "b": y * 0.8 + rng.normal(size=n),
+        "c": y * 0.6 + rng.normal(size=n),
+        "noise": rng.normal(size=n),  # should not out-rank a/b/c; may still get 0
+    })
+    schema = {"event": ColSpec("event", "binary"),
+              **{k: ColSpec(k, "continuous") for k in ("a", "b", "c", "noise")}}
+    variants = [{"model_id": "sel", "predictors": ["a", "b"]}]
+    out = mc.run_comparison_stage(
+        df, schema, variants, "event", tmp_path,
+        n_bootstrap=40, candidates=["a", "b", "c", "noise"], k_top=2,
+        assert_reference=False, selected_model_ids={"sel"})
+
+    sel_tbl = out["top_variable_selection"]
+    assert "resample_selection_count" in sel_tbl.columns
+    # Present for every row, not just the ones a selector happened to touch.
+    assert sel_tbl["resample_selection_count"].notna().all()
+    assert (sel_tbl["resample_selection_count"] >= 0).all()
+    # The full-cohort winner (rank 1 in `audit`/`sel_tbl`) is a strong signal
+    # and should win at least some resamples.
+    top_row = sel_tbl.loc[sel_tbl["kept"]].sort_values("discrimination").iloc[-1]
+    assert top_row["resample_selection_count"] > 0
+
+    saved = pd.read_csv(tmp_path / "top_variable_selection.csv")
+    assert "resample_selection_count" in saved.columns
+    assert saved["resample_selection_count"].notna().all()
 
 
 def test_run_comparison_stage_widens_the_selected_models_frame_with_candidates(

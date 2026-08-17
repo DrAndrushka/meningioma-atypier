@@ -292,9 +292,19 @@ def run_comparison_stage(
     if assert_reference:
         vs.assert_reference(picked)
     sel_tbl = pd.DataFrame(audit)
-    sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
+    # Write deferred until after the per-variant loop below: the loop is
+    # where the one data-selected model's bootstrap actually re-runs this
+    # selection and tallies how often each variable won, and that tally
+    # (`resample_selection_count`) is joined onto `sel_tbl` before it is
+    # written, not written separately.
 
     rows = []
+    # How often each candidate was re-picked across the data-selected model's
+    # bootstrap resamples (see the loop below). Stays {} if no model in this
+    # run is in `selected_model_ids` (or the one that is fails to fit), and
+    # every count then defaults to 0 below — a stable column, not a schema
+    # that only appears for runs that happen to have a selected model.
+    resample_selection_counts: dict[str, int] = {}
     for v in variants:
         mid, preds = _mid(v), _pred(v)
         try:
@@ -334,6 +344,12 @@ def run_comparison_stage(
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
             n_bootstrap=n_bootstrap, return_resample_aucs=True, select=selector)
+        if selector is not None:
+            # Only the selected model's bootstrap re-runs selection at all, so
+            # this is the one place `selection_counts` can come from. There is
+            # exactly one such model per run (`selected_model_ids` names it),
+            # so there is no multi-model tally to merge here.
+            resample_selection_counts = val.get("selection_counts", {})
         combined_auc = next(
             m for m in val["metrics"] if m["metric"] == "AUC")["optimism_corrected"]
         # Predictions of the full-cohort fit, held fixed. The confidence
@@ -388,6 +404,19 @@ def run_comparison_stage(
             })
     vs_tbl = pd.DataFrame(rows)
     vs_tbl.to_csv(tabs_dir / "model_vs_single_auc.csv", index=False)
+
+    # How many of the bootstrap's resamples re-selected each variable — the
+    # evidence for how firmly the six were chosen, not just that they were.
+    # Default is 0, not NaN/blank: a candidate no resample ever picked lost
+    # every single one, which is a real, meaningful outcome, and a blank
+    # would misread as "not evaluated" rather than "evaluated and rejected
+    # every time." Present for every row regardless of whether any model in
+    # this run had a selector, so the column's schema never depends on that.
+    sel_tbl["resample_selection_count"] = (
+        sel_tbl["variable"].map(resample_selection_counts).fillna(0).astype(int)
+    )
+    sel_tbl.to_csv(tabs_dir / "top_variable_selection.csv", index=False)
+
     return {"single_predictor_reference": single_tbl,
             "model_vs_single_auc": vs_tbl,
             "top_variable_selection": sel_tbl,
