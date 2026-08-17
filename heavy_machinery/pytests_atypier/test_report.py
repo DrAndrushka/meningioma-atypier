@@ -95,6 +95,45 @@ def test_classifiers():
     assert classify_missing(50.0) == "missing-severe"
 
 
+def test_beta_se_and_or_ci_formatting():
+    import report as rp
+    assert rp._beta_se(0.96, 0.37) == "0.96 (0.37)"
+    assert rp._beta_se(None, 0.37) == ""
+    assert rp._or_ci(2.60, 1.26, 5.38) == "2.60 (1.26–5.38)"
+    assert rp._or_ci(2.60, None, None) == "2.60"
+
+
+def test_model_level_line_states_intercept_and_imputations():
+    import pandas as pd, report as rp
+    tbl = pd.DataFrame({"intercept_coef": [-1.16, -1.16], "intercept_or": [0.312, 0.312],
+                        "n_models": [20, 20], "df": ["∞", "∞"]})
+    line = rp._model_level_line(tbl)
+    assert "-1.16" in line and "0.312" in line and "20" in line and "∞" in line
+
+
+def test_multivariable_table_shows_four_columns_only(report_cfg, report_art):
+    import pandas as pd, report as rp
+    report_art.inferential_multivariable = {
+        "high_grade::m1": pd.DataFrame({
+            "predictor_col": ["age", "male"],
+            "coef": [0.13, 0.72], "se": [0.13, 0.27],
+            "or": [1.14, 2.05], "or_ci_lo": [0.88, 1.22], "or_ci_hi": [1.46, 3.46],
+            "p": [0.315, 0.007], "df": ["∞", "∞"], "n_models": [20, 20],
+            "intercept_coef": [-1.16, -1.16], "intercept_or": [0.312, 0.312],
+            "z_mu": [63.1, None], "z_sd": [12.68, None],
+            "target": ["high_grade"] * 2, "model_id": ["m1"] * 2,
+            "experimental": [True, True],
+        })
+    }
+    html = rp.render_inferential(report_cfg, report_art)
+    for gone in ("model_id", "experimental", "intercept_coef", "n_models", "z_sd"):
+        assert f"<th>{gone}</th>" not in html
+    assert "β (SE)" in html and "OR (95% CI)" in html
+    # predictor_label folds z_sd into the name; SD >= 10 rounds to whole units
+    # (existing, shared behaviour with the forest plot — see inferential.py).
+    assert "per 1 SD: 13" in html
+
+
 def test_html_building_blocks():
     assert "warning-box" in warning_box("oops")
     assert "info-box" in info_box("note")

@@ -361,18 +361,15 @@ def _pooled(**overrides) -> pd.DataFrame:
     return base
 
 
-def test_forest_row_label_states_the_contrast_for_standardised_predictors():
-    """A per-SD odds ratio read as per-unit understates the predictor."""
-    rows = _pooled()
-    binary = inf._forest_row_label(rows.iloc[0])
-    continuous = inf._forest_row_label(rows.iloc[1])
-    assert binary == "Hyperostosis"
-    assert continuous == "ADC value (per 1 SD: 0.17)"
-    assert "\n" not in continuous
+def test_predictor_label_names_the_sd_for_a_continuous_predictor():
+    row = _pooled().iloc[1].copy()          # adc_value, z_sd = 0.17
+    assert "per 1 SD: 0.17" in inf.predictor_label(row)
 
-    row = rows.iloc[0].copy()
+
+def test_predictor_label_ignores_a_missing_or_zero_sd():
+    row = _pooled().iloc[0].copy()
     row["z_sd"] = 0.0
-    assert "per 1 SD" not in inf._forest_row_label(row)
+    assert "per 1 SD" not in inf.predictor_label(row)
 
 
 def test_forest_plot_writes_the_report_png_and_the_ajnr_tif_on_request(

@@ -551,7 +551,7 @@ def fit_multivariable_logistic(
 # Forest plot
 # ---------------------------------------------------------------------------
 
-def _forest_row_label(row: pd.Series) -> str:
+def predictor_label(row: pd.Series) -> str:
     """Predictor name plus the contrast its odds ratio actually describes.
 
     Continuous predictors are z-standardised before fitting, so their OR is per
@@ -594,7 +594,7 @@ def _forest_plot(
     plot_df = pooled.dropna(subset=["or"]).copy()
     if plot_df.empty:
         return
-    labels = [_forest_row_label(r) for _, r in plot_df.iterrows()]
+    labels = [predictor_label(r) for _, r in plot_df.iterrows()]
     fig, ax = forest_lr(
         labels,
         plot_df["or"].to_numpy(dtype=float),

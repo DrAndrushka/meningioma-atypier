@@ -33,6 +33,7 @@ from inferential import (
     model_key,
     parse_artifact_base,
     parse_model_key,
+    predictor_label,
 )
 
 from cleaning import (
@@ -1055,6 +1056,46 @@ def _published_or(term: dict) -> str:
     if lo is None or hi is None:
         return f"{o:.2f}"
     return f"{o:.2f} ({lo:.2f}–{hi:.2f})"
+
+
+def _beta_se(coef: Any, se: Any) -> str:
+    """``0.96 (0.37)`` — the log-odds coefficient with its standard error."""
+    c, s = _coerce_float(coef), _coerce_float(se)
+    if c is None:
+        return ""
+    return f"{c:.2f} ({s:.2f})" if s is not None else f"{c:.2f}"
+
+
+def _or_ci(o: Any, lo: Any, hi: Any) -> str:
+    """``2.60 (1.26–5.38)`` — same shape as the published table above it."""
+    ov, l, h = (_coerce_float(x) for x in (o, lo, hi))
+    if ov is None:
+        return ""
+    return f"{ov:.2f} ({l:.2f}–{h:.2f})" if l is not None and h is not None else f"{ov:.2f}"
+
+
+def _model_level_line(tbl: pd.DataFrame) -> str:
+    """Facts that were repeated on every row, stated once.
+
+    The intercept, the imputation count and the pooled degrees of freedom are
+    properties of the model, not of any predictor. As columns they cost seven
+    cells per row and told the reader nothing new after the first one.
+    """
+    bits: list[str] = []
+    if "intercept_coef" in tbl.columns and len(tbl):
+        ic = _coerce_float(tbl["intercept_coef"].iloc[0])
+        io = _coerce_float(tbl["intercept_or"].iloc[0]) if "intercept_or" in tbl.columns else None
+        if ic is not None:
+            bits.append(f"Intercept {ic:.2f}" + (f" (OR {io:.3f})" if io is not None else ""))
+    if "n_models" in tbl.columns and len(tbl):
+        n = _to_int_or_none(tbl["n_models"].iloc[0])
+        if n:
+            bits.append(f"pooled across {n} imputations")
+    if "df" in tbl.columns and len(tbl):
+        dfs = {human_pool_df(v) for v in tbl["df"] if str(v).strip()}
+        if len(dfs) == 1:
+            bits.append(f"Rubin df {dfs.pop()}")
+    return f'<p class="muted">{" &middot; ".join(_esc(b) for b in bits)}</p>' if bits else ""
 
 
 def _published_model_block(model_id: str) -> str:
@@ -2600,14 +2641,25 @@ def render_inferential(cfg: ReportConfig, art: Artifacts) -> str:
                         na_position="last",
                     )
                 tbl = tbl.drop(columns=[c for c in ("_p_num", "_eff_abs") if c in tbl.columns])
+                # Positional reset so ``display``'s default 0..n-1 index lines up
+                # with ``tbl``'s row order below — ``_row_cls`` still classifies
+                # off the numeric OR/CI columns, which only live on ``tbl``.
+                tbl = tbl.reset_index(drop=True)
 
-                if col_p and col_p in tbl.columns:
-                    tbl[col_p] = tbl[col_p].apply(human_p)
-                if "df" in tbl.columns:
-                    tbl["df"] = tbl["df"].apply(human_pool_df)
-
-                nowrap = ("model_id",) if "model_id" in tbl.columns else ()
-                blocks.append(table_to_html(tbl, row_class_fn=_row_cls, nowrap_cols=nowrap))
+                # The numeric ``tbl`` stays as-is for the interpretation block
+                # below; the display copy is what the reader sees.
+                display = pd.DataFrame({
+                    "Predictor": [predictor_label(r) for _, r in tbl.iterrows()],
+                    "β (SE)": [_beta_se(r.get("coef"), r.get("se"))
+                               for _, r in tbl.iterrows()],
+                    "OR (95% CI)": [_or_ci(r.get(col_or), r.get(col_lo), r.get(col_hi))
+                                    for _, r in tbl.iterrows()],
+                    "P": [human_p(r.get(col_p)) for _, r in tbl.iterrows()],
+                })
+                blocks.append(_model_level_line(tbl))
+                blocks.append(table_to_html(
+                    display, row_class_fn=lambda r: _row_cls(tbl.loc[r.name]),
+                    nowrap_cols=("β (SE)", "OR (95% CI)", "P")))
                 blocks.append(_render_inferential_interpretation(
                     target, tbl, col_pred, col_or, col_lo, col_hi, col_p))
             return "".join(blocks)
