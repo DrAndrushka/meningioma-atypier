@@ -31,6 +31,7 @@ from plot_style import (
     FIG_WIDTH_MEDIUM,
     apply_plot_style,
     forest_lr,
+    set_figure_legend,
     prettify_label,
     save_figure,
 )
@@ -607,6 +608,8 @@ def _forest_plot(
     )
     del ax
     stem = artifact_base(target, model_id)
+    set_figure_legend(fig, plain=(
+        "One row per predictor. Squares right of the line raise the odds of high grade, left of it lower them — and if the bar touches the line, it may do nothing at all."))
     save_figure(fig, figs_dir / f"{stem}__forest", tight_layout=False)
 
 
@@ -626,11 +629,23 @@ def _artifact_model_id(stem: str, target: str) -> str:
     return out[len(target) + 1:] if out.startswith(f"{target}_") else out
 
 
+def _outcome_label(definition: str | None) -> str:
+    """``1 = high-grade meningioma, 0 = ...`` -> ``high-grade meningioma``.
+
+    The figure footnotes name the outcome; taking it from the artifact means a
+    new target names itself instead of inheriting a stale caption.
+    """
+    if not definition:
+        return ""
+    head = str(definition).split(",")[0]
+    return head.split("=", 1)[-1].strip() if "=" in head else ""
+
+
 def _write_performance_figures(
     artifact_paths: Sequence[Path],
     figs_dir: Path,
     model_variants: Sequence[InferentialModelVariant],
-) -> list[Path]:
+) -> tuple[list[Path], dict[str, list[dict]]]:
     """ROC / calibration / decision curve per variant, plus one comparison figure.
 
     Sourced from the enriched Streamlit artifacts so the figures and the
@@ -666,16 +681,67 @@ def _write_performance_figures(
                 f"Performance figures skipped for {stem}: {exc}", stacklevel=2,
             )
             continue
-        by_target.setdefault(target, []).append(
-            {"label": label, "model_id": model_id, "validation": validation},
-        )
+        # n and events ride along so the figure footnotes can name the sample
+        # they were fitted on instead of leaving the reader to find it.
+        by_target.setdefault(target, []).append({
+            "label": label,
+            "model_id": model_id,
+            "validation": validation,
+            "n": artifact.get("n"),
+            "events": artifact.get("events"),
+            "outcome_label": _outcome_label(artifact.get("outcome_definition")),
+        })
 
+    # The model-overview figure is NOT built here. It quotes the same AUCs,
+    # deltas and intervals as the all-models comparison table, and that table
+    # does not exist yet at this point in the stage — see
+    # ``_write_model_overview_figures``, called once the comparison stage has
+    # written ``model_overview.csv``.
     for target, entries in by_target.items():
         try:
             path = write_model_comparison_figure(entries, figs_dir, target=target)
         except Exception as exc:
             warnings.warn(
                 f"Model comparison figure skipped for {target}: {exc}", stacklevel=2,
+            )
+            continue
+        if path is not None:
+            written.append(path)
+    return written, by_target
+
+
+def _write_model_overview_figures(
+    by_target: dict[str, list[dict]],
+    figs_dir: Path,
+    tabs_dir: Path,
+) -> list[Path]:
+    """This figure IS the all-models comparison table, drawn.
+
+    It therefore has to run after ``run_comparison_stage`` has written
+    ``model_overview.csv``: every AUC, delta and 95% CI it draws is read from
+    that file rather than recomputed, so the figure and the table cannot publish
+    two different answers to the same question. Without the file there is
+    nothing to draw and the figure is skipped rather than guessed at.
+    """
+    from performance_plots import write_model_performance_overview_figure
+
+    overview_csv = Path(tabs_dir) / "model_overview.csv"
+    if not overview_csv.is_file():
+        warnings.warn(
+            "model_overview.csv not found — the model overview figure is "
+            "skipped rather than drawn from recomputed numbers.",
+            stacklevel=2,
+        )
+    written: list[Path] = []
+    for target, entries in by_target.items():
+        try:
+            path = write_model_performance_overview_figure(
+                entries, figs_dir, target=target, overview_csv=overview_csv,
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Model overview figure skipped for {target}: {exc}",
+                stacklevel=2,
             )
             continue
         if path is not None:
@@ -979,7 +1045,8 @@ def run_inferential(
         selection_candidates=selection_candidates,
         selected_model_ids={"top_6_variables", "top_1_variable"},
     )
-    _write_performance_figures(artifact_paths, figs_dir, model_variants)
+    _, figure_entries = _write_performance_figures(
+        artifact_paths, figs_dir, model_variants)
 
     if selection_candidates is None:
         # Only run when the caller supplies a real candidate pool (the
@@ -1005,6 +1072,10 @@ def run_inferential(
             candidates=selection_candidates,   # EDA predictor pool, from the notebook
             selected_model_ids={"top_6_variables", "top_1_variable"},
         )
+
+    # After the comparison stage, always: the figure reads its deltas and
+    # intervals off the table that stage just wrote.
+    _write_model_overview_figures(figure_entries, figs_dir, tabs_dir)
 
     combined = pd.concat(all_rows, ignore_index=True)
     combined = combined[[c for c in _INFERENTIAL_COLS if c in combined.columns]]

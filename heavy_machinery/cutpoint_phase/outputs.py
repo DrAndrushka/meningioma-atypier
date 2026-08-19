@@ -34,6 +34,14 @@ import loading as ld
 import manifest as mf
 import manuscript_tables as mt
 import report_html as rh
+
+# plot_style lives in modelling_phase; importing heavy_machinery.config is what
+# puts every phase directory on sys.path, exactly as performance_plots does.
+try:
+    from plot_style import prune_embedded_figures
+except ModuleNotFoundError:  # pragma: no cover - path not yet extended
+    from heavy_machinery.config import load as _load_config  # noqa: F401
+    from plot_style import prune_embedded_figures
 from measurements import MEASUREMENTS_BY_COL
 
 FIGURE_TITLE = ("Figure 1. Discrimination, the flatness of the optimum, and the "
@@ -47,7 +55,16 @@ FIGURE_CAPTION = (
     "C, each cut-point with its bootstrap 95% interval on the same percentile "
     "axis, annotated in native units; grey indicates an interval wider than "
     "the measurement's own interquartile range.")
+FIGURE_PLAIN = (
+    "One line per measurement. The higher a curve bulges, the better it "
+    "separates the two grades; a flat peak in B means the exact cut-point "
+    "barely matters."
+)
 FIGURE2_TITLE = "Figure 2. Decision-curve analysis of the five cut-points"
+FIGURE2_PLAIN = (
+    "Whichever line is highest is the best thing to do at that level of "
+    "concern."
+)
 FIGURE2_CAPTION = (
     "A, net benefit of each cut-point across threshold probabilities, with the "
     "treat-all strategy (dashed) and the treat-none strategy (net benefit 0 at "
@@ -131,7 +148,8 @@ def build(df: pd.DataFrame, *, eligible: pd.DataFrame, cutpoints: dict,
         rh.dashboard_section(verdicts, lead=DASHBOARD_LEAD),
         rh.table_section(mt.T1_TITLE, t1, note=mt.t1_footnote(),
                          index_header="Measurement", lead=mt.describe_t1(t1)),
-        rh.figure_section(FIGURE_TITLE, png, caption=FIGURE_CAPTION),
+        rh.figure_section(FIGURE_TITLE, png, caption=FIGURE_CAPTION,
+                          plain=FIGURE_PLAIN),
         rh.table_section(mt.S1_TITLE, s1, note=mt.s1_footnote(),
                          index_header="Measurement", lead=mt.describe_s1(s1)),
         rh.table_section(mt.S2_TITLE, s2, note=mt.s2_footnote(),
@@ -142,14 +160,26 @@ def build(df: pd.DataFrame, *, eligible: pd.DataFrame, cutpoints: dict,
         rh.table_section(mt.S4_TITLE, s4, note=mt.s4_footnote(),
                          index_header="Measurement",
                          lead=mt.describe_s4(decision)),
-        rh.figure_section(FIGURE2_TITLE, png2, caption=FIGURE2_CAPTION),
+        rh.figure_section(FIGURE2_TITLE, png2, caption=FIGURE2_CAPTION,
+                          plain=FIGURE2_PLAIN),
     ], title="Meningioma cut-points — manuscript tables and figures",
        subtitle=(f"{facts['patients']} patients, {facts['high_grade']} WHO "
                  f"grade 2–3 ({float(facts['prevalence']):.1%}). Proof sheet: "
                  "the journal receives the .docx tables and the TIFF figures; "
                  "this page is for reading them together."))
 
-    written = [*table_paths, *figure_paths, *figure2_paths, html_path]
+    # Both figures ride inside the page as base64, so the PNGs beside it are a
+    # second copy. The TIFs stay: those are what the journal receives, and the
+    # page does not contain them.
+    pruned, freed, _kept = prune_embedded_figures(
+        html_path, roots=[out / "figures"])
+    if pruned:
+        print(f"Pruned {pruned} embedded figure(s), "
+              f"{freed / 1048576:.1f} MB reclaimed")
+    # Filtered before the manifest is built, so it never records a file that
+    # was deleted a moment later.
+    written = [p for p in [*table_paths, *figure_paths, *figure2_paths, html_path]
+               if p.exists()]
     # Read off the imputation step rather than restated: m is a property of the
     # cleaning run this phase happened to load, not a setting this phase owns.
     draws = (int(imputation["n_draws"].max())

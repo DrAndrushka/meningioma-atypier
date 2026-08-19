@@ -800,11 +800,15 @@ def run_marker_panel(
         if "origin" in part.columns and not (part["origin"] == origin).all():
             raise ValueError(
                 f"The {origin} forest was handed rows from the other family.")
-        ps.save_figure(lr_forest_figure(part.reset_index(drop=True)),
-                       fig_dir / f"lr_forest_{origin}",
+        _fig = lr_forest_figure(part.reset_index(drop=True))
+        ps.set_figure_legend(_fig, plain=(
+            "One row per finding. The further right, the more it points to a high-grade tumour; a bar touching the line means it tells you nothing."))
+        ps.save_figure(_fig, fig_dir / f"lr_forest_{origin}",
                        tight_layout=False, kind="halftone")
-    ps.save_figure(lr_forest_figure(panel), fig_dir / "lr_forest",
-                   tight_layout=False)
+    _fig = lr_forest_figure(panel)
+    ps.set_figure_legend(_fig, plain=(
+        "One row per finding. The further right, the more it points to a high-grade tumour; a bar touching the line means it tells you nothing."))
+    ps.save_figure(_fig, fig_dir / "lr_forest", tight_layout=False)
     prevalence = (
         float(shared[target].astype("boolean").mean()) if len(shared) else None
     )

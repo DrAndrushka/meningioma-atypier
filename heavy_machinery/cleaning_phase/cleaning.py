@@ -806,6 +806,7 @@ _SUMMARY_COLUMNS = ["step", "detail", "n_rows", "n_columns", "criterion"]
 
 def _build_cleaning_summary(
     *,
+    source_files: Sequence[str] | None = None,
     n_rows_raw: int,
     n_rows_after_schema: int,
     n_rows_final: int,
@@ -828,7 +829,10 @@ def _build_cleaning_summary(
             "detail": "rows in source file",
             "n_rows": n_rows_raw,
             "n_columns": n_columns_raw,
-            "criterion": "",
+            # Basenames only: the report is meant to be shared, and the
+            # absolute path of a PHI export is not something to put in it.
+            "criterion": "; ".join(
+                Path(str(p)).name for p in (source_files or [])),
         },
         {
             "step": "apply_schema",
@@ -932,6 +936,7 @@ def export_cleaning_artifacts(
     dupes: pd.DataFrame | None = None,
     schema_log: list[dict[str, Any]] | None = None,
     n_columns_raw: int | None = None,
+    source_files: Sequence[str] | None = None,
 ) -> dict[str, Path]:
     """Write ``output/cleaning/cleaned.csv``, ``cleaning_summary.csv``, and ``cleaning_log.csv``."""
     out_dir = Path(output_root) / "cleaning"
@@ -942,6 +947,7 @@ def export_cleaning_artifacts(
     df.loc[:, export_cols].to_csv(cleaned_path, index=False)
 
     summary = _build_cleaning_summary(
+        source_files=source_files,
         n_rows_raw=n_rows_raw,
         n_rows_after_schema=n_rows_after_schema,
         n_rows_final=n_rows_final,

@@ -54,6 +54,7 @@ from heavy_machinery.modelling_phase.plot_style import (
     apply_plot_style,
     prettify_label,
     save_figure,
+    set_figure_legend,
 )
 
 apply_plot_style()
@@ -99,7 +100,7 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
         fig, ax = plt.subplots(figsize=(8, max(3, 0.45 * len(plot_df) + 0.8)))
         sns.barplot(x="pct_missing", y="label", data=plot_df, ax=ax,
                     color=PALETTE["accent"])
-        ax.set_title("Missing values per column")
+        set_figure_legend(fig, title="Missing values per column")
         ax.set_xlabel("% missing"); ax.set_ylabel("")
         ax.bar_label(ax.containers[0], fmt="%.1f%%", fontsize=8.5, padding=3)
         ax.margins(x=0.12)
@@ -129,7 +130,7 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
                     mask=tri_mask, annot_kws={"fontsize": annot_fs},
                     linewidths=0.5, linecolor="white",
                     cbar_kws={"label": "Jaccard overlap", "shrink": 0.6})
-        ax.set_title("Co-missingness overlap (Jaccard)")
+        set_figure_legend(fig, title="Co-missingness overlap (Jaccard)")
         plt.setp(ax.get_xticklabels(), rotation=40, ha="right")
         plt.setp(ax.get_yticklabels(), rotation=0)
         save_figure(fig, figs / "co_missingness_heatmap")

@@ -121,5 +121,6 @@ def finalize_row_drops(
         drop_log=_drop_log_for_export(row_filter_log),
         dupes=dupes,
         schema_log=schema_log,
+        source_files=df_raw.attrs.get("source_files"),
     )
     return df

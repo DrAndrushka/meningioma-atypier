@@ -325,8 +325,10 @@ def test_count_score_figure_names_the_count_and_a_short_marker_list():
     fig = mp.count_score_figure(counts, COUNT_MARKERS)
     ax = fig.axes[0]
     assert "3" in ax.get_xlabel()
-    subtitle = " ".join(t.get_text() for t in ax.texts) + ax.get_title()
-    assert "Sign 0" in subtitle
+    # The marker list is recorded for the report, not drawn on the axes.
+    import plot_style as ps
+    legend = ps.figure_legend(fig)
+    assert "Sign 0" in f"{legend['title']} {legend['note']}"
     plt.close(fig)
 
 

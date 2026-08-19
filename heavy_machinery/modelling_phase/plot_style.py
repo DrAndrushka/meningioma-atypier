@@ -15,7 +15,9 @@ modules never branch on a study-specific column name.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import os
 import re
 from contextlib import contextmanager, nullcontext
@@ -432,20 +434,35 @@ def set_titles(
     *,
     pad: float = 6.0,
 ) -> None:
-    """Title plus an optional smaller subtitle line above the axes.
+    """Record a figure's title and its subtitle — as text, not as pixels.
 
-    Sample size and test results live here rather than in a floating badge:
-    text above the axes can never occlude the data it describes.
+    Nothing is drawn. Both are attached to the figure and :func:`save_figure`
+    writes them to the ``.legend.json`` sidecar, from which the report prints
+    the title above the image and the subtitle below it. See
+    :func:`set_figure_legend` for why the words stay out of the image.
+
+    A figure whose panels each call this — a facet grid, a two-panel
+    comparison — accumulates them in drawing order rather than letting the last
+    panel silently overwrite the first.
+
+    ``pad`` is accepted and ignored. It described the gap the drawn title used
+    to need above the axes, and callers still pass it.
     """
-    if subtitle:
-        ax.set_title(title, pad=pad + 11.0)
-        ax.text(
-            0.5, 1.012, subtitle,
-            transform=ax.transAxes, ha="center", va="bottom",
-            fontsize=plt.rcParams["font.size"] * 0.82, color="#444444",
-        )
-    else:
-        ax.set_title(title, pad=pad)
+    del pad
+    fig = ax.figure
+    legend = dict(getattr(fig, _LEGEND_ATTR, None)
+                  or {k: "" for k in _LEGEND_FIELDS})
+
+    def _add(field: str, text: str | None) -> None:
+        text = (text or "").strip()
+        have = legend.get(field, "")
+        if not text or text in have.split(" · "):
+            return
+        legend[field] = f"{have} · {text}" if have else text
+
+    _add("title", title)
+    _add("note", subtitle)
+    setattr(fig, _LEGEND_ATTR, legend)
 
 
 def n_subtitle(n: int, *, extra: str | None = None) -> str:
@@ -1043,6 +1060,146 @@ def apply_plot_style(
     use_style("ajnr")
 
 
+_LEGEND_ATTR = "_atypier_legend"
+
+
+_LEGEND_FIELDS = ("title", "plain", "note")
+
+
+def set_figure_legend(fig: plt.Figure, *, title: str = "", plain: str = "",
+                      note: str = "") -> None:
+    """Hand a figure's title and its two explanations to the report as *text*.
+
+    Nothing is drawn. :func:`save_figure` writes the three to a ``.legend.json``
+    sidecar beside the image, and the report prints the title above the figure
+    with ``plain`` then ``note`` below it.
+
+    The two explanations answer different questions and are not shortened
+    versions of each other:
+
+    - ``plain`` — how to read the picture, in one or two sentences of ordinary
+      words. What the marks are, which direction is better. No title, no
+      statistics vocabulary, nothing a reader has to already know.
+    - ``note`` — the ``Note:—`` block as the journal sets it: definitions,
+      abbreviations, cohort, and the caveats a reviewer needs.
+
+    Words belong in the page, not in the pixels: kept out of the image they stay
+    selectable, searchable and re-wrappable at any width, and the exported TIF
+    reaches the journal without a legend burnt into it — which is how a figure is
+    supposed to be submitted. Panel letters (A, B, C) are the exception and stay
+    drawn, because they are positional: they label a place in the image and mean
+    nothing detached from it.
+    """
+    values = {"title": title, "plain": plain, "note": note}
+    setattr(fig, _LEGEND_ATTR,
+            {k: (values[k] or "").strip() for k in _LEGEND_FIELDS})
+
+
+def figure_legend(fig: plt.Figure) -> dict[str, str]:
+    """The title/plain/note recorded on a figure, before it has been saved."""
+    return dict(getattr(fig, _LEGEND_ATTR, None)
+                or {k: "" for k in _LEGEND_FIELDS})
+
+
+def figure_legend_path(image_path: Path | str) -> Path:
+    """The sidecar carrying one figure's title and note."""
+    p = Path(image_path)
+    stem = (p.with_suffix("")
+            if p.suffix.lower().lstrip(".") in _IMAGE_SUFFIXES else p)
+    return Path(f"{stem}.legend.json")
+
+
+def write_figure_legend(image_path: Path | str, *, title: str = "",
+                        plain: str = "", note: str = "") -> Path | None:
+    """Write a legend sidecar for an image saved outside :func:`save_figure`.
+
+    A figure rendered straight to bytes never passes through ``save_figure`` and
+    so never gets its legend written; this is the escape hatch for those. An
+    all-empty legend removes any sidecar left from an earlier run rather than
+    leaving stale text on the page.
+    """
+    values = {"title": title, "plain": plain, "note": note}
+    legend = {k: (values[k] or "").strip() for k in _LEGEND_FIELDS}
+    path = figure_legend_path(image_path)
+    if not any(legend.values()):
+        if path.is_file():
+            path.unlink()
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(legend, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+    return path
+
+
+def read_figure_legend(image_path: Path | str) -> dict[str, str]:
+    """``{"title": ..., "plain": ..., "note": ...}``; empty when it has none.
+
+    A missing or unreadable sidecar is not an error — the figure simply has no
+    legend of its own and the caller falls back to the name-derived caption.
+    """
+    path = figure_legend_path(image_path)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out = {k: str(data.get(k) or "").strip() for k in _LEGEND_FIELDS}
+    return out if any(out.values()) else {}
+
+
+def prune_embedded_figures(
+    report_path: Path | str,
+    *,
+    roots: Sequence[Path | str],
+    dry_run: bool = False,
+) -> tuple[int, int, list[Path]]:
+    """Delete figure files whose bytes are provably inside the report.
+
+    The report embeds every figure as base64, so once it is written the PNG on
+    disk is a second copy of the same pixels. This reclaims that space.
+
+    It deletes a file **only** when the report demonstrably contains those exact
+    bytes. A figure that silently failed to render or embed must not be deleted
+    merely for sitting in a figures directory — otherwise one bad render turns
+    into quiet data loss, which is the one outcome worse than wasted disk.
+
+    TIFFs and vector exports are never touched: those are the journal
+    deliverable, not a duplicate of anything on the page. A pruned figure's
+    ``.legend.json`` goes with it, since the legend has already been baked into
+    the report and describes a file that no longer exists.
+
+    Returns ``(files_deleted, bytes_reclaimed, kept)`` where ``kept`` lists the
+    PNGs left behind because the report does not contain them.
+    """
+    html = Path(report_path).read_text(encoding="utf-8")
+    embedded: set[str] = set()
+    for chunk in re.findall(r"base64,([A-Za-z0-9+/=]{200,})", html):
+        try:
+            embedded.add(hashlib.md5(base64.b64decode(chunk)).hexdigest())
+        except Exception:            # a truncated or non-image payload
+            continue
+
+    deleted = reclaimed = 0
+    kept: list[Path] = []
+    for root in roots:
+        for png in sorted(Path(root).rglob("*.png")):
+            if hashlib.md5(png.read_bytes()).hexdigest() not in embedded:
+                kept.append(png)
+                continue
+            size = png.stat().st_size
+            sidecar = figure_legend_path(png)
+            if not dry_run:
+                png.unlink()
+                if sidecar.is_file():
+                    sidecar.unlink()
+            deleted += 1
+            reclaimed += size
+    return deleted, reclaimed, kept
+
+
 def save_figure(
     fig: plt.Figure,
     path: Path | str,
@@ -1094,6 +1251,15 @@ def save_figure(
         else:
             fig.savefig(pth, dpi=dpi, **extra)
         written.append(pth)
+    # The sidecar is written next to the image and refreshed on every run, so a
+    # legend can never outlive the figure it describes.
+    legend = getattr(fig, _LEGEND_ATTR, None)
+    sidecar = figure_legend_path(stem)
+    if legend and any(legend.get(k) for k in _LEGEND_FIELDS):
+        sidecar.write_text(json.dumps(legend, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+    elif sidecar.is_file():
+        sidecar.unlink()
     if close:
         plt.close(fig)
     png = next((p for p in written if p.suffix.lower() == ".png"), written[0])

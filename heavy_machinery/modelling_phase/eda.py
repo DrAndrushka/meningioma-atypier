@@ -42,6 +42,8 @@ from plot_style import (
     prettify_level,
     raincloud,
     save_figure,
+    set_figure_legend,
+    write_figure_legend,
     set_titles,
     width_for_levels,
 )
@@ -1178,11 +1180,14 @@ def association_heatmap_svg(
     ax.tick_params(which="both", length=0)
     ax.set_xlabel("Predictor", labelpad=10)
     ax.set_ylabel("Target", labelpad=14)
-    ax.set_title(
-        "Association strength overview\n"
-        "* = FDR-significant · hatched = magnitude only (no direction) · "
-        "grey = not tested · predictors never FDR-significant are omitted",
-        pad=12,
+    set_figure_legend(
+        fig,
+        title="Association strength overview",
+        plain=("Darker means a stronger link between that predictor and "
+               "that outcome. Numbers appear only where the link held up "
+               "to testing."),
+        note=("* = FDR-significant · hatched = magnitude only (no direction) · "
+              "grey = not tested · predictors never FDR-significant are omitted"),
     )
     x_rot = 55 if n_p > 10 else 40
     x_fs = 7.5 if n_p > 18 else 8.5
@@ -1211,7 +1216,20 @@ def plot_association_heatmap(
     )
     if data:
         figs_dir.mkdir(parents=True, exist_ok=True)
-        (figs_dir / "association_heatmap.png").write_bytes(data)
+        png = figs_dir / "association_heatmap.png"
+        png.write_bytes(data)
+        # Rendered straight to bytes, so save_figure never sees it and the
+        # legend has to be written here instead.
+        write_figure_legend(
+            png,
+            title="Association strength overview",
+            plain=("Darker means a stronger link between that predictor and "
+                   "that outcome. Numbers appear only where the link held "
+                   "up to testing."),
+            note=("* = FDR-significant · hatched = magnitude only (no "
+                  "direction) · grey = not tested · predictors never "
+                  "FDR-significant are omitted"),
+        )
 
 
 # ---------------------------------------------------------------------------

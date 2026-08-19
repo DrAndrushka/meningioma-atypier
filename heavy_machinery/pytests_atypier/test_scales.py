@@ -205,12 +205,3 @@ def test_calculator_rejects_a_negative_volume_rather_than_returning_a_risk():
 # --------------------------------------------------------------------------
 # And says so in print
 # --------------------------------------------------------------------------
-def test_footnote_names_every_logged_measurement_it_is_given():
-    note = scales.scale_footnote(["tumor_volume", "adc_value", "edema_index"])
-    assert "Tumor Volume" in note or "Tumor volume" in note
-    assert "log scale" in note
-    assert "adc" not in note.lower().replace("adc_value", "")
-
-
-def test_footnote_is_empty_when_nothing_on_the_table_is_logged():
-    assert scales.scale_footnote(["adc_value", "max_diameter_cm"]) == ""

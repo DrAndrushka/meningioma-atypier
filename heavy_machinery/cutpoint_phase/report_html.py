@@ -29,15 +29,17 @@ import pandas as pd
 STYLE = """
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 2.5rem 1.5rem 5rem; background: #ffffff; color: #111;
+body { margin: 0; padding: 2.5rem 1.5rem 5rem; background: #F7DDB8; color: #111;
        font: 16px/1.6 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 main { max-width: 62rem; margin: 0 auto; }
 h1 { font-size: 1.6rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
 .sub { color: #555; margin: 0 0 2.5rem; font-size: .95rem; }
 section { margin: 0 0 3rem; }
 h2 { font-size: 1.05rem; margin: 0 0 .9rem; font-weight: 650; }
-.scroll { overflow-x: auto; margin: 0 0 .8rem; }
-table { border-collapse: collapse; width: 100%; font-size: .87rem; }
+.scroll { overflow-x: auto; margin: 0 0 .8rem; background: #fff;
+          border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: .87rem;
+        background: #fff; }
 th, td { text-align: left; padding: .5rem .7rem; vertical-align: top;
          white-space: nowrap; }
 thead th { border-bottom: 1.5px solid #111; font-weight: 650; }
@@ -88,7 +90,7 @@ figure img { width: 100%; height: auto; display: block; }
 footer { border-top: 1px solid #ddd; margin-top: 3rem; padding-top: 1rem;
          color: #666; font-size: .8rem; }
 @media (prefers-color-scheme: dark) {
-  body { background: #ffffff; color: #111; }
+  body { background: #F7DDB8; color: #111; }
 }
 """
 
@@ -211,8 +213,14 @@ def dashboard_section(entries: Sequence[dict], *,
     return f"<section>{''.join(blocks)}</section>"
 
 
-def figure_section(title: str, image: Path | str, *, caption: str = "") -> str:
-    """A figure embedded as base64, so the page stays one file."""
+def figure_section(title: str, image: Path | str, *, caption: str = "",
+                   plain: str = "") -> str:
+    """A figure embedded as base64, so the page stays one file.
+
+    ``plain`` is the how-to-read-it line in ordinary words; it sits between the
+    figure and the journal ``caption``, so a reader meets the picture in plain
+    language before the vocabulary a reviewer needs.
+    """
     path = Path(image)
     if not path.exists():
         return placeholder_section(title, columns=[f"expected at {path}"],
@@ -223,6 +231,8 @@ def figure_section(title: str, image: Path | str, *, caption: str = "") -> str:
     parts = [f"<h2>{_escape(title)}</h2>",
              f'<figure><img alt="{_escape(title)}" '
              f'src="data:{mime};base64,{data}"></figure>']
+    if plain:
+        parts.append(f'<p class="lead">{_escape(plain)}</p>')
     if caption:
         parts.append(f'<p class="note">{_escape(caption)}</p>')
     return f"<section>{''.join(parts)}</section>"

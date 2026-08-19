@@ -259,23 +259,6 @@ def test_derived_tables_split_added_from_recoded():
     assert "skipped_one" not in html
 
 
-def test_cleaning_provenance_reports_each_shape():
-    art = Artifacts(
-        output_root=Path("."),
-        cleaning_summary=pd.DataFrame([
-            {"step": "raw_data", "detail": "rows", "n_rows": 10, "n_columns": 5, "criterion": ""},
-            {"step": "apply_schema", "detail": "coerced dtypes", "n_rows": 10,
-             "n_columns": 4, "criterion": ""},
-            {"step": "final", "detail": "done", "n_rows": 9, "n_columns": 6, "criterion": ""},
-        ]),
-    )
-    html = rp._cleaning_provenance(art)
-    assert "10 rows × 5 columns" in html
-    assert "10 rows × 4 columns" in html
-    assert "9 rows × 6 columns" in html
-    assert "coerced dtypes" in html
-
-
 def test_render_cleaning_coercion_audit(report_cfg, report_art):
     report_art.cleaning_summary = pd.DataFrame([{
         "step": "final", "detail": "done", "n_rows": 10, "n_columns": 5, "criterion": "",
@@ -361,8 +344,8 @@ def test_render_dda_orders_the_blocks_and_splits_native_from_derived(report_cfg,
     assert "📏 Continuous / count variables (1)" in html
     # Continuous has no flagged derived cols → plain table, no Native/Derived split
     cont_start = html.index("📏 Continuous / count variables (1)")
-    cont_chunk = html[cont_start:cont_start + 800]
-    assert "🌱 Native" not in cont_chunk
+    cont_end = html.index("✅ Binary variables", cont_start)
+    assert "🌱 Native" not in html[cont_start:cont_end]
 
 
 def test_render_dda_hides_hidden_parent_columns(report_cfg, report_art):
@@ -546,12 +529,6 @@ def test_render_eda_paper_tables_native_derived(report_cfg, report_art):
     assert "eda-kind-divider" in html
     assert "eda-col-header" in html
     assert "eda-paper-stack" in html
-    # The AJNR footnote: one Note:— paragraph, then the abbreviation list.
-    assert "Note:&mdash;" in html
-    assert "Benjamini&ndash;Hochberg false discovery rate procedure" in html
-    assert "Native and derived variables form separate families" in html
-    assert "not portable" in html
-    assert "AUC indicates area under the receiver operating characteristic" in html
     assert "Full Sweep" not in html
     assert "Like in that research" not in html
     # One fold per origin, each holding that origin's table AND its forest.
@@ -663,10 +640,6 @@ def test_render_inferential(report_cfg, report_art):
     assert 'class="epv-card"' in html
     assert "Underpowered" in html
 
-    assert "Interpretation" in rp._render_inferential_interpretation(
-        "event", tbl, "predictor_col", "or", "or_ci_lo", "or_ci_hi", "p",
-    )
-
 
 def test_render_inferential_multiple_variants(report_cfg, report_art):
     report_art.inferential_multivariable = {
@@ -709,7 +682,6 @@ def test_render_inferential_multiple_variants(report_cfg, report_art):
     assert "meningioma_atypier primary model" in html
     assert "Bondo et al." in html
     assert 'href="https://example.com/bondo"' in html
-    assert "Interpretation" in html
 
 
 @pytest.mark.parametrize(
@@ -836,61 +808,6 @@ def test_model_vs_single_block_puts_the_ci_next_to_apparent_not_corrected(report
     assert ci_idx - apparent_idx < 400
 
 
-def test_model_vs_single_block_paragraph_explains_apparent_vs_corrected(report_art):
-    import pandas as pd, report as rp
-    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
-    html = rp._model_vs_single_block("m1", report_art)
-    lowered = html.lower()
-    assert "apparent" in lowered and "corrected" in lowered
-    assert "overfitting" in lowered or "optimism" in lowered
-
-
-def test_model_vs_single_block_paragraph_explains_the_p_value_is_a_different_uncorrected_question(report_art):
-    """Requirement B: d2_p is a full-cohort, no-optimism-correction
-    likelihood-ratio test, and it can be significant while the (corrected)
-    ΔAUC's apparent-delta CI spans zero -- as it genuinely does for
-    funari_2023/tumor_volume and spille_2020/edema_volume_cm3. The paragraph
-    must say the two answer different questions and that the p-value carries
-    no optimism correction, so a reader does not conclude one of them is
-    wrong."""
-    import pandas as pd, report as rp
-    report_art.model_vs_single = pd.DataFrame([
-        _model_vs_single_row(model_id="funari_2023", single="tumor_volume",
-                              delta_auc_corrected=0.018, delta_auc_apparent=0.026,
-                              delta_ci_lo=-0.006, delta_ci_hi=0.057, d2_p=0.014873),
-    ])
-    html = rp._model_vs_single_block("funari_2023", report_art)
-    lowered = html.lower()
-    assert "likelihood" in lowered
-    assert "no optimism correction" in lowered or "not optimism-corrected" in lowered \
-        or "no correction for optimism" in lowered
-    assert "different question" in lowered or "different questions" in lowered
-
-
-def test_model_vs_single_block_states_corrected_delta_has_no_interval(report_art):
-    """A related gap the reviewer flagged: after being told not to use the
-    apparent CI or the p-value for the corrected delta's uncertainty, a
-    reader is left wondering what to use instead. The answer is nothing --
-    it is a point estimate -- and the block must say so."""
-    import pandas as pd, report as rp
-    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row()])
-    html = rp._model_vs_single_block("m1", report_art)
-    lowered = html.lower()
-    assert "point estimate" in lowered
-    assert "no confidence interval" in lowered or "no interval" in lowered
-
-
-def test_model_vs_single_block_resample_count_is_read_from_the_data(report_art):
-    """The "resampled ... times" phrase must track model_vs_single_auc.csv's
-    own n_resamples column, not a literal 1000 -- a re-run with a different
-    bootstrap count must not leave stale prose behind."""
-    import pandas as pd, report as rp
-    report_art.model_vs_single = pd.DataFrame([_model_vs_single_row(n_resamples=250)])
-    html = rp._model_vs_single_block("m1", report_art)
-    assert "250" in html
-    assert "1000" not in html
-
-
 def test_model_vs_single_block_single_auc_and_delta_use_three_decimals(report_art):
     """format_number trims trailing zeros, which makes ΔAUC corrected and
     ΔAUC apparent look like different precisions side by side, and turns an
@@ -917,7 +834,8 @@ def test_model_vs_single_block_multiple_singles_all_render(report_art):
     ])
     html = rp._model_vs_single_block("m1", report_art)
     assert "tumor_volume" in html and "irregular_tumor_margin" in html
-    assert "beat its own single" in html.lower() or "beat its own single" in html
+    # The block is a bare table now; its own columns identify it.
+    assert "Single predictor" in html and "ΔAUC corrected" in html
 
 
 def test_selection_audit_block_names_the_dropped_variable_and_reason(report_art):
@@ -1011,7 +929,6 @@ def test_selection_audit_block_explains_what_a_low_resample_count_means(report_a
     # value actually in the fixture's data, and prove it moves with the data
     # in a second call.
     assert str(n_resamples) in html
-    assert "stable" in lowered or "unstable" in lowered
 
     other = report_art.top_selection.copy()
     other["resample_selection_total"] = 250
@@ -1041,88 +958,6 @@ def test_selection_audit_block_denominator_is_not_borrowed_from_model_vs_single(
     html = rp._selection_audit_block(report_art)
     assert "Selected in resamples (of 777)" in html
     assert "Selected in resamples (of 1000)" not in html
-
-
-def test_selection_audit_block_derives_the_collinearity_sentence_from_the_table(report_art):
-    """Important finding fix: the "picked almost as often as tumor_volume"
-    claim must be computed from resample_selection_count, not typed. Use
-    counts that differ from production (382 vs 615) to prove the sentence
-    isn't hardcoded, and check the actual counts appear rather than a
-    characterisation like "almost as often" or "coin flip"."""
-    import pandas as pd, report as rp
-    report_art.top_selection = pd.DataFrame([
-        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 900},
-        {"variable": "max_diameter_cm", "auc": 0.675, "discrimination": 0.675,
-         "kept": False, "reason": "rho=0.42 with tumor_volume",
-         "resample_selection_count": 111},
-    ])
-    html = rp._selection_audit_block(report_art)
-    assert "still won 111 resamples" in html
-    assert "900" in html
-    assert "0.42" in html
-    # The old hardcoded pair (382, 615) must not leak in from a stale string.
-    assert "382" not in html
-    assert "615" not in html
-
-
-def test_selection_audit_block_picks_the_highest_count_dropped_collinear_row(report_art):
-    """When more than one variable was dropped for collinearity, the
-    sentence must name the one with the highest resample_selection_count,
-    not just the first row in the table."""
-    import pandas as pd, report as rp
-    report_art.top_selection = pd.DataFrame([
-        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 900},
-        {"variable": "weak_collinear", "auc": 0.60, "discrimination": 0.60,
-         "kept": False, "reason": "rho=0.85 with tumor_volume",
-         "resample_selection_count": 5},
-        {"variable": "max_diameter_cm", "auc": 0.675, "discrimination": 0.675,
-         "kept": False, "reason": "rho=0.91 with tumor_volume",
-         "resample_selection_count": 382},
-    ])
-    html = rp._selection_audit_block(report_art)
-    # The derived sentence names the higher-count row (max_diameter_cm, 382),
-    # not the weaker one (weak_collinear, 5) -- even though both rows are
-    # still listed in the table itself.
-    assert "still won 382" in html
-    assert "still won 5" not in html
-    # weak_collinear appears exactly once: its own table row, not a second
-    # time inside a derived sentence about it.
-    assert html.count("weak_collinear") == 1
-
-
-def test_selection_audit_block_omits_the_collinearity_sentence_when_none_dropped_for_it(report_art):
-    """No candidate was dropped for correlation with a kept variable (e.g.
-    only cut-point rows were dropped) -- the block must not invent a claim
-    about a pair that doesn't exist."""
-    import pandas as pd, report as rp
-    report_art.top_selection = pd.DataFrame([
-        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
-        {"variable": "tumor_volume_ge15.1", "auc": 0.639, "discrimination": 0.639,
-         "kept": False, "reason": "cut-point of tumor_volume",
-         "resample_selection_count": 0},
-    ])
-    html = rp._selection_audit_block(report_art)
-    assert "still won" not in html
-    assert "0.91" not in html
-    assert "dropped by the full-cohort selection only for being too correlated" not in html
-
-
-def test_selection_audit_block_explains_cutpoint_zero_is_structural(report_art):
-    import pandas as pd, report as rp
-    report_art.top_selection = pd.DataFrame([
-        {"variable": "tumor_volume", "auc": 0.679, "discrimination": 0.679,
-         "kept": True, "reason": float("nan"), "resample_selection_count": 615},
-        {"variable": "tumor_volume_ge15.1", "auc": 0.639, "discrimination": 0.639,
-         "kept": False, "reason": "cut-point of tumor_volume",
-         "resample_selection_count": 0},
-    ])
-    html = rp._selection_audit_block(report_art)
-    lowered = html.lower()
-    assert "structural" in lowered
-    assert "deterministic" in lowered or "guard" in lowered
 
 
 def test_selection_audit_block_header_shows_the_resample_denominator_when_known(report_art):
@@ -1193,7 +1028,7 @@ def test_render_inferential_wires_the_combined_vs_single_and_selection_blocks(re
     ])
     report_cfg.targets = ("high_grade",)
     html = render_inferential(report_cfg, report_art)
-    assert "beat its own single" in html
+    assert "Was the combination worth it?" in html
     assert "How these variables were chosen" in html
     assert ">nan<" not in html and ">None<" not in html
 
@@ -1430,20 +1265,6 @@ def test_the_native_family_rejects_restatements_and_hidden_parents():
         )
 
 
-def test_the_footnote_names_what_was_dropped_and_what_replaced_it():
-    """A reader who knows sex was recorded must be told it is here as "Male"."""
-    html = rp._render_eda_native_derived_block(
-        _paper_pair(), target="y",
-        derived_cols=frozenset({"adc_value_le0.72"}),
-        n_fdr_family=1, n_derived_family=1,
-        hidden_parents=frozenset({"sex"}),
-        hidden_replacements={"sex": ["male"]},
-        derived_sources={"adc_value_le0.72": ["adc_value"]},
-    )
-    assert "Replaced by derived flags" in html
-    assert "Male" in html
-
-
 def test_model_overview_block_carries_both_comparators(report_cfg, report_art):
     """The overview's whole point is that the two Δ columns answer different
     questions and often disagree — a model can beat its own best ingredient and
@@ -1460,9 +1281,44 @@ def test_model_overview_block_carries_both_comparators(report_cfg, report_art):
         "delta_ref_ci_lo": -0.045, "delta_ref_ci_hi": 0.094,
     }])
     html = rp._model_overview_block(report_art)
-    assert "+0.063 (+0.031 to +0.132)" in html      # beats its own ingredient
-    assert "+0.009 (-0.045 to +0.094)" in html      # but not tumour volume
+    assert "+0.063" in html                          # beats its own ingredient
+    assert "+0.009" in html                          # but not tumour volume
+    assert "+0.080 (+0.031 to +0.132)" in html       # apparent gap and its CI
+    assert "+0.024 (-0.045 to +0.094)" in html
     assert "Tumor volume" in html                    # reference named in a header
+
+
+def test_model_overview_block_gives_each_delta_an_interval_on_its_own_scale(report_cfg, report_art):
+    """Each estimate is printed with the interval built for IT. The corrected
+    delta (0.063) takes the optimism-shifted interval (0.018-0.119); the
+    apparent delta (0.080) keeps the raw patient-resampling one (0.031-0.132).
+    Crossing them -- "+0.063 (+0.031 to +0.132)" -- would print an estimate
+    inside an interval centred on a different number, which is what this table
+    used to do."""
+    import pandas as pd, report as rp
+    report_art.model_overview = pd.DataFrame([{
+        "model_id": "zhang_2020", "n_predictors": 4,
+        "auc_apparent": 0.703, "auc_corrected": 0.688,
+        "best_own_single": "irregular_tumor_margin", "best_own_auc_corrected": 0.625,
+        "delta_own_corrected": 0.063, "delta_own_apparent": 0.080,
+        "delta_own_ci_lo_corrected": 0.018, "delta_own_ci_hi_corrected": 0.119,
+        "delta_own_ci_lo": 0.031, "delta_own_ci_hi": 0.132,
+        "reference": "tumor_volume", "reference_auc_corrected": 0.679,
+        "delta_ref_corrected": 0.009, "delta_ref_apparent": 0.024,
+        "delta_ref_ci_lo_corrected": -0.060, "delta_ref_ci_hi_corrected": 0.079,
+        "delta_ref_ci_lo": -0.045, "delta_ref_ci_hi": 0.094,
+    }])
+    import re
+    html = rp._model_overview_block(report_art)
+    cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", html, flags=re.S)
+    assert "+0.063 (+0.018 to +0.119)" in cells      # corrected with its own
+    assert "+0.080 (+0.031 to +0.132)" in cells      # apparent with its own
+    assert "+0.009 (-0.060 to +0.079)" in cells
+    assert "+0.024 (-0.045 to +0.094)" in cells
+    # The crossed pairings must appear in no cell at all.
+    for bad in ("+0.063 (+0.031", "+0.009 (-0.045",
+                "+0.080 (+0.018", "+0.024 (-0.060"):
+        assert bad not in html, bad
 
 
 def test_model_overview_block_leaves_a_one_predictor_model_empty(report_art):
@@ -1488,24 +1344,76 @@ def test_model_overview_block_leaves_a_one_predictor_model_empty(report_art):
 
 def test_delta_cell_formats_point_estimate_then_interval():
     import report as rp
-    assert rp._delta_cell(0.063, 0.031, 0.132) == "+0.063 (+0.031 to +0.132)"
+    assert rp._delta_cell(0.080, 0.031, 0.132) == "+0.080 (+0.031 to +0.132)"
     assert rp._delta_cell(-0.051, -0.105, 0.036) == "-0.051 (-0.105 to +0.036)"
-    assert rp._delta_cell(0.063, None, None) == "+0.063"
+    assert rp._delta_cell(0.080, None, None) == "+0.080"
     assert rp._delta_cell(None, 0.0, 1.0) == ""
 
 
-def test_comparison_block_explains_a_calibration_slope_above_one(tmp_path, report_art):
-    """Two of the eleven models come out marginally above 1.0 on the corrected
-    calibration slope. Read naively that says "under-confident"; it actually
-    means a two-predictor model on 352 patients had nothing to overfit, so the
-    correction landed on 1.0 plus noise. The block must say so, or the number
-    reads as a finding."""
+def test_signed3_always_shows_the_direction_of_a_difference():
     import report as rp
-    fig = tmp_path / "high_grade__model_comparison.png"
-    fig.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
-    report_art.inferential_figures = [fig]
-    html = rp._render_model_comparison("high_grade", report_art)
-    assert "no optimism to remove" in html
-    assert "not that the model is under-confident" in html
-    # And it must not claim the apparent slope was measured — it is asserted.
-    assert "exactly 1.0 for every model by construction" in html
+    assert rp._signed3(0.063) == "+0.063"
+    assert rp._signed3(-0.051) == "-0.051"
+    assert rp._signed3(0) == "+0.000"       # a real, measured no-difference
+    assert rp._signed3(None) == ""          # never measured at all
+    assert rp._signed3(float("nan")) == ""
+
+
+
+
+def test_a_model_keeps_its_source_link_without_a_published_transcription(
+    report_cfg, report_art, monkeypatch,
+):
+    """The link is not owned by the published-model block.
+
+    A variant can carry a source URL while this repo holds no transcription of
+    what that paper fitted. When the link lived inside the published block it
+    vanished for exactly those models — the ones a reader most needs the link
+    for, because there is nothing else here describing them.
+    """
+    monkeypatch.setattr(rp.published_models, "PUBLISHED_MODELS", {}, raising=False)
+    monkeypatch.setattr(rp.published_models, "published_model",
+                        lambda mid: None)
+    report_art.inferential_multivariable = {
+        "high_grade::unknown_2020": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+    }
+    report_art.inferential_model_titles = {"high_grade::unknown_2020": "Unknown 2020"}
+    report_art.inferential_model_links = {
+        "high_grade::unknown_2020": "https://example.com/unknown",
+    }
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+    assert 'href="https://example.com/unknown"' in html
+
+
+def test_one_model_is_one_dropdown_with_flat_numbered_steps_inside(
+    report_cfg, report_art,
+):
+    """Each model opens in one click, and nothing nests inside it.
+
+    The old layout put every variant inside a single "Literature-based models"
+    dropdown, each holding four more — so reaching one model's coefficients was
+    three clicks deep.
+    """
+    report_art.inferential_multivariable = {
+        "high_grade::a_2020": pd.DataFrame({
+            "predictor_col": ["age"], "or": [2.0], "or_ci_lo": [1.2],
+            "or_ci_hi": [3.0], "p": [0.01],
+        }),
+    }
+    report_art.inferential_model_titles = {"high_grade::a_2020": "A 2020"}
+    report_cfg.targets = ("high_grade",)
+    html = render_inferential(report_cfg, report_art)
+
+    # The group is a heading, not a dropdown.
+    assert "<h4 class=\"model-group\">📚 Literature-based models</h4>" in html
+    # The model itself is the dropdown.
+    assert "<summary>📐 A 2020</summary>" in html
+    # Steps are numbered and flat — no <details> inside the model's own body.
+    body = html.split("<summary>📐 A 2020</summary>", 1)[1]
+    body = body.split("</details>", 1)[0]
+    assert "<details" not in body
+    assert '<span class="step-n">1</span>' in body

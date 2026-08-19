@@ -26,13 +26,10 @@ already close to the cube root of a volume, and ADC spans a factor of two
 across the whole cohort; neither needs the transform, and applying it would
 make their odds ratios harder to read for no gain.
 
-The odds ratio for a logged measurement is *per 1 SD on the log scale*. That is
-not a cosmetic detail — it must be said wherever such an odds ratio is printed,
-which is what :func:`scale_footnote` is for.
+The odds ratio for a logged measurement is *per 1 SD on the log scale*, which
+:func:`is_log_scaled` is the single source of truth for.
 """
 from __future__ import annotations
-
-from typing import Iterable
 
 import numpy as np
 
@@ -109,31 +106,3 @@ def standardise(x, log_x: bool) -> np.ndarray:
     if not np.isfinite(sd) or sd <= 0:
         return np.zeros_like(u)
     return (u - mu) / sd
-
-
-def scale_footnote(cols: Iterable[str]) -> str:
-    """The sentence that must accompany any table of per-SD odds ratios.
-
-    Empty when none of ``cols`` is logged, so a table that happens to contain no
-    logged measurement does not carry an explanation of something absent.
-    """
-    logged = [str(c) for c in cols if is_log_scaled(c)]
-    if not logged:
-        return ""
-    from plot_style import prettify_label
-
-    labels = [prettify_label(c) for c in dict.fromkeys(logged)]
-    if len(labels) == 1:
-        named = labels[0]
-        verb = "was"
-    else:
-        named = ", ".join(labels[:-1]) + f" and {labels[-1]}"
-        verb = "were"
-    return (
-        f"{named} {verb} log-transformed (log1p) before standardisation because "
-        f"{'it is' if len(labels) == 1 else 'they are'} strongly right-skewed, "
-        f"so {'its' if len(labels) == 1 else 'their'} odds ratio is per 1 SD on "
-        f"the log scale. Odds ratios for the remaining measurements are per 1 SD "
-        f"in their own clinical units. log1p rather than log because edema is "
-        f"legitimately zero in about a third of this cohort."
-    )

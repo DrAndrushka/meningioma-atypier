@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from pathlib import Path
 
+from plot_style import prune_embedded_figures
 from report import ReportConfig, build_report, write_html
 
 
@@ -131,4 +132,16 @@ def run_report(
     )
     write_html(build_report(cfg), report_path)
     print(f"Report written: {report_path.resolve()}")
+
+    # The report carries every figure inside it, so the PNGs on disk are a
+    # second copy. Only files whose bytes are provably in the page are removed;
+    # TIFs are never touched, so ATYPIER_FIGURES=submission still delivers them.
+    n, freed, kept = prune_embedded_figures(report_path, roots=[output_root])
+    if n:
+        print(f"Pruned {n} embedded figure(s), {freed / 1048576:.1f} MB reclaimed")
+    stray = [p for p in kept if "figures" in p.parts]
+    if stray:
+        print(f"  kept {len(stray)} figure(s) not embedded in this report:")
+        for p in stray:
+            print(f"    · {p.relative_to(output_root)}")
     return report_path

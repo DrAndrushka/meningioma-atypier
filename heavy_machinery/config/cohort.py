@@ -17,8 +17,15 @@ def _read_export(data_path: str) -> pd.DataFrame:
 
 
 def load_raw(data_path: str | list[str]) -> pd.DataFrame:
+    """Read the raw export(s), remembering which files they came from.
+
+    The names ride along in ``df.attrs`` so the cleaning summary can record
+    them: without that, nothing downstream of this call knows what the whole
+    pipeline was built from, and the report has no way to say.
+    """
     if isinstance(data_path, str):
         df_raw = _read_export(data_path)
+        df_raw.attrs["source_files"] = [str(data_path)]
         print(f"Loaded: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns")
         return df_raw
 
@@ -33,6 +40,7 @@ def load_raw(data_path: str | list[str]) -> pd.DataFrame:
         frames.append(df)
 
     df_raw = pd.concat(frames, ignore_index=True)
+    df_raw.attrs["source_files"] = [str(p) for p in paths]
     print(
         f"Combined: {df_raw.shape[0]} rows × {df_raw.shape[1]} columns "
         f"({len(frames)} files)"

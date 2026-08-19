@@ -170,8 +170,12 @@ def test_proportion_bars_titles_and_saving(tmp_path):
 
     fig, ax = plt.subplots()
     ps.set_titles(ax, "Age", ps.n_subtitle(42, extra="median 60"))
-    assert ax.get_title() == "Age"
-    assert "n = 42 · median 60" in [t.get_text() for t in ax.texts]
+    # Recorded for the report to print as text, never drawn into the image.
+    assert ax.get_title() == ""
+    assert [t.get_text() for t in ax.texts] == []
+    legend = ps.figure_legend(fig)
+    assert legend["title"] == "Age"
+    assert legend["note"] == "n = 42 · median 60"
     plt.close(fig)
 
     fig, (top, bottom) = plt.subplots(2, 1)
@@ -265,3 +269,94 @@ def test_explicit_formats_override_the_profile(tmp_path, monkeypatch):
     ps.save_figure(fig, tmp_path / "x", formats=("png", "pdf"))
     assert (tmp_path / "x.pdf").exists()
     plt.close(fig)
+
+
+def test_a_figure_carrying_only_a_plain_explanation_still_gets_a_sidecar(tmp_path):
+    """Each of the three legend fields is enough on its own.
+
+    The per-model ROC / calibration / decision-curve figures carry a
+    plain-language line and nothing else — their title is the report's
+    name-derived caption. A save guard that checked only title-or-note wrote no
+    sidecar for them at all, and the explanation silently never reached the
+    page.
+    """
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    ps.set_figure_legend(fig, plain="Higher is better.")
+    png = ps.save_figure(fig, tmp_path / "only_plain")
+    assert ps.read_figure_legend(png) == {
+        "title": "", "plain": "Higher is better.", "note": "",
+    }
+
+    for field in ("title", "note"):
+        fig, ax = plt.subplots()
+        ax.plot([0, 1], [0, 1])
+        ps.set_figure_legend(fig, **{field: "solo"})
+        png = ps.save_figure(fig, tmp_path / f"only_{field}")
+        assert ps.read_figure_legend(png)[field] == "solo"
+
+
+def test_a_figure_with_no_legend_leaves_no_stale_sidecar(tmp_path):
+    """A figure that loses its legend must not keep publishing the old one."""
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    ps.set_figure_legend(fig, title="First run")
+    png = ps.save_figure(fig, tmp_path / "fig")
+    assert ps.read_figure_legend(png)["title"] == "First run"
+
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [1, 0])
+    ps.save_figure(fig, tmp_path / "fig")
+    assert ps.read_figure_legend(png) == {}
+    assert not ps.figure_legend_path(png).exists()
+
+
+def test_pruning_only_removes_figures_the_report_actually_contains(tmp_path):
+    """The interlock: a figure missing from the page survives.
+
+    Deleting every PNG in a figures directory would turn one failed render into
+    silent data loss — the file would be gone and the page would not have it
+    either. Only bytes provably present in the HTML are removed.
+    """
+    import base64
+    figs = tmp_path / "figures"
+    figs.mkdir()
+
+    def _png(stem, seed):
+        fig, ax = plt.subplots()
+        ax.plot([0, 1], [0, seed])
+        ps.set_figure_legend(fig, title=f"fig {seed}")
+        return ps.save_figure(fig, figs / stem)
+
+    shown, hidden = _png("shown", 1), _png("hidden", 2)
+    tif = figs / "shown.tif"
+    tif.write_bytes(b"II*\x00 pretend tiff")
+
+    payload = base64.b64encode(shown.read_bytes()).decode("ascii")
+    report = tmp_path / "report.html"
+    report.write_text(f'<img src="data:image/png;base64,{payload}"/>')
+
+    deleted, freed, kept = ps.prune_embedded_figures(report, roots=[figs])
+    assert deleted == 1 and freed > 0
+    assert not shown.exists(), "the embedded figure should be reclaimed"
+    assert not ps.figure_legend_path(shown).exists(), "its legend goes with it"
+    assert hidden.exists(), "a figure the report lacks must NOT be deleted"
+    assert ps.figure_legend_path(hidden).exists()
+    assert kept == [hidden]
+    assert tif.exists(), "TIFs are the journal deliverable and are never pruned"
+
+
+def test_pruning_dry_run_reports_without_deleting(tmp_path):
+    import base64
+    figs = tmp_path / "figures"
+    figs.mkdir()
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    png = ps.save_figure(fig, figs / "one")
+    payload = base64.b64encode(png.read_bytes()).decode("ascii")
+    report = tmp_path / "r.html"
+    report.write_text(f'<img src="data:image/png;base64,{payload}"/>')
+
+    deleted, freed, _ = ps.prune_embedded_figures(report, roots=[figs], dry_run=True)
+    assert deleted == 1 and freed > 0
+    assert png.exists(), "dry run must not delete anything"

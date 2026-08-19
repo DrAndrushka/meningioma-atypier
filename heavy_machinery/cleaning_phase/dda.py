@@ -44,6 +44,7 @@ from heavy_machinery.modelling_phase.plot_style import (
     proportion_bars,
     raincloud,
     save_figure,
+    set_figure_legend,
     set_titles,
     width_for_levels,
 )
@@ -1069,10 +1070,11 @@ def _plot_trivariate(
                 ax.set_ylabel(pct_ylabel)
             if panel_idx == n_panels - 1:
                 place_legend(ax, title=y_label, outside=True)
-        fig.suptitle(
-            f"{x_label} × {y_label} by {by_label}  (n = {n_total}; "
-            "bars are % within each column, whiskers are 95% Wilson CIs)",
-            y=1.02,
+        set_figure_legend(
+            fig,
+            title=f"{x_label} × {y_label} by {by_label}",
+            note=(f"n = {n_total}; bars are % within each column, whiskers are "
+                  "95% Wilson CIs"),
         )
         return save_figure(fig, path)
 
