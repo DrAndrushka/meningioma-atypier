@@ -51,6 +51,41 @@ def paired_delta_auc(
     }
 
 
+def corrected_scale_ci(
+    ci_lo: float,
+    ci_hi: float,
+    *,
+    apparent_combined: float,
+    corrected_combined: float,
+    apparent_single: float,
+    corrected_single: float,
+) -> tuple[float, float]:
+    """Move an apparent-scale interval onto the optimism-corrected scale.
+
+    ``paired_delta_auc`` resamples patients against two FIXED models, so its
+    interval describes the apparent (uncorrected) difference. Printing it
+    beside the corrected difference states two scales as one number. Both
+    deltas differ by exactly one constant — the difference of the two models'
+    optimism — so subtracting that constant from both bounds re-expresses the
+    interval as one for the corrected difference:
+
+        optimism = (A_combined - C_combined) - (A_single - C_single)
+        corrected_delta = apparent_delta - optimism
+
+    Shifting a percentile interval by a constant is exact, because the two
+    estimands differ by that constant. What it does NOT do is widen: the
+    optimism is treated as known, so the interval carries sampling error in the
+    difference and nothing for the error in the optimism estimate itself.
+    Getting that too needs a nested bootstrap — re-running the whole optimism
+    correction inside every patient resample — which is why the width here is a
+    lower bound on the corrected estimate's true uncertainty. Say so wherever
+    the interval is printed.
+    """
+    optimism = ((float(apparent_combined) - float(corrected_combined))
+                - (float(apparent_single) - float(corrected_single)))
+    return float(ci_lo) - optimism, float(ci_hi) - optimism
+
+
 def d2_pool(chi2_stats: Sequence[float], k: int) -> dict[str, Any]:
     """Pool ``m`` chi-square statistics across imputations — Rubin's D2.
 
@@ -475,11 +510,22 @@ def run_comparison_stage(
             d = paired_delta_auc(
                 mat["boot"],
                 bootstrap_auc_vector(bf["y"], bf["pred"], n_bootstrap=n_bootstrap))
+            # Shifted from the unrounded AUCs, never from the rounded delta
+            # columns beside it: rounding twice would leave the interval
+            # disagreeing with its own point estimate in the third decimal.
+            lo_c, hi_c = corrected_scale_ci(
+                d["ci_lo"], d["ci_hi"],
+                apparent_combined=mat["auc_apparent"],
+                corrected_combined=mat["auc_corrected"],
+                apparent_single=bf["auc_apparent"],
+                corrected_single=bf["auc_corrected"])
             row.update({
                 "best_own_single": best,
                 "best_own_auc_corrected": round(bf["auc_corrected"], 3),
                 "delta_own_corrected": round(
                     mat["auc_corrected"] - bf["auc_corrected"], 3),
+                "delta_own_ci_lo_corrected": round(lo_c, 3),
+                "delta_own_ci_hi_corrected": round(hi_c, 3),
                 "delta_own_apparent": round(
                     mat["auc_apparent"] - bf["auc_apparent"], 3),
                 "delta_own_ci_lo": round(d["ci_lo"], 3),
@@ -496,11 +542,19 @@ def run_comparison_stage(
                 mat["boot"],
                 bootstrap_auc_vector(
                     ref_fit["y"], ref_fit["pred"], n_bootstrap=n_bootstrap))
+            lo_c, hi_c = corrected_scale_ci(
+                d["ci_lo"], d["ci_hi"],
+                apparent_combined=mat["auc_apparent"],
+                corrected_combined=mat["auc_corrected"],
+                apparent_single=ref_fit["auc_apparent"],
+                corrected_single=ref_fit["auc_corrected"])
             row.update({
                 "reference": reference,
                 "reference_auc_corrected": round(ref_fit["auc_corrected"], 3),
                 "delta_ref_corrected": round(
                     mat["auc_corrected"] - ref_fit["auc_corrected"], 3),
+                "delta_ref_ci_lo_corrected": round(lo_c, 3),
+                "delta_ref_ci_hi_corrected": round(hi_c, 3),
                 "delta_ref_apparent": round(
                     mat["auc_apparent"] - ref_fit["auc_apparent"], 3),
                 "delta_ref_ci_lo": round(d["ci_lo"], 3),

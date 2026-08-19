@@ -124,8 +124,12 @@ def test_model_comparison_ranks_by_corrected_auc_not_apparent():
     fig = pp.model_comparison_figure(entries, target="high_grade")
     assert fig is not None
     ticks = [t.get_text() for t in fig.axes[0].get_yticklabels()]
-    # y increases upward, so the strongest corrected model is last.
-    assert ticks[-1] == "honest"
+    # y increases upward, so the strongest CORRECTED model is last -- the whole
+    # point, since "flatters itself" wins on apparent AUC and would be last if
+    # the figure ranked on that. Compared case-insensitively: _short_label
+    # capitalises for the figure, which is a separate concern with its own test,
+    # and this one must not fail when that styling changes.
+    assert [t.lower() for t in ticks] == ["flatters itself", "honest"]
     plt.close(fig)
 
 

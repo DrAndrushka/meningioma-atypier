@@ -590,3 +590,43 @@ def test_a_model_that_cannot_be_validated_keeps_its_plain_artifact(monkeypatch):
     assert mv.enrich_streamlit_artifacts([(art, df, ["x"])], n_bootstrap=5) == [art]
 
     assert mv.enrich_streamlit_artifacts([]) == []
+
+
+def test_bootstrap_reports_how_many_resamples_failed_to_converge():
+    """A non-converged refit does not raise, so the `except` around the fit
+    never sees it and its optimism still lands in the mean. On a clean design
+    the count must be 0 and present -- a stable key, not one that appears only
+    when something went wrong."""
+    import numpy as np, pandas as pd
+    from model_validation import bootstrap_internal_validation
+    rng = np.random.default_rng(0)
+    n = 220
+    x = rng.normal(size=n)
+    y = (rng.uniform(size=n) < 1 / (1 + np.exp(-(0.4 * x)))).astype(int)
+    df = pd.DataFrame({"x": x, "y": y})
+    out = bootstrap_internal_validation(
+        df, "y", ["x"], {"const": 0.0, "x": 0.4}, n_bootstrap=60)
+    assert out["n_not_converged"] == 0
+
+
+def test_bootstrap_does_not_leak_raw_statsmodels_convergence_warnings():
+    """The stage-level guard in inferential.py is per-process and does not
+    reach joblib workers, which is how bare ConvergenceWarnings used to reach
+    the console. This function silences them itself, so the guard travels with
+    the code that emits them rather than with the caller."""
+    import warnings as _w
+    import numpy as np, pandas as pd
+    from statsmodels.tools.sm_exceptions import ConvergenceWarning
+    from model_validation import bootstrap_internal_validation
+    rng = np.random.default_rng(3)
+    n = 60
+    x = rng.normal(size=n)
+    y = (x > 0).astype(int)          # perfectly separable -> resamples struggle
+    df = pd.DataFrame({"x": x, "y": y})
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        out = bootstrap_internal_validation(
+            df, "y", ["x"], {"const": 0.0, "x": 5.0}, n_bootstrap=40)
+    raw = [c for c in caught if issubclass(c.category, ConvergenceWarning)]
+    assert not raw, f"{len(raw)} raw ConvergenceWarning(s) escaped"
+    assert "n_not_converged" in out

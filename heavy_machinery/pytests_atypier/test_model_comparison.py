@@ -430,3 +430,50 @@ def test_selector_k_comes_from_the_model_not_from_k_top():
     # k=1 for the one-predictor model, k=2 for the two-predictor one. If k came
     # from k_top both would be 2 and this would show a single key.
     assert set(seen) == {1, 2}, seen
+
+
+def test_corrected_scale_ci_shifts_by_the_difference_in_the_two_optimisms():
+    """The apparent and corrected deltas differ by exactly one constant --
+    the combined model's optimism minus the single's -- so the interval moves
+    by that same constant and nothing else."""
+    lo, hi = mc.corrected_scale_ci(
+        0.031, 0.132,
+        apparent_combined=0.703, corrected_combined=0.688,   # optimism 0.015
+        apparent_single=0.640, corrected_single=0.625,       # optimism 0.015
+    )
+    # Equal optimism on both sides: the two scales coincide, nothing moves.
+    assert lo == pytest.approx(0.031) and hi == pytest.approx(0.132)
+
+    lo, hi = mc.corrected_scale_ci(
+        0.031, 0.132,
+        apparent_combined=0.703, corrected_combined=0.688,   # optimism 0.015
+        apparent_single=0.640, corrected_single=0.638,       # optimism 0.002
+    )
+    assert lo == pytest.approx(0.031 - 0.013) and hi == pytest.approx(0.132 - 0.013)
+
+
+def test_corrected_scale_ci_preserves_width_because_optimism_is_treated_as_known():
+    """It is a location shift, not a re-estimation. The width still carries
+    only sampling error in the difference -- widening it for the error in the
+    optimism estimate would need a nested bootstrap, which is not run."""
+    lo, hi = mc.corrected_scale_ci(
+        -0.006, 0.057,
+        apparent_combined=0.705, corrected_combined=0.697,
+        apparent_single=0.679, corrected_single=0.679,
+    )
+    assert (hi - lo) == pytest.approx(0.057 - (-0.006))
+
+
+def test_corrected_scale_ci_brackets_the_corrected_delta_when_the_apparent_one_was_bracketed():
+    """The point of the shift: an interval that contained the apparent delta
+    contains the corrected delta afterwards. Without it the overview table
+    printed a corrected estimate inside an interval built around a different
+    number."""
+    a_c, c_c, a_s, c_s = 0.702, 0.662, 0.590, 0.591
+    lo, hi = 0.058, 0.163                       # apparent-scale interval
+    delta_app, delta_corr = a_c - a_s, c_c - c_s
+    assert lo <= delta_app <= hi                # bracketed before
+    lo_c, hi_c = mc.corrected_scale_ci(
+        lo, hi, apparent_combined=a_c, corrected_combined=c_c,
+        apparent_single=a_s, corrected_single=c_s)
+    assert lo_c <= delta_corr <= hi_c           # and after

@@ -8,6 +8,7 @@ Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients merge
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -15,6 +16,7 @@ import pandas as pd
 import statsmodels.api as sm
 from scipy.optimize import brentq
 from sklearn.metrics import roc_curve
+from statsmodels.tools.sm_exceptions import ConvergenceWarning
 
 from plot_style import roc_auc as _auc
 from schema_infer import ColSpec
@@ -73,12 +75,29 @@ def _logit_clipped(y_pred: np.ndarray) -> np.ndarray:
     return np.log(p / (1 - p))
 
 
+def _quiet_logit_fit(y, X, **kwargs):
+    """``sm.Logit(y, X).fit()`` with ConvergenceWarning silenced at the source.
+
+    Every logistic fit in this module goes through here. The stage-level guard
+    in ``inferential.run_inferential_stage`` is per-process state and does not
+    reach the joblib/loky workers this module also runs inside, so a guard that
+    lives with the caller silences some fits and not others — which is exactly
+    how a couple of bare statsmodels warnings used to escape an otherwise
+    silent pipeline run. Non-convergence is still *observable*: callers read
+    ``mle_retvals["converged"]`` on the returned fit, and
+    ``bootstrap_internal_validation`` counts and reports it.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        return sm.Logit(y, X, **kwargs).fit(disp=False)
+
+
 def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     logit_pred = _logit_clipped(y_pred)
     y = np.asarray(y_true).astype(int)
     # [const, logit_pred] — the column order sm.add_constant(prepend=True) uses.
     X = np.column_stack([np.ones(y.size), logit_pred])
-    return float(sm.Logit(y, X).fit(disp=False).params[1])
+    return float(_quiet_logit_fit(y, X).params[1])
 
 
 def _calibration_intercept(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -86,7 +105,7 @@ def _calibration_intercept(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     offset = _logit_clipped(y_pred)
     y = np.asarray(y_true).astype(int)
     X = np.ones((y.size, 1))
-    return float(sm.Logit(y, X, offset=offset).fit(disp=False).params[0])
+    return float(_quiet_logit_fit(y, X, offset=offset).params[0])
 
 
 def _calibration_data(
@@ -232,7 +251,7 @@ def bootstrap_internal_validation(
     X_orig = np.column_stack(
         [np.ones(n_rows), model_df[design_cols].astype(float).to_numpy()]
     )
-    apparent_fit = sm.Logit(y_arr, X_orig).fit(disp=False)
+    apparent_fit = _quiet_logit_fit(y_arr, X_orig)
     y_pred_apparent = np.asarray(apparent_fit.predict(X_orig), dtype=float)
 
     auc_app = _auc(y_arr, y_pred_apparent)
@@ -262,6 +281,14 @@ def bootstrap_internal_validation(
     # exactly the "two numbers, one name" pattern that has already caused
     # separate defects on this branch.
     selection_resamples = 0
+    # Resamples whose refit hit the iteration limit instead of converging. The
+    # `except` below only catches fits that RAISE; a non-converged fit returns
+    # normally and its optimism still lands in the means above, so nothing else
+    # here would notice. Counted rather than dropped: on 352 patients a handful
+    # of resamples separate by luck, and discarding them would bias the
+    # optimism estimate toward the well-behaved draws. Surfaced below so the
+    # count cannot climb from 2 to 500 invisibly.
+    n_not_converged = 0
 
     # One index matrix for every resample, drawn from the single master seed
     # (see BOOTSTRAP_SEED) instead of reseeding per-resample. This is what lets
@@ -294,7 +321,9 @@ def bootstrap_internal_validation(
                 [np.ones(n_rows), model_df[cols_i].astype(float).to_numpy()])
 
         try:
-            boot_result = sm.Logit(y_boot, X_boot).fit(disp=False)
+            boot_result = _quiet_logit_fit(y_boot, X_boot)
+            if not boot_result.mle_retvals.get("converged", True):
+                n_not_converged += 1
             pred_boot = np.asarray(boot_result.predict(X_boot), dtype=float)
             pred_orig = np.asarray(boot_result.predict(X_score), dtype=float)
 
@@ -416,6 +445,20 @@ def bootstrap_internal_validation(
         # count from a caller's own, unrelated resampling loop. See the
         # comment where `selection_resamples` is declared.
         result["selection_resamples"] = selection_resamples
+    result["n_not_converged"] = n_not_converged
+    # One summary per model instead of one raw statsmodels warning per fit. A
+    # few non-converged resamples out of a thousand move a mean optimism by
+    # nothing and are normal on a cohort this size; a large share means the
+    # design is near-separable and the correction itself is unreliable, which
+    # is worth interrupting for. 1% of attempted resamples is the line.
+    if n_not_converged > max(1, len(auc_optimisms) // 100):
+        warnings.warn(
+            f"{n_not_converged} of {len(auc_optimisms)} bootstrap resamples "
+            f"failed to converge for a model on {', '.join(design_cols)}. "
+            "Their optimism estimates are still included; treat the corrected "
+            "metrics for this model as unreliable if the share is large.",
+            stacklevel=2,
+        )
     return result
 
 
