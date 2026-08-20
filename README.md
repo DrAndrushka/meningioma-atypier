@@ -16,7 +16,7 @@ The workflow is deliberately **statistics-first, not black-box ML**:
 4. 📐 Fit **one or more** multivariable logistic models — your experimental predictor set plus published predictor sets from the literature
 5. ✅ Validate internally (bootstrap optimism correction + shrinkage) per model variant
 6. 🌐 Ship a **Streamlit calculator** driven by portable JSON model artifacts
-7. 📄 Generate a self-contained **HTML report** with collapsible sections, inline formula glossaries, and interpretation dropdowns
+7. 📄 Generate a self-contained **HTML report** with a top-of-report provenance dashboard, collapsible sections, and a plain-language explanation beside every figure
 
 > ⚠️ **Research tool, not a standalone clinical decision system.** External validation on an independent cohort is required before any clinical use.
 
@@ -53,19 +53,19 @@ meningioma-atypier/
 ├── output/                         # 📁 Generated tables, figures, report (gitignored)
 │   ├── datasets/                   # Parquet handoff between notebooks
 │   ├── dda/
-│   │   ├── figures/                # Univariate DDA SVGs
-│   │   ├── figures_bivariate/      # Optional bivariate DDA SVGs
-│   │   └── figures_trivariate/     # Optional trivariate DDA SVGs
+│   │   ├── figures/                # Univariate DDA PNGs (pruned once embedded)
+│   │   ├── figures_bivariate/      # Optional bivariate DDA PNGs
+│   │   └── figures_trivariate/     # Optional trivariate DDA PNGs
 │   ├── eda/
 │   │   ├── tables/                 # associations.csv, diagnostic_accuracy.csv
-│   │   └── figures/                # per-pair plots + association_heatmap.svg
+│   │   └── figures/                # per-pair plots + association_heatmap.png
 │   ├── inferential/
 │   │   ├── tables/                 # Multivariable CSV + *__calculator.json
 │   │   ├── figures/                # Forest, ROC, calibration, decision curve,
-│   │   │                           #   and the model-comparison figure
+│   │   │                           #   model comparison, performance overview
 │   │   └── model_artifacts/        # Streamlit JSON per model variant
 │   ├── cutpoints/                  # 🎯 Cut-point phase — read by nothing else
-│   │   ├── figures/                # fig_1_cutpoints, fig_2_decision (TIFF + PNG)
+│   │   ├── figures/                # fig_1_cutpoints, fig_2_decision (TIFF kept, PNG pruned)
 │   │   ├── tables/                 # table_1.docx, supplemental_tables.docx (S1–S4)
 │   │   ├── cutpoint_report.html    # Proof sheet: dashboard, every table, both figures
 │   │   └── manifest.json           # Commit, library versions, seeds, hash of every file
@@ -89,7 +89,7 @@ meningioma-atypier/
     │   ├── combinations.py         # AND / OR / count rules + benchmarks
     │   ├── rule_matrix.py          # ⚡ The same rule menu as boolean arrays — for the bootstrap
     │   ├── scales.py               # 📏 Which columns are log1p — one source of truth
-    │   ├── performance_plots.py    # 📈 ROC / calibration / decision curve / comparison
+    │   ├── performance_plots.py    # 📈 ROC / calibration / decision curve / comparison / overview
     │   ├── plot_style.py           # 🎨 One shared figure toolkit for the whole pipeline
     │   └── report.py
     ├── cutpoint_phase/             # 🎯 One question per module, in notebook order
@@ -111,7 +111,7 @@ meningioma-atypier/
     │   ├── analysis.py             # EDA / literature / experimental variants
     │   └── report_settings.py
     ├── scripts/run_mice.R          # 🧬 R mice engine (subprocess from Python)
-    ├── pytests_atypier/            # 🧪 414 automated tests
+    ├── pytests_atypier/            # 🧪 620 automated tests
     └── pytest.ini                  # Optional: `cd heavy_machinery && python -m pytest`
 ```
 
@@ -150,12 +150,12 @@ flowchart LR
 | Stage | Module | What it produces |
 |-------|--------|------------------|
 | Cleaning | `heavy_machinery/config/` + `cleaning_phase/cleaning.py` | Typed cohort, cleaning log (`n_rows` / `n_columns`), derived columns; `schema_coercion.csv` audits value→value changes (incl. → missing) |
-| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + one SVG per column; optional **bivariate** (`run_dda_bivariate` → `output/dda/figures_bivariate/`); optional **trivariate** (`run_dda_trivariate` → `output/dda/figures_trivariate/`). Descriptive only — percentages carry their counts and confidence intervals, and no p-values appear |
+| DDA | `cleaning_phase/dda.py` | Per-column distribution stats + one PNG per column; optional **bivariate** (`run_dda_bivariate` → `output/dda/figures_bivariate/`); optional **trivariate** (`run_dda_trivariate` → `output/dda/figures_trivariate/`). Descriptive only — percentages carry their counts and confidence intervals, and no p-values appear |
 | Missingness / MICE | `cleaning_phase/missingness_resolution.py` | Missingness bars + co-missingness heatmap, formal MICE imputed frames + diagnostics |
-| EDA | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.svg`) |
+| EDA | `modelling_phase/eda.py` | Association table + per-pair plots (FDR-corrected) + **association-strength heatmap** (`association_heatmap.png`) |
 | Diagnostic accuracy | `modelling_phase/diagnostic_accuracy.py` | Sensitivity / specificity / PPV / NPV / Wilson CIs per feature |
 | Inferential | `modelling_phase/inferential.py` | Adjusted ORs, VIF, forest plot (log OR, coloured by direction), Streamlit JSON — **one block per model variant** |
-| Performance figures | `modelling_phase/performance_plots.py` | ROC, calibration, and decision curve per variant, plus one **model-comparison** figure ranking every variant on the same cohort |
+| Performance figures | `modelling_phase/performance_plots.py` | ROC, calibration, and decision curve per variant, plus two across-model figures: **model comparison** (AUC, Brier, calibration slope) and **model performance overview** (corrected vs apparent AUC, and the gain over a single predictor) |
 | Plotting | `modelling_phase/plot_style.py` | **One figure toolkit** for the whole pipeline: SciencePlots `science`+`nature`+`no-latex` overridden to Arial/Helvetica (radiology house font), colour-blind-safe palette, print-column sizing, confidence intervals for percentages, reproducible point scatter, and clinician-readable labels for every axis and category |
 | Validation | `modelling_phase/model_validation.py` | Optimism-corrected AUC, Brier, calibration slope, plus the calibration and decision-curve data behind the figures → merged into calculator JSON |
 | Report | `modelling_phase/report.py` | `output/report/report.html` (collapsible sections) |
@@ -295,7 +295,7 @@ The notebook is written to be read in order, one question per step, with the sta
 
 ## 📊 What the figures tell you
 
-Every figure is exported as an SVG (sharp at any size — fine for a poster or a journal), in one shared visual style, and each one names the numbers behind it so it can stand on its own in a slide deck.
+Every figure is exported as a PNG for the report, plus a 600–1200 dpi TIFF under `ATYPIER_FIGURES=submission`, in one shared visual style. The words that explain a figure — its title, a one-or-two-sentence plain-language reading, and the journal-style `Note:—` — are kept *out* of the image and written to a `<stem>.legend.json` sidecar, which the report renders around the picture. Panel letters (A, B) stay drawn: they label a place in the image and mean nothing detached from it.
 
 ### Describing the cohort (`output/dda/`)
 
@@ -312,18 +312,19 @@ These are **descriptive only** — no p-values, nothing being "tested". They exi
 
 | Figure | The question it answers |
 |--------|-------------------------|
-| **Per-pair figures** | Does this single MRI sign or measurement differ between grades? Each figure states its own test, effect size, and corrected p-value on the figure itself, so a picture and a table can never disagree. |
+| **Per-pair figures** | Does this single MRI sign or measurement differ between grades? Each figure's test, effect size and corrected p-value travel with it in its legend sidecar and print as text beside the picture, so a picture and a table can never disagree. |
 | **Association heatmap** | Which predictors look promising overall? One colour grid across all predictors and outcomes. Cells with a **hatched pattern** carry strength but no direction, so a strong colour there does not mean "higher risk". |
 
 ### Judging the models (`output/inferential/`)
 
 | Figure | The question it answers |
 |--------|-------------------------|
-| **Forest plot** (one per model) | Which signs matter, and in which direction? Orange = raises the odds of high grade, blue = lowers them. A bar crossing the dashed line means the evidence is not clear either way. Strongest effect on top. The heading carries the number of patients, the number of high-grade cases, and the sample-size check. |
+| **Forest plot** (one per model) | Which signs matter, and in which direction? A square right of the dashed line raises the odds of high grade, left of it lowers them; rows whose interval crosses the line are drawn grey rather than black. Strongest effect on top. The heading carries the number of patients, the number of high-grade cases, and the sample-size check. |
 | **ROC** | Can the model tell higher-risk from lower-risk patients? A curve hugging the top-left is good; the diagonal is a coin flip. Both the raw and the corrected score are shown. |
 | **Calibration** | **When the model says 30%, is it really about 30%?** Patients are grouped into ten risk bands and plotted against the ideal diagonal. This is the figure that matters most if the model is used as a calculator. |
 | **Decision curve** | Is acting on this model actually better than the simple alternatives — scanning/treating everyone, or no one? The model is worth using only where its line sits above both. |
 | **Model comparison** (one per outcome) | Which of the published and experimental models works best **on our patients**? All variants on the same three scales. The hollow marker is the flattering in-house score, the filled marker is the corrected one — the gap between them is how much each model was overfitting. |
+| **Model performance overview** (one per outcome) | Panel A: where each model lands on AUC, corrected beside apparent, against the single prespecified predictor. Panel B: what the combination bought — against that shared reference *and* against the strongest single variable the model itself contains. The two disagree by design, and the disagreement is the finding. |
 
 The performance figures are all measured on the same patients the models were built from, so they are optimistic by nature. Each one says so, and prints the corrected value next to the raw one.
 
@@ -404,22 +405,24 @@ cd heavy_machinery && python -m pytest   # from library folder
 | `output/missingness/mice/imputed_*.parquet` | All `m` formal-MICE draws used for Rubin pooling |
 | `output/missingness/mice/manifest.json` | MICE engine metadata (R / package versions, `m`, seed, Rubin flag) |
 | `output/missingness/mice/r_session.json` | R session snapshot recorded at imputation time |
-| `output/dda/figures/` | One SVG per column — distribution, bar chart, or timeline |
-| `output/dda/figures_bivariate/` | Optional bivariate DDA SVGs (`{x}__by__{partner}.svg`) |
-| `output/dda/figures_trivariate/` | Optional trivariate DDA SVGs (`{x}__vs__{y}__by__{group}.svg`) |
+| `output/dda/figures/` | One PNG per column — distribution, bar chart, or timeline. Deleted once the report has embedded it |
+| `output/dda/figures_bivariate/` | Optional bivariate DDA PNGs (`{x}__by__{partner}.png`) |
+| `output/dda/figures_trivariate/` | Optional trivariate DDA PNGs (`{x}__vs__{y}__by__{group}.png`) |
 | `output/eda/tables/associations.csv` | Univariate tests + FDR q-values + `auc_univariate` |
-| `output/eda/figures/` | One figure per target × predictor pair, each labelled with its own test result |
-| `output/eda/figures/association_heatmap.svg` | Overview grid (* = survives multiple-testing correction; hatched = strength without direction) |
+| `output/eda/figures/` | One figure per target × predictor pair; its test result rides alongside in a `.legend.json` sidecar |
+| `output/eda/figures/association_heatmap.png` | Overview grid (* = survives multiple-testing correction; hatched = strength without direction) |
 | `output/eda/tables/diagnostic_accuracy.csv` | Sensitivity, specificity, PPV, NPV, Wilson CIs |
 | `output/inferential/tables/<target>__<model_id>__multivariable.csv` | Adjusted ORs with 95% CI per variant |
 | `output/inferential/tables/<target>__<model_id>__vif.csv` | VIF diagnostics per variant (also in report multivariable section) |
 | `output/inferential/tables/inferential_summary.csv` | All variants combined (CSV only; not duplicated in the HTML report) |
 | `output/inferential/tables/multivariable_cases.csv` | EPV / complete-case counts per variant |
-| `output/inferential/figures/<target>__<model_id>__forest.svg` | Forest plot — adjusted ORs, coloured by direction, strongest on top |
-| `output/inferential/figures/<target>__<model_id>__roc.svg` | ROC curve with the raw and corrected scores |
-| `output/inferential/figures/<target>__<model_id>__calibration.svg` | Predicted vs observed risk — does a stated 30% mean 30%? |
-| `output/inferential/figures/<target>__<model_id>__decision_curve.svg` | Whether acting on the model beats treating everyone / no one |
-| `output/inferential/figures/<target>__model_comparison.svg` | All model variants ranked side by side on our cohort |
+| `output/inferential/figures/<target>__<model_id>__forest.png` | Forest plot — adjusted ORs, grey where the interval crosses the null, strongest on top |
+| `output/inferential/figures/<target>__<model_id>__roc.png` | ROC curve with the raw and corrected scores |
+| `output/inferential/figures/<target>__<model_id>__calibration.png` | Predicted vs observed risk — does a stated 30% mean 30%? |
+| `output/inferential/figures/<target>__<model_id>__decision_curve.png` | Whether acting on the model beats treating everyone / no one |
+| `output/inferential/figures/<target>__model_comparison.png` | All model variants ranked side by side on our cohort |
+| `output/inferential/figures/<target>__model_performance_overview.png` | Corrected vs apparent AUC per model, and the gain over a single predictor |
+| `output/**/figures/<stem>.legend.json` | That figure's title, plain-language reading and `Note:—`, kept out of the image |
 | `output/cutpoints/tables/table_1.docx` | Main text: does a threshold exist at all, per measurement |
 | `output/cutpoints/tables/supplemental_tables.docx` | S1 can you locate it · S2 what cutting costs · S3 presence vs amount · S4 decision curves |
 | `output/cutpoints/figures/fig_1_cutpoints.tif` | ROC curves, the flatness of the optimum, and each cut-point's interval |
@@ -437,25 +440,23 @@ cd heavy_machinery && python -m pytest   # from library folder
 `modelling_phase/report.py` assembles a self-contained document aimed at a clinician-researcher audience:
 
 - **Cover:** `REPORT_TITLE` and comma-separated `REPORT_AUTHOR` byline (set in `meningioma-modelling.ipynb` §05)
-- **Collapsible major sections** (cleaning, schema, DDA, missingness, EDA, multivariable, appendix)
+- **Collapsible major sections** (cleaning, DDA, missingness, EDA, multivariable, appendix)
 - **Coerced value audit** dropdown in Cleaning when `output/cleaning/schema_coercion.csv` is present
-- **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has SVGs (grouped by the bivariate dict key)
-- **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has SVGs (grouped by the `(x, y)` pair key)
-- **EDA association heatmap** (FDR-focused overview) when `association_heatmap.svg` is present
-- **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`) with the serif face overridden to **Arial/Helvetica**, colour-blind-safe palette, single SVG export path, and clinician-friendly labels for both axes and category names (no raw `snake_case` anywhere on a figure)
+- **DDA bivariate block** under 2️⃣ DDA when `output/dda/figures_bivariate/` has figures (grouped by the bivariate dict key)
+- **DDA trivariate block** under 3️⃣ DDA when `output/dda/figures_trivariate/` has figures (grouped by the `(x, y)` pair key)
+- **EDA association heatmap** (FDR-focused overview) when `association_heatmap.png` is present
+- **Publication-style figures** via `modelling_phase/plot_style.py` — shared SciencePlots session (`science` + `nature` + `no-latex`) with the serif face overridden to **Arial/Helvetica**, colour-blind-safe palette, one PNG/TIFF export path, and clinician-friendly labels for both axes and category names (no raw `snake_case` anywhere on a figure)
 - **`prettify_label` is the one labeller.** Every section — figure axes, the marker panel, the diagnostic-accuracy table — routes column names through it, so a threshold flag reads as `ADC value ≤ 0.72` everywhere and its cut-point prints at three significant figures, the same precision the cut-point phase uses on its own axes. A second labeller is how `Adc Value Le0.72` and `ADC value ≤ 0.72` once appeared in the same report
-- **Figures that explain themselves** — sample size, group counts, and (in EDA) the test result sit above each plot, so a figure lifted into a slide deck still carries its numbers
+- **Figures explained in text, not in pixels** — `set_figure_legend` records a figure's title, a plain-language reading and its `Note:—`; `save_figure` writes them to a `<stem>.legend.json` sidecar and `report.figure_card` renders them around the image. The words stay selectable and re-wrap to the window, and the submission TIFF reaches the journal with no legend burnt into it
+- **A dashboard first** — eleven tiles across the top: when it ran, which export it was built from, rows and columns before and after cleaning, values the schema rewrote and how many became missing, missing cells, imputation engine, resample count, model count, and the targets
 - **Human-readable figure captions** — file stems like `high_grade__experimental_model_1__forest` render as *High-grade — Experimental model 1 — Forest plot*
 - **Missingness section:** imputation engine table (R / `mice` / `jsonlite` versions, `m`, seed, Rubin flag) pulled from `manifest.json`
-- **Multivariable section:** a **model-comparison figure** at the top of each target (all variants ranked on the same cohort), then nested 📚 Literature-based models and 🧪 Experimental model dropdowns; per variant, a forest plot, VIF diagnostics, and a 📈 **Model performance** dropdown holding its ROC, calibration, and decision curve
+- **Multivariable section:** per target, an all-models table and two across-model figures, then plain 📚 Literature-based models / 🧪 Experimental models headings. Each model is its **own** dropdown holding flat numbered steps — 1 the source paper · 2 whether this cohort can carry the model · 3 the model refit here · 4 the same result as a plot · 5 collinearity check · 6 how well it performs · 7 was the combination worth it. One click reaches a model; nothing nests inside it
 - **Marker panel section** (§04.5) — which MRI signs argue hardest for high grade, and whether a combination beats any single one
-- **Single metrics glossary** (📖 *What do these metrics mean?*) at the end of each major section — styled smaller than model dropdowns
 - **Scrollable wide tables** instead of page-wide horizontal scroll
-- **Interpretation dropdowns** per EDA target and per inferential model variant
-- **Schema table** fades `keep=False` columns; long level lists collapse behind expanders
 - **Appendix:** artifact-load warnings (when present) and 🖥️ environment / package versions (Python pip packages plus R interpreter and package versions from the formal-MICE manifest)
 
-Interpretation lives next to each table; there is no standalone "final conclusions" section. CSV artifacts such as `inferential_summary.csv` and `*__vif.csv` remain on disk under `output/inferential/tables/` but are not repeated in the appendix.
+Each figure carries a plain-language line and a journal-style `Note:—`; there is no standalone "final conclusions" section. CSV artifacts such as `inferential_summary.csv` and `*__vif.csv` remain on disk under `output/inferential/tables/` but are not repeated in the appendix.
 
 ---
 
@@ -468,7 +469,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 | Imputation (primary) | **R `mice` 3.19** (formal mixed-type MICE, via `Rscript` subprocess) |
 | Imputation (sensitivity) & metrics | scikit-learn, joblib |
 | Validation | pandera (schema checks) |
-| Visualization | matplotlib, seaborn (heatmaps), **SciencePlots** (`science`+`nature`+`no-latex` for all pipeline SVGs), `modelling_phase/plot_style.py` (one shared toolkit: style, palette, print sizing, confidence intervals, labels, SVG export) and `modelling_phase/performance_plots.py` (ROC / calibration / decision curve / model comparison) |
+| Visualization | matplotlib, seaborn (heatmaps), **SciencePlots** (`science`+`nature`+`no-latex` for every pipeline figure), `modelling_phase/plot_style.py` (one shared toolkit: style, palette, print sizing, confidence intervals, labels, PNG/TIFF export, legend sidecars) and `modelling_phase/performance_plots.py` (ROC / calibration / decision curve / model comparison) |
 | Deployment | Streamlit |
 | Quality | pytest |
 
@@ -486,7 +487,7 @@ Interpretation lives next to each table; there is no standalone "final conclusio
 
 ## 🔮 Status
 
-🟢 **Stable research pipeline (v1)** — two-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-ready figures, HTML report, Streamlit calculator, and 267 pytest tests in `heavy_machinery/pytests_atypier/`.
+🟢 **Stable research pipeline (v1)** — two-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-ready figures, HTML report, Streamlit calculator, and 620 pytest tests in `heavy_machinery/pytests_atypier/`.
 
 After running modelling §06, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. `streamlit run app.py` loads the `experimental_model_1` artifact by default.
 
@@ -494,6 +495,7 @@ After running modelling §06, Streamlit JSON artifacts live under `output/infere
 
 | Commit | What landed |
 |--------|-------------|
+| `7704b25` · `41c3a2f` · `c21cf4a` | **Figure legends became text, the report gained a dashboard, and the experimental models moved onto measurements.** `set_figure_legend` records a figure's title, a plain-language reading and its `Note:—` into a `<stem>.legend.json` sidecar that the report renders around the image, instead of baking them into the pixels — so the words stay selectable and the submission TIFF arrives with no legend burnt in. `set_titles` now records rather than draws, which converted twelve DDA/EDA call sites in one edit. Forty-four explanatory blocks and the code generating them are gone. Each multivariable model is now its own dropdown with flat numbered steps rather than four nested ones. `roc_vs_reference` is replaced by a **model performance overview** showing corrected-vs-apparent AUC and the gain against both a shared reference and each model's own strongest predictor. The pipeline now records which export it was built from — `load_raw` used to print the filename and discard it, so nothing under `output/` knew. Embedded figures are pruned after the report is written, but only when their exact bytes are provably in the page. The experimental predictor sets swapped three dichotomised cut-points for the continuous measurements, so Model 1 is refitted and its numbers moved. |
 | `9c6db0c` · `4ad9784` · `0a6c61a` | **Modelling notebook cells hold only inputs, calls and comments.** The §04.5 cell's helper function and two dict comprehensions moved into `marker_panel.py` (which now finds its own model artifacts, MICE draws and paper links), and the §01 cell's imputation-method `if`/`else` moved into `dataset_handoff.py`. The move exposed a bug: the panel matched artifact filenames to variant ids with `str.replace("_model", "")`, which strips *every* occurrence rather than the trailing one — the two sides agreed only because both were mangled identically, and any model id carrying `_model` in the middle would have silently lost its row. `panel_key` now delegates to `inferential._artifact_model_id`. Two rows in the panel's comparison table are renamed to `Experimental model 1` / `Experimental model 2`, matching the figure captions; every other byte of `output/` is unchanged, verified against a pre-change copy. Also closed a latent trap in the same function: panel artifacts are now filtered on their own `target`, so adding a second outcome can no longer pull a foreign model into the panel and shrink the shared `n_scored` denominator for every published row. |
 | `fe01d1b` · `1006fd5` | **§04.5 marker panel: 102 minutes → 14 seconds**, with all thirteen output CSVs byte-for-byte unchanged. The selection-optimism bootstrap rebuilt a 650-rule pandas table per resample — Wilson intervals, χ² and an odds ratio per rule — and read one column of it. New `rule_matrix.py` (now in `modelling_phase/`) scores that column from boolean arrays instead, and both sides of the correction now share one resample loop (they always used the same seed, so they were drawing identical resamples twice). Characterization tests pin the pre-change numbers to twelve decimals. Also: each published model in the panel's comparison table now links to its paper. |
 | `4184448` | **Model performance figures** — every model variant now gets a ROC curve, a calibration plot (does a predicted 30% mean 30%?), and a decision curve (is acting on it better than treating everyone or no one?), plus one **model-comparison** figure per outcome ranking all variants on the same cohort. All of it appears in the HTML report under 📈 *Model performance*; previously these numbers existed only inside the Streamlit calculator. New module: `modelling_phase/performance_plots.py`. |
@@ -539,14 +541,14 @@ Plain-language notes on **what each number means**, **how it is computed**, and 
 | **Distribution figure** (numeric columns) | One panel: histogram of counts, a smooth curve over it, and above it a box plot with every patient shown as a dot. | Shape, typical value, spread, and outliers in one glance — spots bimodality, typos, and impossible values. **Alternative:** a separate histogram and box plot — forces the reader to line up two x-axes by eye. |
 | **Percentage bars with intervals** (category columns) | Bar height = share of patients; whisker = 95% confidence interval; label = `41% (93/243)`. | A percentage without its denominator is unreadable: 50% of 4 patients and 50% of 300 look identical otherwise. **Alternative:** plain count or proportion bars — hide both the denominator and the uncertainty. |
 | **Timeline** (date columns) | Monthly counts on a real calendar axis, including months with nothing in them. | Recruitment pauses stay visible. **Alternative:** plotting only the months that have data — silently compresses the gaps and invents steady accrual. |
-| **Bivariate plots** (`run_dda_bivariate`) | Selected `x` columns paired with partner columns → SVGs under `figures_bivariate/`. Numeric pairs get a scatter with a flexible trend line; a numeric split by group gets side-by-side distributions (density, box, and raw points, each group in its own lane); two categories get percentages within each group with confidence intervals. | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** overlapping translucent histograms — with unequal group sizes the overlap reads as a third category and the taller group hides the shorter one. |
-| **Trivariate plots** (`run_dda_trivariate`) | Two columns compared across a third grouping column → SVGs under `figures_trivariate/`. Numeric pairs get one flexible trend line per group; a numeric split by two categories gets boxes with their raw points beside them; two categories get percentage panels with confidence intervals on a shared 0–100 scale. Ordered categories keep their order. Optional `science_style=` override. | Shows whether relationships differ by grade/sex (and similar) before modelling. **Alternative:** drawing both a straight-line fit and a flexible one per group — triples the legend and invites the reader to pick whichever looks stronger. |
+| **Bivariate plots** (`run_dda_bivariate`) | Selected `x` columns paired with partner columns → PNGs under `figures_bivariate/`. Numeric pairs get a scatter with a flexible trend line; a numeric split by group gets side-by-side distributions (density, box, and raw points, each group in its own lane); two categories get percentages within each group with confidence intervals. | Shows how demographics or grade shift distributions **before** formal tests. **Alternative:** overlapping translucent histograms — with unequal group sizes the overlap reads as a third category and the taller group hides the shorter one. |
+| **Trivariate plots** (`run_dda_trivariate`) | Two columns compared across a third grouping column → PNGs under `figures_trivariate/`. Numeric pairs get one flexible trend line per group; a numeric split by two categories gets boxes with their raw points beside them; two categories get percentage panels with confidence intervals on a shared 0–100 scale. Ordered categories keep their order. Optional `science_style=` override. | Shows whether relationships differ by grade/sex (and similar) before modelling. **Alternative:** drawing both a straight-line fit and a flexible one per group — triples the legend and invites the reader to pick whichever looks stronger. |
 
 ---
 
 ### 🔗 EDA — Exploratory Association Screening (`modelling_phase/eda.py`)
 
-**Purpose:** for each target × predictor pair, ask "is there *any* signal worth a closer look?" Tests are **univariate** (one predictor at a time) and p-values are **FDR-corrected per target**. Every per-pair figure prints its own test, effect size, and corrected p-value above the plot, so the picture and the table can never tell different stories. An optional **association heatmap** puts all pairs on one colour grid; measures that carry a direction keep their sign, while strength-only measures (Cramér's V, ε²) are **hatched** so a strong colour there is never read as "higher risk", and untested pairs are grey rather than near-white.
+**Purpose:** for each target × predictor pair, ask "is there *any* signal worth a closer look?" Tests are **univariate** (one predictor at a time) and p-values are **FDR-corrected per target**. Every per-pair figure carries its own test, effect size, and corrected p-value in its legend sidecar, printed as text beside the plot, so the picture and the table can never tell different stories. An optional **association heatmap** puts all pairs on one colour grid; measures that carry a direction keep their sign, while strength-only measures (Cramér's V, ε²) are **hatched** so a strong colour there is never read as "higher risk", and untested pairs are grey rather than near-white.
 
 | Formula | How it works (brief) | Why here (vs alternatives) |
 |---------|----------------------|----------------------------|

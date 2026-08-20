@@ -9,6 +9,110 @@ The report is regenerated from the notebook; nothing in
 
 ---
 
+## 2026-08-20 — legends out of the pixels, a dashboard, and a leaner report
+
+**Presentation and provenance; one estimator input changed (the last item).**
+Both notebooks need a re-run for any of it to reach the HTML.
+
+### Words belong in the page, not in the image
+
+Every figure used to bake its title and its `Note:—` legend into the picture.
+`plot_style.set_figure_legend(fig, title=, plain=, note=)` now records them
+instead; `save_figure` writes them to a `<stem>.legend.json` sidecar beside the
+image and `report.figure_card` renders the title above the picture, a
+plain-language reading under it, then the journal `Note:—`.
+
+The lever was `set_titles`, which twelve DDA/EDA/combinations call sites already
+went through to draw a title and subtitle. It now records rather than draws, so
+one edit converted all twelve. Panel letters (A, B, C) stay drawn: they label a
+place inside the image and mean nothing detached from it.
+
+Kept out of the pixels the words stay selectable and re-wrap to the reader's
+window, and the exported TIFF reaches the journal with no legend burnt in —
+which is how a figure is supposed to be submitted.
+
+Every figure also gained a one-or-two-sentence plain-language reading. Batch
+grids (DDA, EDA, missingness) carry one line above the grid instead of the same
+paragraph repeated under thirty tiles.
+
+One trap closed along the way: the sidecar write guard tested title-or-note, so
+the thirty-three per-model ROC / calibration / decision-curve figures — which
+carry only a plain-language line — wrote no sidecar at all and their
+explanations silently never reached the page. Regression tests now pin that each
+of the three fields is sufficient on its own.
+
+### The report says less
+
+Forty-four explanatory blocks and the code generating them are gone, along with
+the Provenance strip and the `💡 Interpretation` block. Visible prose fell by
+roughly half. Section titles stay. Four helpers that existed only to paint notes
+into images — `_wrap_note`, `_note_height`, `_wrap_title`, `_draw_note` — went
+with them, as did `_render_inferential_interpretation`, `_n_resamples`,
+`_dropped_for_collinearity_sentence` and `_overview_deltas`.
+
+### One model, one dropdown
+
+The multivariable section put every variant inside a single "Literature-based
+models" dropdown, each holding four more, so reaching one model's coefficients
+was three clicks deep. Each model is now its own dropdown containing flat
+numbered steps — source paper, whether the cohort can carry it, the refit, the
+same result as a plot, collinearity, performance, and whether the combination
+was worth it. The group labels are headings, not dropdowns.
+
+The source link moved out of the published-model block in the process, which
+briefly lost it for any variant carrying a URL without a transcription of what
+that paper fitted — precisely the variants where the link is the only thing
+describing the model. It is now emitted independently, with a test.
+
+### ROC-vs-reference replaced
+
+`roc_vs_reference_figure` is gone. `model_performance_overview_figure` puts each
+model's corrected AUC beside its apparent one in panel A against the
+prespecified single predictor, and in panel B draws the gain against *both* that
+shared reference and the strongest single variable each model itself contains.
+Those two disagree by design — a model built on a weak ingredient clears its own
+single comfortably and still loses to tumour volume — and the disagreement is
+the finding, so the figure shows both rather than choosing.
+
+### The run now records what it was built from
+
+Nothing under `output/` recorded which export the pipeline read: `load_raw`
+printed the path and discarded it, so the filename existed only as code in a
+notebook cell whose output had been cleared. `cohort.load_raw` now stamps
+`df.attrs["source_files"]`, `row_filters.finalize_row_drops` forwards it, and
+the cleaning summary writes the basenames into the raw-data row's previously
+empty `criterion` column. Basenames only: the export is PHI and the report is
+meant to be shared.
+
+The report opens on eleven tiles carrying that filename, the run time, rows and
+columns before and after cleaning, how many values the schema rewrote and how
+many of those became missing, missing cells, the imputation engine, the resample
+count actually used, the model count, and the targets.
+
+### Figure files are pruned once embedded
+
+The report embeds every figure as base64, so the PNG beside it is a second copy
+of the same pixels. `plot_style.prune_embedded_figures` deletes them — but only
+files whose bytes are provably inside the finished HTML, because deleting a
+figure that failed to embed turns one bad render into silent data loss. TIFFs
+are never touched, so `ATYPIER_FIGURES=submission` still delivers them.
+`output/` fell from about 19 MB to about 14 MB.
+
+### The one number that moved
+
+The experimental predictor sets carried dichotomised cut-points where the
+continuous measurement was available. `tumor_volume_ge15.1`,
+`edema_volume_ge4.76` and `adc_value_le0.72` now enter as `tumor_volume`,
+`edema_volume_cm3` and `adc_value`, so each odds ratio is per 1 SD of the
+measurement rather than a yes/no contrast at one threshold, and the model is not
+asked to relearn a boundary the cut-point phase already estimated. Model 1 is
+refitted; every number it produces has moved.
+
+ADC's odds ratio consequently reads below 1 where the `≤ 0.72` flag read above
+it. Same finding: the flag encoded "low ADC", the measurement encodes ADC.
+
+---
+
 ## 2026-08-08 — publication pass on the report tables and figures
 
 **Presentation only until the last item; no estimator changed and no number was
