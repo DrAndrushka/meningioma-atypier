@@ -1130,26 +1130,6 @@ def _model_steps(steps: Sequence[tuple[str, str]]) -> str:
     return "".join(out)
 
 
-def _inferential_model_heading(
-    title: str = "",
-    *,
-    link: str = "",
-    model_id: str = "",
-) -> str:
-    """Section heading for one multivariable model variant."""
-    link = _usable_link(link)
-    if title and link:
-        return (
-            f'<h4>📐 {_esc(title)} · '
-            f'<a href="{_esc(link)}" target="_blank" rel="noopener noreferrer">source</a></h4>'
-        )
-    if title:
-        return f"<h4>📐 {_esc(title)}</h4>"
-    if model_id:
-        return f"<h4>📐 Model <code>{_esc(model_id)}</code></h4>"
-    return ""
-
-
 def _published_or(term: dict) -> str:
     """``2.94 (1.15–7.48)``, or as much of it as the paper printed."""
     o, lo, hi = (_coerce_float(term.get(k)) for k in ("or", "ci_lo", "ci_hi"))
