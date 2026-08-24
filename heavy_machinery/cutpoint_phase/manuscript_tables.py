@@ -582,8 +582,15 @@ def s1_footnote() -> str:
         f"datasets. Cut-point locatable: Yes when the spread is {SPREAD_LIMIT:.2f} "
         f"× IQR or less, the bootstrap interval is {BOOTSTRAP_LIMIT:.2f} × IQR "
         "or less, and the published cut-point lies within the imputation range; "
-        "No when any of the three fails. Denominators differ between "
-        "measurements because of missing data.")
+        "No when any of the three fails. Continuous measurements were imputed "
+        "by predictive mean matching, which fills a gap by copying a value "
+        "already observed for that measurement, so the filled-in values pile "
+        "up on the observed ones instead of spreading evenly and a cut-point "
+        "re-derived in them can only land where the observed data already "
+        "had a value. The imputation range therefore checks whether the "
+        "missing scans move the cut-point; it is not itself evidence for the "
+        "threshold. Denominators differ between measurements because of "
+        "missing data.")
 
 
 def s2_footnote() -> str:

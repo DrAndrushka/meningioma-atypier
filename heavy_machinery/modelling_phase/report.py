@@ -947,9 +947,15 @@ def load_artifacts(cfg: ReportConfig) -> Artifacts:
     miss_tab = root / "missingness" / "tables"
     art.missingness_summary = _maybe_read_csv(miss_tab / "missingness_summary.csv", art.warnings)
     art.top_missing         = _maybe_read_csv(miss_tab / "top_missing.csv", art.warnings)
-    # Fall back to flat layout (older runs)
-    if art.missingness_summary is None:
-        art.missingness_summary = _maybe_read_csv(root / "missingness" / "missing_per_column.csv", art.warnings)
+    # The cleaning phase writes the per-column counts under tables/ as
+    # missing_per_column.csv; older runs put the same file flat in
+    # missingness/. Both are tried, or the section reports no artifacts while
+    # the file sits on disk one directory away.
+    for fallback in (miss_tab / "missing_per_column.csv",
+                     root / "missingness" / "missing_per_column.csv"):
+        if art.missingness_summary is not None:
+            break
+        art.missingness_summary = _maybe_read_csv(fallback, art.warnings)
     miss_fig = root / "missingness" / "figures"
     if miss_fig.exists():
         art.missingness_figures = sorted(miss_fig.glob("*.png"))
@@ -2111,6 +2117,42 @@ def render_dda(cfg: ReportConfig, art: Artifacts) -> str:
     return section_block("📊 Descriptive Data Analysis (DDA)", "".join(body))
 
 
+def _largest_missing(art: Artifacts) -> tuple[str, float] | None:
+    """The most incomplete column and its percentage, or None if unknown."""
+    tbl = art.missingness_summary
+    if tbl is None or tbl.empty:
+        return None
+    pct_col = _first_present(tbl, ["pct_missing", "missing_pct"])
+    name_col = _first_present(tbl, ["column", "variable", "name"])
+    if pct_col is None or name_col is None:
+        return None
+    ranked = tbl.dropna(subset=[pct_col]).sort_values(pct_col, ascending=False)
+    if ranked.empty:
+        return None
+    top = ranked.iloc[0]
+    pct = _coerce_float(top[pct_col])
+    return (str(top[name_col]), pct) if pct is not None else None
+
+
+def _m_rule_of_thumb_row(art: Artifacts, m_value: Any) -> tuple[str, str] | None:
+    """m against the rule of thumb, as a row for the engine table.
+
+    White, Royston & Wood (2011): run at least as many imputations as the
+    percentage of cases missing on the most incomplete variable. Checked here
+    rather than asserted, because m is set in the cleaning notebook and the
+    missingness it has to cover is only known after the data are read.
+    """
+    top = _largest_missing(art)
+    n_imp = _to_int_or_none(m_value)
+    if top is None or n_imp is None:
+        return None
+    name, pct = top
+    mark = "✅ met" if n_imp >= pct else "⚠️ below the rule"
+    return ("m ≥ largest % missing",
+            f"m = {n_imp} vs {pct:.1f}% missing in "
+            f"<code>{_esc(name)}</code> — {mark}")
+
+
 def _mice_engine_block(art: Artifacts) -> str:
     """Compact table of the imputation engine + R / package versions.
 
@@ -2139,6 +2181,9 @@ def _mice_engine_block(art: Artifacts) -> str:
         ("Logged events", _val("logged_events_count")),
         ("Input SHA-256", sha_short),
     ]
+    rule_row = _m_rule_of_thumb_row(art, m.get("m"))
+    if rule_row is not None:
+        rows.insert(5, rule_row)
     cells = "".join(
         f"<tr><th style='text-align:left;white-space:nowrap'>{label}</th>"
         f"<td>{value}</td></tr>"
@@ -2149,6 +2194,10 @@ def _mice_engine_block(art: Artifacts) -> str:
         '<div class="info-box">ℹ️ Recorded automatically from the MICE run '
         '(<code>r_session.json</code> → manifest) for reproducibility.</div>'
         f'<div class="table-wrap"><table class="report">{cells}</table></div>'
+        '<p class="footnote">Rule of thumb: run at least as many imputations '
+        'as the percentage of cases missing on the most incomplete variable. '
+        'Fewer than that and the pooled estimate still visibly depends on '
+        'which way the gaps happened to be filled.</p>'
     )
 
 
@@ -2160,7 +2209,12 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
         'via <code>missingness_resolution.proper_mice_impute()</code>, which '
         'runs one <code>mice()</code> fully-conditional-specification chain in '
         'R (continuous/count → PMM, binary → logistic, nominal → polytomous, '
-        'ordinal → proportional-odds). Between-imputation uncertainty is '
+        'ordinal → proportional-odds). PMM fills a gap by copying a value '
+        'already observed for that column, so an imputed measurement is never '
+        'a new number: this preserves the plausible range but piles the '
+        'filled-in values onto the observed ones, which is why no cut-point '
+        'anywhere in this project is searched for in imputed data. '
+        'Between-imputation uncertainty is '
         'preserved and pooled with Rubin\u2019s rules in the inferential '
         'stage. Dtypes are restored and every frame is validated (including '
         'Pandera) before use. Variables with high missingness should be '
@@ -2173,15 +2227,6 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
     if art.missingness_summary is None and not art.missingness_figures:
         body.append(warning_box("No saved missingness artifacts were found."))
         return section_block("🕳️ Missingness story", "".join(body))
-
-    if art.missingness_summary is not None and not art.missingness_summary.empty:
-        body.append("<h3>Missingness per variable</h3>")
-        body.append(table_to_html(
-            art.missingness_summary,
-            row_class_fn=lambda r: classify_missing(
-                r.get("missing_pct", r.get("pct_missing")), cfg.missing),
-            max_rows=200,
-        ))
 
     if art.top_missing is not None and not art.top_missing.empty:
         body.append("<h3>Top missing</h3>")
@@ -2908,8 +2953,24 @@ def _panel_table_footnotes(art: Artifacts) -> str:
         lines.append(
             "* estimate calculated with a continuity correction because one "
             "cell of the 2×2 table was empty.")
-    if not lines:
-        return ""
+    # The bands are a reading convention, not a test: they tell a reader what
+    # a number in the LR+ column is worth without the table having to grade
+    # any row itself.
+    lines.append(
+        "LR+ bands, by the usual convention: 2–5 shifts probability a little, "
+        "5–10 moderately, above 10 enough to decide. The mirror for ruling "
+        "out, LR−: below 0.1 is a large shift, 0.1–0.2 moderate, 0.2–0.5 "
+        "small, 0.5–1 minimal (Jaeschke R, Guyatt GH, Sackett DL. "
+        "Users' Guides to the Medical Literature. III. How to use an article "
+        "about a diagnostic test. <em>JAMA</em> 1994;271:703–707).")
+    # Stated on every rendering, corrected cells or not: the varying
+    # denominator is the first thing a reader queries, and the answer is a
+    # deliberate choice rather than an oversight.
+    lines.append(
+        "Sensitivity, specificity and LR+ are counts of real observations, so "
+        "imputing them would mean reporting the performance of a sign nobody "
+        "looked at. Using observed cases here (non-imputed) — that is why "
+        "N varies.")
     return ("<p class='muted'><small>"
             + "<br>".join(lines)
             + "</small></p>")
