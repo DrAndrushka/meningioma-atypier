@@ -2932,6 +2932,9 @@ def _panel_aim_one(art: Artifacts) -> str:
         )
         parts.append(_table(rows))
         parts.append(_panel_figure(art, f"lr_forest_{key}"))
+        # The rule-out view is its own figure with its own ranking, so it
+        # follows the rule-in one rather than sharing its axis.
+        parts.append(_panel_figure(art, f"lr_neg_forest_{key}"))
     parts.append(_panel_table_footnotes(art))
     return "".join(p for p in parts if p)
 

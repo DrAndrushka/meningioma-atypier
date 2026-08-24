@@ -1397,16 +1397,27 @@ def forest_row_order(est, lo=None, hi=None, *, ref=1.0) -> np.ndarray:
 
 def forest_lr(labels, est, lo, hi, *, n_hg=None, n_g1=None, ref=1.0,
               xlabel="Positive likelihood ratio (95% CI)", value_header="LR+ (95% CI)",
-              title=None, width=7.0, row_h=0.30, log=True, ax=None, ns=None):
+              title=None, width=7.0, row_h=0.30, log=True, ax=None, ns=None,
+              order=None, open_marker=False, show_labels=True):
     """Forest plot for LR+ or OR. Rows whose CI crosses ``ref`` are drawn grey.
     All rows share one ranking by the estimate, descending.
 
     ``ns`` optionally marks extra rows as non-significant (e.g. an FDR-p above
     alpha). It only ever adds grey: a row whose interval crosses ``ref`` stays
     grey whatever ``ns`` says, so a full-ink row never straddles the null.
+
+    ``order`` pins the row order instead of ranking by this panel's own
+    estimate. Two panels side by side have to agree on which row is which, and
+    a panel that re-sorted itself would put a variable's name against another
+    variable's estimate. ``show_labels=False`` drops the y tick labels for the
+    right-hand panel of such a pair, which reads off the left one's.
+
+    ``open_marker`` draws hollow squares. Filled against hollow is the one
+    pairing that survives greyscale and photocopying, which colour does not.
     """
     del n_hg, n_g1
-    order = forest_row_order(est, lo, hi, ref=ref)
+    order = (forest_row_order(est, lo, hi, ref=ref) if order is None
+             else np.asarray(order, dtype=int))
     labels = [labels[i] for i in order]
     est = np.asarray(est, dtype=float)[order]
     lo = np.asarray(lo, dtype=float)[order]
@@ -1422,11 +1433,16 @@ def forest_lr(labels, est, lo, hi, *, n_hg=None, n_g1=None, ref=1.0,
     if ns is not None:
         crosses = crosses | ns
 
+    ms = mpl.rcParams["lines.markersize"]
     for i, yy in enumerate(y):
         c = NS if crosses[i] else OKABE["black"]
-        ax.plot([lo[i], hi[i]], [yy, yy], color=c, lw=1.1, solid_capstyle="butt", zorder=2)
-        ax.plot([est[i]], [yy], marker="s", ms=mpl.rcParams["lines.markersize"],
-                color=c, zorder=3)
+        ax.plot([lo[i], hi[i]], [yy, yy], color=c, lw=1.1,
+                solid_capstyle="butt", zorder=2)
+        if open_marker:
+            ax.plot([est[i]], [yy], marker="s", ms=ms, mfc="white", mec=c,
+                    mew=1.1, ls="none", zorder=3)
+        else:
+            ax.plot([est[i]], [yy], marker="s", ms=ms, color=c, zorder=3)
         if crosses[i]:
             ax.axhspan(yy - 0.5, yy + 0.5, color=OKABE["lightgrey"], alpha=0.35, zorder=0)
 
@@ -1437,7 +1453,7 @@ def forest_lr(labels, est, lo, hi, *, n_hg=None, n_g1=None, ref=1.0,
         ax.xaxis.set_major_locator(FixedLocator(ticks))
         ax.xaxis.set_major_formatter(FixedFormatter([str(t) for t in ticks]))
     ax.set_yticks(y)
-    ax.set_yticklabels(labels)
+    ax.set_yticklabels(labels if show_labels else [""] * k)
     ax.set_ylim(-0.7, k - 0.3)
     ax.set_xlabel(xlabel)
     ax.spines["left"].set_visible(False)

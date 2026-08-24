@@ -407,24 +407,35 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
     }).reset_index(drop=True)
 
 
+POS_LEGEND = (
+    "One row per finding, strongest first. The further right, the more seeing the finding points to a high-grade tumour; a bar touching the line means seeing it tells you nothing.")
+
+NEG_LEGEND = (
+    "The same findings read the other way: what it means when the finding is absent. Smallest first, because here small is strong — the further left, the more its absence argues against a high-grade tumour. A bar touching the line means its absence tells you nothing. The order is this figure's own, so a row sits higher or lower than it does on the LR+ figure.")
+
+
+def _empty_forest(message: str) -> plt.Figure:
+    """A figure that says why it is empty, rather than an axis with no rows."""
+    fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM, aspect=0.5))
+    ax.set_axis_off()
+    ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
+    return fig
+
+
 def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
     """LR+ per marker with its interval, on a log axis with a line at 1.
 
     Log scale because a likelihood ratio is a multiplier: 0.5 and 2 are the
     same distance from "says nothing", and a linear axis hides that. Markers
     whose interval crosses the line at 1 are drawn grey on a shaded band.
-    Rows sort together by LR+, largest first.
+    Rows sort by LR+, largest first — strongest argument at the top.
     """
     usable = panel[panel["lr_pos"].notna()] if len(panel) else panel
     if usable is None or usable.empty:
-        fig, ax = plt.subplots(figsize=ps.figure_size(ps.FIG_WIDTH_MEDIUM, aspect=0.5))
-        ax.set_axis_off()
-        ax.text(0.5, 0.5, "No marker has an estimable likelihood ratio",
-                ha="center", va="center", transform=ax.transAxes)
-        return fig
+        return _empty_forest("No marker has an estimable likelihood ratio")
 
     ordered = usable.sort_values("lr_pos", ascending=False)
-    fig, ax = ps.forest_lr(
+    fig, _ = ps.forest_lr(
         ordered["label"].astype(str).tolist(),
         ordered["lr_pos"].to_numpy(dtype=float),
         ordered["lr_pos_lo"].to_numpy(dtype=float),
@@ -434,7 +445,47 @@ def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
         value_header="LR+ (95% CI)",
         width=ps.FIG_WIDTH_DOUBLE,
     )
-    del ax
+    return fig
+
+
+def lr_neg_forest_figure(panel: pd.DataFrame) -> plt.Figure:
+    """LR- per marker, on its own axis and in its own order.
+
+    Its own figure rather than a second series on the LR+ one: the two answer
+    opposite questions, and a marker that argues hard when present can be worth
+    nothing when absent. Sharing an axis forces one ranking on both, which puts
+    a strong rule-out finding wherever its rule-in number happens to fall.
+
+    Smallest LR- first, because for ruling out it is the small numbers that
+    carry the weight — an LR- of 0.1 is a strong argument against, 0.9 is
+    almost none. Top of this figure therefore means the same thing as top of
+    the LR+ one: the finding worth having.
+
+    Squares are hollow here. Filled against open is the one distinction that
+    survives greyscale, so the two figures cannot be confused for each other
+    when they are printed side by side or photocopied.
+    """
+    if len(panel) == 0 or "lr_neg" not in panel.columns:
+        return _empty_forest("No marker has an estimable likelihood ratio")
+    usable = panel[panel["lr_neg"].notna()]
+    if usable.empty:
+        return _empty_forest("No marker has an estimable likelihood ratio")
+
+    ordered = usable.sort_values("lr_neg", ascending=True)
+    fig, _ = ps.forest_lr(
+        ordered["label"].astype(str).tolist(),
+        ordered["lr_neg"].to_numpy(dtype=float),
+        ordered["lr_neg_lo"].to_numpy(dtype=float),
+        ordered["lr_neg_hi"].to_numpy(dtype=float),
+        ref=1.0,
+        # Already ranked, and this panel's own rule is ascending — leaving it to
+        # forest_lr would re-sort it the other way.
+        order=np.arange(len(ordered)),
+        open_marker=True,
+        xlabel="Negative likelihood ratio (95% CI)",
+        value_header="LR\u2212 (95% CI)",
+        width=ps.FIG_WIDTH_DOUBLE,
+    )
     return fig
 
 
@@ -851,14 +902,17 @@ def run_marker_panel(
         if "origin" in part.columns and not (part["origin"] == origin).all():
             raise ValueError(
                 f"The {origin} forest was handed rows from the other family.")
-        _fig = lr_forest_figure(part.reset_index(drop=True))
-        ps.set_figure_legend(_fig, plain=(
-            "One row per finding. The further right, the more it points to a high-grade tumour; a bar touching the line means it tells you nothing."))
+        part = part.reset_index(drop=True)
+        _fig = lr_forest_figure(part)
+        ps.set_figure_legend(_fig, plain=POS_LEGEND)
         ps.save_figure(_fig, fig_dir / f"lr_forest_{origin}",
                        tight_layout=False, kind="halftone")
+        _fig = lr_neg_forest_figure(part)
+        ps.set_figure_legend(_fig, plain=NEG_LEGEND)
+        ps.save_figure(_fig, fig_dir / f"lr_neg_forest_{origin}",
+                       tight_layout=False, kind="halftone")
     _fig = lr_forest_figure(panel)
-    ps.set_figure_legend(_fig, plain=(
-        "One row per finding. The further right, the more it points to a high-grade tumour; a bar touching the line means it tells you nothing."))
+    ps.set_figure_legend(_fig, plain=POS_LEGEND)
     ps.save_figure(_fig, fig_dir / "lr_forest", tight_layout=False)
     prevalence = (
         float(shared[target].astype("boolean").mean()) if len(shared) else None

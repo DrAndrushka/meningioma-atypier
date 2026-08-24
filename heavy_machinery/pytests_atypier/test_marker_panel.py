@@ -538,7 +538,8 @@ def test_run_marker_panel_writes_every_table_and_honours_exclusions(tmp_output):
         "12_count_headline.csv",
     ]
     figures = sorted(p.name for p in (tmp_output / "panel" / "figures").glob("*.png"))
-    assert figures == ["count_score.png", "lr_forest.png", "lr_forest_native.png"]
+    assert figures == ["count_score.png", "lr_forest.png",
+                       "lr_forest_native.png", "lr_neg_forest_native.png"]
     assert set(tables) >= {"01_marker_panel", "09_selection_correction"}
 
     mp.run_marker_panel(
