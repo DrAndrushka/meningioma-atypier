@@ -16,6 +16,50 @@ TARGET = "high_grade"
 
 
 # --------------------------------------------------------------------------
+# Negative likelihood ratio
+# --------------------------------------------------------------------------
+def test_likelihood_ratio_negative():
+    """The same 2×2 read the other way: what does *not* seeing the sign mean?
+
+    LR- = (1 - sens) / spec = (78/105) / (224/247). Same Katz construction as
+    LR+, with the miss column standing where the hit column stood.
+    """
+    out = mp.likelihood_ratio_negative(tp=27, fp=23, fn=78, tn=224)
+    assert out["lr_neg"] == pytest.approx(0.8191, abs=1e-4)
+    assert out["lr_neg_lo"] == pytest.approx(0.7269, abs=1e-3)
+    assert out["lr_neg_hi"] == pytest.approx(0.9230, abs=1e-3)
+    assert out["lr_neg_corrected"] is False
+
+    # A sign present in every high-grade tumour has FN = 0, so LR- is zero and
+    # its interval undefined. The correction is the mirror of the LR+ one, and
+    # fires on a different row than LR+ does — which is why it has its own flag.
+    out = mp.likelihood_ratio_negative(tp=100, fp=3, fn=0, tn=247)
+    assert np.isfinite(out["lr_neg"])
+    assert out["lr_neg"] == pytest.approx(0.0050, abs=1e-4)
+    assert out["lr_neg_corrected"] is True
+
+    # No high-grade patients at all: nothing to compute, and no crash.
+    out = mp.likelihood_ratio_negative(tp=0, fp=3, fn=0, tn=40)
+    assert np.isnan(out["lr_neg"])
+
+
+def test_panel_carries_lr_negative():
+    """Both ratios reach the reading view, so a reader can rule in or out."""
+    rng = np.random.default_rng(7)
+    y = rng.binomial(1, 0.3, 300).astype(bool)
+    df = pd.DataFrame({
+        "sign": pd.array(rng.binomial(1, 0.15 + 0.5 * y).astype(bool),
+                         dtype="boolean"),
+        TARGET: pd.array(y, dtype="boolean"),
+    })
+    panel = mp.marker_panel_table(df, [mp.BinaryMarker("sign", "Sign")], TARGET)
+    assert {"lr_neg", "lr_neg_lo", "lr_neg_hi"} <= set(panel.columns)
+    view = mp.marker_panel_reading_view(panel)
+    assert "LR− (95% CI)" in view.columns
+    assert view["LR− (95% CI)"].iloc[0] != "—"
+
+
+# --------------------------------------------------------------------------
 # Positive likelihood ratio
 # --------------------------------------------------------------------------
 def test_likelihood_ratio_positive():
@@ -186,7 +230,8 @@ def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
     assert list(view.columns) == [
         "Variable", "n/N (%)",
         "Sens (95% CI)", "Spec (95% CI)",
-        "PPV (95% CI)", "NPV (95% CI)", "FDR p", "LR+ (95% CI)", "origin",
+        "PPV (95% CI)", "NPV (95% CI)", "FDR p", "LR+ (95% CI)",
+        "LR− (95% CI)", "origin",
     ]
     # Predictive values come from the same 2×2 table as sensitivity: of the
     # four scans with the sign, three are high grade.

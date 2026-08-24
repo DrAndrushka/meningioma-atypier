@@ -2944,9 +2944,12 @@ def _panel_table_footnotes(art: Artifacts) -> str:
     them too, and the sort rule is stated rather than inferred.
     """
     panel = art.panel_marker
-    corrected = (panel is not None and not panel.empty
-                 and "continuity_corrected" in panel.columns
-                 and bool(panel["continuity_corrected"].any()))
+    # Either ratio can need the correction, and they fire on different rows —
+    # an asterisk in the LR− column with no note under the table would be a
+    # mark the reader cannot look up.
+    corrected = panel is not None and not panel.empty and any(
+        col in panel.columns and bool(panel[col].any())
+        for col in ("continuity_corrected", "lr_neg_corrected"))
 
     lines: list[str] = []
     if corrected:

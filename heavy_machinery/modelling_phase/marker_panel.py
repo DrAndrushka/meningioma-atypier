@@ -73,6 +73,44 @@ def likelihood_ratio_positive(tp: int, fp: int, fn: int, tn: int) -> dict:
     }
 
 
+def likelihood_ratio_negative(tp: int, fp: int, fn: int, tn: int) -> dict:
+    """What *not* seeing the sign is worth — the other half of the 2×2.
+
+    ``LR- = (1 - sensitivity) / specificity``. An LR- of 0.1 means the absence
+    of the sign makes high grade ten times *less* likely; an LR- of 1 means
+    absence says nothing. Same Katz interval on the log scale as LR+, with the
+    miss column standing where the hit column stood.
+
+    The continuity correction fires on ``FN == 0`` or ``TN == 0`` — a different
+    row than the LR+ one, which is why it reports its own flag instead of
+    sharing ``continuity_corrected``.
+    """
+    tp, fp, fn, tn = int(tp), int(fp), int(fn), int(tn)
+    nan = {"lr_neg": np.nan, "lr_neg_lo": np.nan, "lr_neg_hi": np.nan,
+           "lr_neg_corrected": False}
+    if (tp + fn) == 0 or (fp + tn) == 0:
+        return nan
+
+    corrected = fn == 0 or tn == 0
+    a, b, c, d = (tp + 0.5, fp + 0.5, fn + 0.5, tn + 0.5) if corrected else (tp, fp, fn, tn)
+
+    miss = c / (a + c)
+    spec = d / (b + d)
+    if spec <= 0 or miss <= 0:
+        return nan
+
+    lr = miss / spec
+    se = math.sqrt(1.0 / c - 1.0 / (a + c) + 1.0 / d - 1.0 / (b + d))
+    lo = math.exp(math.log(lr) - _Z95 * se)
+    hi = math.exp(math.log(lr) + _Z95 * se)
+    return {
+        "lr_neg": float(lr),
+        "lr_neg_lo": float(lo),
+        "lr_neg_hi": float(hi),
+        "lr_neg_corrected": bool(corrected),
+    }
+
+
 class BinaryMarker(NamedTuple):
     """A yes/no MRI sign, shaped like a ``CutPoint`` so ``combinations`` accepts it.
 
@@ -133,6 +171,7 @@ _PANEL_COLUMNS = [
     "PPV", "PPV_lo", "PPV_hi", "NPV", "NPV_lo", "NPV_hi",
     "AUC", "OR", "OR_lo", "OR_hi",
     "lr_pos", "lr_pos_lo", "lr_pos_hi", "chance_overlap", "continuity_corrected",
+    "lr_neg", "lr_neg_lo", "lr_neg_hi", "lr_neg_corrected",
     "p", "p_fdr", "test", "origin",
 ]
 
@@ -241,9 +280,12 @@ def marker_panel_table(
         if any(pd.isna(v) for v in (tp, fp, fn, tn)):
             row.update({"lr_pos": np.nan, "lr_pos_lo": np.nan, "lr_pos_hi": np.nan,
                         "chance_overlap": False, "continuity_corrected": False})
+            row.update({"lr_neg": np.nan, "lr_neg_lo": np.nan,
+                        "lr_neg_hi": np.nan, "lr_neg_corrected": False})
             row.update({"present_n": 0, "catches": 0, "n_high_grade": 0})
         else:
             row.update(likelihood_ratio_positive(tp, fp, fn, tn))
+            row.update(likelihood_ratio_negative(tp, fp, fn, tn))
             row["present_n"] = int(tp) + int(fp)
             row["catches"] = int(tp)
             row["n_high_grade"] = int(tp) + int(fn)
@@ -287,7 +329,8 @@ def marker_panel_table(
     return out[cols + [c for c in out.columns if c not in cols]]
 
 
-def _format_lr(row: pd.Series) -> str:
+def _format_lr(row: pd.Series, *, key: str = "lr_pos",
+               corrected_key: str = "continuity_corrected") -> str:
     """``2.79 (1.68–4.63)`` — always the number, never a verdict.
 
     An interval covering 1 is left to speak for itself. Printing a phrase in
@@ -299,10 +342,10 @@ def _format_lr(row: pd.Series) -> str:
     excludes 1) and dural tail (0.99–1.21, crosses it) both print as
     ``1.1 (1.0–1.2)``.
     """
-    if pd.isna(row.get("lr_pos")):
+    if pd.isna(row.get(key)):
         return "—"
-    text = f"{row['lr_pos']:.2f} ({row['lr_pos_lo']:.2f}–{row['lr_pos_hi']:.2f})"
-    return text + "*" if bool(row.get("continuity_corrected")) else text
+    text = f"{row[key]:.2f} ({row[f'{key}_lo']:.2f}–{row[f'{key}_hi']:.2f})"
+    return text + "*" if bool(row.get(corrected_key)) else text
 
 
 def _format_q(value) -> str:
@@ -337,6 +380,7 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
             "Variable", "n/N (%)",
             "Sens (95% CI)", "Spec (95% CI)",
             "PPV (95% CI)", "NPV (95% CI)", "FDR p", "LR+ (95% CI)",
+            "LR− (95% CI)",
         ])
     ranked = panel.sort_values("lr_pos", ascending=False, na_position="last",
                                kind="mergesort")
@@ -349,6 +393,13 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
         "NPV (95% CI)": [format_pct_ci(r, "NPV") for _, r in ranked.iterrows()],
         "FDR p": [_format_q(r.get("p_fdr")) for _, r in ranked.iterrows()],
         "LR+ (95% CI)": [_format_lr(r) for _, r in ranked.iterrows()],
+        # Beside LR+, because the two answer opposite questions about the same
+        # row and a reader deciding whether a negative scan is reassuring
+        # should not have to compute one from the other.
+        "LR− (95% CI)": [
+            _format_lr(r, key="lr_neg", corrected_key="lr_neg_corrected")
+            for _, r in ranked.iterrows()
+        ],
         # Carried so the report can split the table without re-deriving which
         # side each row belongs to. Dropped before display.
         "origin": (ranked["origin"] if "origin" in ranked.columns
