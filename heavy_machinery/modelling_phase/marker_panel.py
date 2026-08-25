@@ -20,6 +20,9 @@ from typing import NamedTuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
+from matplotlib.ticker import FixedFormatter, FixedLocator, NullLocator
 
 import combinations as cb
 import plot_style as ps
@@ -27,6 +30,16 @@ from cleaning import format_table_for_csv
 from diagnostic_accuracy import binary_diagnostic_metrics
 from eda import benjamini_hochberg
 from marker_rules import format_pct_ci
+
+# Imported, not re-declared, so this table cannot drift from the OR forest and
+# the cut-point figures a reader sees a few pages earlier.
+try:
+    import ajnr_format as afmt
+    import ajnr_style as aj
+except ModuleNotFoundError:  # pragma: no cover - cutpoint_phase not on sys.path
+    from heavy_machinery.config import load as _load_config  # noqa: F401
+    import ajnr_format as afmt
+    import ajnr_style as aj
 
 _Z95 = 1.959963984540054
 
@@ -407,11 +420,11 @@ def marker_panel_reading_view(panel: pd.DataFrame) -> pd.DataFrame:
     }).reset_index(drop=True)
 
 
-POS_LEGEND = (
-    "One row per finding, strongest first. The further right, the more seeing the finding points to a high-grade tumour; a bar touching the line means seeing it tells you nothing.")
+LR_TABLE_LEGEND = (
+    "One row per finding, strongest first. Left: what seeing the finding is worth — the further right, the more it argues for a high-grade tumour. Right: what its absence is worth — the further left, the more it argues against one. A bar touching the line means that reading tells you nothing. The two halves have their own scales, so a position in one is not a distance in the other.")
 
-NEG_LEGEND = (
-    "The same findings read the other way: what it means when the finding is absent. Smallest first, because here small is strong — the further left, the more its absence argues against a high-grade tumour. A bar touching the line means its absence tells you nothing. The order is this figure's own, so a row sits higher or lower than it does on the LR+ figure.")
+LR_TABLE_LEGEND_DERIVED = (
+    "The cut points, read the same way as the findings figure. They sit apart because each one restates a measurement that is still in the table, so they take no part in that figure's multiplicity correction and cannot be ranked against it.")
 
 
 def _empty_forest(message: str) -> plt.Figure:
@@ -422,70 +435,252 @@ def _empty_forest(message: str) -> plt.Figure:
     return fig
 
 
-def lr_forest_figure(panel: pd.DataFrame) -> plt.Figure:
-    """LR+ per marker with its interval, on a log axis with a line at 1.
+# Reciprocal pairs, not powers of ten. Over the range a likelihood ratio
+# actually occupies, decades give two or three labels and leave the eye nothing
+# to interpolate against; and pairing 0.5 with 2, 0.35 with 3, 0.2 with 5 is
+# what lets a reader see a ratio and its reciprocal as the same distance from
+# "tells you nothing".
+_LR_TICKS = (0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0,
+             10.0, 20.0, 50.0)
 
-    Log scale because a likelihood ratio is a multiplier: 0.5 and 2 are the
-    same distance from "says nothing", and a linear axis hides that. Markers
-    whose interval crosses the line at 1 are drawn grey on a shaded band.
-    Rows sort by LR+, largest first — strongest argument at the top.
+
+def _lr_ticks(lo: float, hi: float, *, most: int = 8) -> list[float]:
+    """The ladder rungs inside ``lo``–``hi``, thinned outward from 1."""
+    inside = [t for t in _LR_TICKS if lo <= t <= hi]
+    if len(inside) > most:
+        anchor = inside.index(1.0) if 1.0 in inside else 0
+        inside = [t for i, t in enumerate(inside) if (i - anchor) % 2 == 0]
+    return inside
+
+
+def _lr_limits(values) -> tuple[float, float]:
+    """Limits that hold every bound given, plus 1 and a little air.
+
+    1 is forced in whatever the data does: the null line is drawn there, and a
+    panel of cut points can easily have every interval above it.
     """
-    usable = panel[panel["lr_pos"].notna()] if len(panel) else panel
-    if usable is None or usable.empty:
-        return _empty_forest("No marker has an estimable likelihood ratio")
+    usable = [1.0]
+    for v in values:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f) and f > 0:
+            usable.append(f)
+    lo, hi = min(usable), max(usable)
+    pad = (hi / lo) ** 0.045
+    lo, hi = lo / pad, hi * pad
+    # Extra air on a side the null itself bounds: every interval above 1 puts
+    # the dashed line on the spine, where it reads as the edge of the panel
+    # rather than as the value a reader is comparing against.
+    if min(usable) == 1.0:
+        lo /= 1.12
+    if max(usable) == 1.0:
+        hi *= 1.12
+    return lo, hi
 
-    ordered = usable.sort_values("lr_pos", ascending=False)
-    fig, _ = ps.forest_lr(
-        ordered["label"].astype(str).tolist(),
-        ordered["lr_pos"].to_numpy(dtype=float),
-        ordered["lr_pos_lo"].to_numpy(dtype=float),
-        ordered["lr_pos_hi"].to_numpy(dtype=float),
-        ref=1.0,
-        xlabel="Positive likelihood ratio (95% CI)",
-        value_header="LR+ (95% CI)",
-        width=ps.FIG_WIDTH_DOUBLE,
-    )
-    return fig
 
+def _text_width(fig: plt.Figure, text: str, size: float) -> float:
+    """How wide a string will actually set, in inches.
 
-def lr_neg_forest_figure(panel: pd.DataFrame) -> plt.Figure:
-    """LR- per marker, on its own axis and in its own order.
-
-    Its own figure rather than a second series on the LR+ one: the two answer
-    opposite questions, and a marker that argues hard when present can be worth
-    nothing when absent. Sharing an axis forces one ranking on both, which puts
-    a strong rule-out finding wherever its rule-in number happens to fall.
-
-    Smallest LR- first, because for ruling out it is the small numbers that
-    carry the weight — an LR- of 0.1 is a strong argument against, 0.9 is
-    almost none. Top of this figure therefore means the same thing as top of
-    the LR+ one: the finding worth having.
-
-    Squares are hollow here. Filled against open is the one distinction that
-    survives greyscale, so the two figures cannot be confused for each other
-    when they are printed side by side or photocopied.
+    Measured rather than estimated because the label column is sized to it: a
+    guess that runs short puts a finding's name into the forest beside it, and
+    one that runs long spends the inches the intervals need.
     """
-    if len(panel) == 0 or "lr_neg" not in panel.columns:
-        return _empty_forest("No marker has an estimable likelihood ratio")
-    usable = panel[panel["lr_neg"].notna()]
-    if usable.empty:
-        return _empty_forest("No marker has an estimable likelihood ratio")
+    try:
+        renderer = fig.canvas.get_renderer()
+        artist = fig.text(0, 0, text, fontsize=size)
+        width = artist.get_window_extent(renderer=renderer).width / fig.dpi
+        artist.remove()
+        return float(width)
+    except Exception:  # pragma: no cover - backend without a usable renderer
+        return 0.55 * size / 72.0 * len(text)
 
-    ordered = usable.sort_values("lr_neg", ascending=True)
-    fig, _ = ps.forest_lr(
-        ordered["label"].astype(str).tolist(),
-        ordered["lr_neg"].to_numpy(dtype=float),
-        ordered["lr_neg_lo"].to_numpy(dtype=float),
-        ordered["lr_neg_hi"].to_numpy(dtype=float),
-        ref=1.0,
-        # Already ranked, and this panel's own rule is ascending — leaving it to
-        # forest_lr would re-sort it the other way.
-        order=np.arange(len(ordered)),
-        open_marker=True,
-        xlabel="Negative likelihood ratio (95% CI)",
-        value_header="LR\u2212 (95% CI)",
-        width=ps.FIG_WIDTH_DOUBLE,
+
+def lr_table_figure(panel: pd.DataFrame) -> plt.Figure:
+    """Both likelihood ratios for every finding, as one table with two forests.
+
+    A row is a finding and the table answers two questions about it: what
+    seeing it is worth (LR+, left) and what not seeing it is worth (LR−,
+    right). Both are drawn *and* printed, so nothing has to be measured off an
+    axis, and the pair sits on one line — the version that split them into two
+    figures made the reader hold a rank in their head while turning the page.
+
+    Two columns rather than two series on one axis. The two answer opposite
+    questions and their intervals overlap heavily around 1; on a shared axis
+    they interleave until neither is readable, whereas a column is something
+    the eye can scan on its own. That is what recovers the finding the split
+    was protecting: mass effect is eleventh by LR+ and the strongest rule-out
+    of all, and its square is visibly the leftmost in the LR− column.
+
+    Each column carries its own scale. LR− never leaves a narrow band around
+    1, so forcing it onto the LR+ range would spend half the column on empty
+    paper. The cost is that a position in one column is not a distance in the
+    other, which the legend says.
+
+    Rows sort by LR+, descending. One order is the price of one table, and it
+    is the order the panel table itself is written in.
+    """
+    if len(panel) == 0 or not {"lr_pos", "lr_neg"} <= set(panel.columns):
+        return _empty_forest("No marker has an estimable likelihood ratio")
+    rows = panel[panel["lr_pos"].notna() & panel["lr_neg"].notna()]
+    if rows.empty:
+        return _empty_forest("No marker has an estimable likelihood ratio")
+    rows = rows.sort_values("lr_pos", ascending=False).reset_index(drop=True)
+
+    small = plt.rcParams["xtick.labelsize"]
+    body = plt.rcParams["ytick.labelsize"]
+    columns = (
+        ("lr_pos", "When present", "argues for high grade \u2192", "LR+ (95% CI)", True),
+        ("lr_neg", "When absent", "\u2190 argues against high grade", "LR\u2212 (95% CI)", False),
     )
+    cells = {key: [afmt.fmt_est_ci(r[key], r[f"{key}_lo"], r[f"{key}_hi"], 2)
+                   for _, r in rows.iterrows()]
+             for key, *_ in columns}
+
+    W = ps.FIG_WIDTH_DOUBLE
+    X_NAME, EDGE, GAP, SPLIT = 0.06, 0.06, 0.10, 0.14
+    ROW_H, TOP_PAD, HDR_H = 0.245, 0.104, 0.47
+    AXIS_H, LEGEND_H = 0.30, 0.50
+
+    top_in = TOP_PAD + HDR_H
+    ys = [top_in + ROW_H * (i + 0.5) for i in range(len(rows))]
+    bot_in = top_in + ROW_H * len(rows)
+    height = bot_in + AXIS_H + LEGEND_H
+
+    fig = plt.figure(figsize=(W, height))
+    fig.patch.set_facecolor("white")
+
+    # Columns sized to the widest string each actually holds, so the inches
+    # left over go to the intervals. Clamped so that no label, however long,
+    # can squeeze a forest down to a stub.
+    name_w = min(1.9, max(0.8, max(
+        _text_width(fig, str(v), body) for v in rows["label"]) + 0.04))
+    val_w = min(0.95, max(0.5, max(
+        [_text_width(fig, v, small) for vs in cells.values() for v in vs]
+        + [_text_width(fig, c[3], small) for c in columns]) + 0.03))
+    ax_w = (W - EDGE - X_NAME - name_w - 0.08 - 2 * GAP - 2 * val_w - SPLIT) / 2
+
+    x0 = X_NAME + name_w + 0.08
+    AX_A = (x0, x0 + ax_w)
+    X_A_R = AX_A[1] + GAP + val_w
+    AX_B = (X_A_R + SPLIT, X_A_R + SPLIT + ax_w)
+    X_B_R = AX_B[1] + GAP + val_w
+
+    def _rect(x0_, y0_, x1_, y1_):
+        return (x0_ / W, 1 - y1_ / height, (x1_ - x0_) / W, (y1_ - y0_) / height)
+
+    ax_a = fig.add_axes(_rect(AX_A[0], top_in, AX_A[1], bot_in))
+    ax_b = fig.add_axes(_rect(AX_B[0], top_in, AX_B[1], bot_in))
+    axes = {"lr_pos": ax_a, "lr_neg": ax_b}
+    limits = {key: _lr_limits(
+        list(rows[f"{key}_lo"]) + list(rows[f"{key}_hi"]) + list(rows[key]))
+        for key, *_ in columns}
+    for key, ax in axes.items():
+        # y is inches from the top of the figure, inverted, so a row's position
+        # is the same number in the axes and in the text columns beside them.
+        ax.set_ylim(bot_in, top_in)
+        ax.set_xscale("log")
+        ax.set_xlim(*limits[key])
+        ax.set_yticks([])
+        ax.set_facecolor("none")
+        ax.grid(False)
+        for side in ("top", "right", "left"):
+            ax.spines[side].set_visible(False)
+        ax.tick_params(axis="y", length=0)
+
+    def _fx(x_in: float) -> float:
+        """An inch position on the sheet, as a fraction of the left axis."""
+        return (x_in - AX_A[0]) / (AX_A[1] - AX_A[0])
+
+    def _text(x_in, y_in, s, *, ha="left", size=None, weight="normal",
+              style="normal", color=aj.INK):
+        ax_a.text(_fx(x_in), y_in, s, transform=ax_a.get_yaxis_transform(),
+                  ha=ha, va="center", fontsize=size or small, fontweight=weight,
+                  fontstyle=style, color=color, clip_on=False, zorder=4)
+
+    for i, y0 in enumerate(ys):
+        if i % 2 == 0:
+            fig.add_artist(Rectangle(
+                (X_NAME / W, 1 - (y0 + ROW_H / 2) / height),
+                (X_B_R - X_NAME) / W, ROW_H / height, transform=fig.transFigure,
+                facecolor=aj.ROW_BAND, alpha=aj.ROW_BAND_ALPHA, linewidth=0,
+                zorder=0))
+
+    # --- header: the column name, then what a direction on it means ---------
+    hdr_y = TOP_PAD + HDR_H * 0.24
+    sub_y = TOP_PAD + HDR_H * 0.58
+    _text(X_NAME, hdr_y, "Finding", weight="bold")
+    for (key, head, gloss, value_head, _), x_r in ((columns[0], X_A_R),
+                                                   (columns[1], X_B_R)):
+        ax = axes[key]
+        mid = (ax.get_position().x0 + ax.get_position().x1) / 2 * W
+        _text(mid, hdr_y, head, ha="center", weight="bold")
+        _text(mid, sub_y, gloss, ha="center", size=small * 0.9,
+              style="italic", color="#5A5A5A")
+        _text(x_r, hdr_y, value_head, ha="right", weight="bold")
+    fig.add_artist(Line2D([X_NAME / W, X_B_R / W],
+                          [1 - (top_in - 0.055) / height] * 2,
+                          transform=fig.transFigure, color=aj.INK,
+                          linewidth=1.0, zorder=3))
+
+    # --- the rows -----------------------------------------------------------
+    for i, (y0, (_, r)) in enumerate(zip(ys, rows.iterrows())):
+        _text(X_NAME, y0, str(r["label"]), size=body)
+        for (key, _, _, _, filled), x_r in ((columns[0], X_A_R),
+                                            (columns[1], X_B_R)):
+            ax = axes[key]
+            est, lo, hi = r[key], r[f"{key}_lo"], r[f"{key}_hi"]
+            # Grey is per column, not per row: a finding can be conclusive seen
+            # and worth nothing unseen, and that is the point of printing both.
+            #
+            # Tested on the rounded bounds, which is what the reader is given.
+            # An upper bound of 0.9996 prints as 1.00 and excludes the null by
+            # the raw number, so full ink beside a printed "0.86-1.00" reads as
+            # the figure contradicting its own table.
+            colour = (aj.REFERENCE if round(lo, 2) <= 1.0 <= round(hi, 2)
+                      else aj.INK)
+            ax.plot([lo, hi], [y0, y0], color=colour, linewidth=1.0, zorder=2)
+            for x_end in (lo, hi):
+                ax.plot([x_end, x_end], [y0 - 0.028, y0 + 0.028], color=colour,
+                        linewidth=1.0, zorder=2)
+            ax.plot([est], [y0], marker=aj.MARKER, markersize=aj.MARKER_SIZE * 0.86,
+                    markerfacecolor=colour if filled else "white",
+                    markeredgecolor=colour, markeredgewidth=0.9,
+                    linestyle="none", zorder=3)
+            _text(x_r, y0, cells[key][i], ha="right", color=colour)
+
+    for key, ax in axes.items():
+        ax.axvline(1.0, zorder=1, **aj.NULL_LINE)
+        ax.spines["bottom"].set_position(("outward", 4))
+        ticks = _lr_ticks(*limits[key])
+        ax.xaxis.set_major_locator(FixedLocator(ticks))
+        ax.xaxis.set_major_formatter(FixedFormatter([f"{t:g}" for t in ticks]))
+        # Log minor ticks off, not just unlabelled: inside a single decade
+        # matplotlib labels them, and "4 × 10⁻¹" beside "0.35" is two notations
+        # for the same axis.
+        ax.xaxis.set_minor_locator(NullLocator())
+        ax.tick_params(axis="x", labelsize=small, length=3.2, pad=2)
+
+    rule_y = bot_in + AXIS_H - 0.03
+    fig.add_artist(Line2D([X_NAME / W, X_B_R / W], [1 - rule_y / height] * 2,
+                          transform=fig.transFigure, color=aj.INK,
+                          linewidth=1.0, zorder=3))
+
+    def _mark(filled: bool) -> Line2D:
+        return Line2D([], [], linestyle="none", marker=aj.MARKER,
+                      markerfacecolor=aj.INK if filled else "white",
+                      markeredgecolor=aj.INK, markeredgewidth=0.9,
+                      markersize=aj.MARKER_SIZE * 0.86)
+
+    fig.legend([_mark(True), _mark(False), Line2D([], [], **aj.NULL_LINE)],
+               ["Finding present (LR+)", "Finding absent (LR\u2212)",
+                "No information (LR = 1)"],
+               loc="upper left",
+               bbox_to_anchor=(X_NAME / W, 1 - (rule_y + 0.11) / height),
+               bbox_transform=fig.transFigure, ncol=3, frameon=False,
+               fontsize=small, handletextpad=0.5, columnspacing=1.8,
+               borderaxespad=0.0, borderpad=0.0)
     return fig
 
 
@@ -888,32 +1083,25 @@ def run_marker_panel(
         counts = empty
 
     fig_dir = root / FIGURES_DIRNAME
-    # One forest per family, because the two are corrected separately and a
-    # single axis invites the reader to rank a derived cut-point against a
-    # native sign as though one q had ordered them both.
+    # One table per family, and no combined one. The two families are corrected
+    # separately, so a figure holding both invites the reader to rank a derived
+    # cut-point against a native sign as though one q had ordered them.
+    legends = {NATIVE: LR_TABLE_LEGEND, DERIVED: LR_TABLE_LEGEND_DERIVED}
     for origin in (NATIVE, DERIVED):
         part = panel[panel["origin"] == origin] if "origin" in panel else panel
         if part.empty:
             continue
-        # The forest is scaled and ordered by the rows it is given, so a derived
-        # row reaching the native panel would move the axis and the ranking, not
-        # just add a line. Checked here because the filter above is the only
-        # thing keeping them apart.
+        # The forests are scaled and ordered by the rows they are given, so a
+        # derived row reaching the native table would move the axis and the
+        # ranking, not just add a line. Checked here because the filter above
+        # is the only thing keeping them apart.
         if "origin" in part.columns and not (part["origin"] == origin).all():
             raise ValueError(
-                f"The {origin} forest was handed rows from the other family.")
-        part = part.reset_index(drop=True)
-        _fig = lr_forest_figure(part)
-        ps.set_figure_legend(_fig, plain=POS_LEGEND)
-        ps.save_figure(_fig, fig_dir / f"lr_forest_{origin}",
+                f"The {origin} table was handed rows from the other family.")
+        _fig = lr_table_figure(part.reset_index(drop=True))
+        ps.set_figure_legend(_fig, plain=legends[origin])
+        ps.save_figure(_fig, fig_dir / f"lr_table_{origin}",
                        tight_layout=False, kind="halftone")
-        _fig = lr_neg_forest_figure(part)
-        ps.set_figure_legend(_fig, plain=NEG_LEGEND)
-        ps.save_figure(_fig, fig_dir / f"lr_neg_forest_{origin}",
-                       tight_layout=False, kind="halftone")
-    _fig = lr_forest_figure(panel)
-    ps.set_figure_legend(_fig, plain=POS_LEGEND)
-    ps.save_figure(_fig, fig_dir / "lr_forest", tight_layout=False)
     prevalence = (
         float(shared[target].astype("boolean").mean()) if len(shared) else None
     )

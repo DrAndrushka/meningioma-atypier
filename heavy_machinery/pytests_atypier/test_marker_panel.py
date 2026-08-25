@@ -256,7 +256,7 @@ def test_marker_reading_view_prints_the_estimate_even_when_it_covers_one():
 import matplotlib.pyplot as plt
 
 
-def test_lr_forest_draws_one_row_per_marker_on_a_log_axis():
+def _two_sign_panel() -> pd.DataFrame:
     df = pd.DataFrame({
         "a": pd.array([True, True, False, False, True, False, False, False],
                       dtype="boolean"),
@@ -266,18 +266,56 @@ def test_lr_forest_draws_one_row_per_marker_on_a_log_axis():
                          dtype="boolean"),
     })
     markers = [mp.BinaryMarker("a", "Sign A"), mp.BinaryMarker("b", "Sign B")]
-    panel = mp.marker_panel_table(df, markers, TARGET)
+    return mp.marker_panel_table(df, markers, TARGET)
 
-    fig = mp.lr_forest_figure(panel)
-    ax = fig.axes[0]
-    assert ax.get_xscale() == "log"
-    assert len(ax.get_yticklabels()) == 2
+
+def test_lr_table_draws_both_ratios_on_two_log_axes():
+    fig = mp.lr_table_figure(_two_sign_panel())
+    assert len(fig.axes) == 2
+    assert all(ax.get_xscale() == "log" for ax in fig.axes)
     plt.close(fig)
 
     # An empty panel must not crash the notebook cell that saves figures.
-    fig = mp.lr_forest_figure(pd.DataFrame(columns=["label", "lr_pos"]))
+    fig = mp.lr_table_figure(pd.DataFrame(columns=["label", "lr_pos"]))
     assert fig is not None
     plt.close(fig)
+
+
+def test_lr_table_columns_are_scaled_separately():
+    """The whole reason for two axes: LR- never leaves a band around 1."""
+    fig = mp.lr_table_figure(_two_sign_panel())
+    assert fig.axes[0].get_xlim() != fig.axes[1].get_xlim()
+    plt.close(fig)
+
+
+def test_lr_table_keeps_the_null_inside_both_axes():
+    """Every cut point can sit above 1; the dashed line still has to be drawn."""
+    panel = _two_sign_panel().assign(
+        lr_pos=[3.0, 2.0], lr_pos_lo=[2.0, 1.5], lr_pos_hi=[5.0, 3.0],
+        lr_neg=[0.5, 0.4], lr_neg_lo=[0.3, 0.2], lr_neg_hi=[0.8, 0.7])
+    fig = mp.lr_table_figure(panel)
+    for ax in fig.axes:
+        lo, hi = ax.get_xlim()
+        assert lo < 1.0 < hi
+    plt.close(fig)
+
+
+def test_lr_table_greys_a_row_whose_printed_interval_touches_the_null():
+    """0.9996 prints as 1.00; full ink there would contradict the number."""
+    panel = _two_sign_panel().assign(
+        lr_pos=[2.0, 2.0], lr_pos_lo=[1.5, 1.5], lr_pos_hi=[3.0, 3.0],
+        lr_neg=[0.9, 0.9], lr_neg_lo=[0.8, 0.8], lr_neg_hi=[0.9996, 0.98])
+    fig = mp.lr_table_figure(panel)
+    colours = {line.get_color() for line in fig.axes[1].get_lines()}
+    assert mp.aj.REFERENCE in colours and mp.aj.INK in colours
+    plt.close(fig)
+
+
+def test_lr_ticks_thin_outward_from_the_null():
+    """A thinned ladder that dropped 1 would leave the dashed line unlabelled."""
+    ticks = mp._lr_ticks(0.02, 50.0)
+    assert 1.0 in ticks
+    assert len(ticks) <= 8
 
 
 # --------------------------------------------------------------------------
@@ -538,8 +576,9 @@ def test_run_marker_panel_writes_every_table_and_honours_exclusions(tmp_output):
         "12_count_headline.csv",
     ]
     figures = sorted(p.name for p in (tmp_output / "panel" / "figures").glob("*.png"))
-    assert figures == ["count_score.png", "lr_forest.png",
-                       "lr_forest_native.png", "lr_neg_forest_native.png"]
+    # One table per family and no combined figure: a native sign and a derived
+    # cut point are corrected separately and must not share a ranking.
+    assert figures == ["count_score.png", "lr_table_native.png"]
     assert set(tables) >= {"01_marker_panel", "09_selection_correction"}
 
     mp.run_marker_panel(
