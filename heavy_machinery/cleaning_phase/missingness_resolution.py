@@ -40,8 +40,8 @@ from typing import Any, Callable, Literal, Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import ListedColormap
 import pandas as pd
-import seaborn as sns
 from joblib import Parallel, delayed
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
@@ -50,7 +50,6 @@ from sklearn.ensemble import RandomForestRegressor
 
 from schema_infer import ColSpec
 from heavy_machinery.modelling_phase.plot_style import (
-    PALETTE,
     apply_plot_style,
     prettify_label,
     save_figure,
@@ -72,16 +71,267 @@ def _ensure_dirs(root: Path) -> tuple[Path, Path]:
 # 1. Missingness analysis
 # ---------------------------------------------------------------------------
 
+# Both pattern figures are monochrome. A missingness figure carries no
+# quantity, only presence, so hue would encode nothing — and greyscale print,
+# which every other figure in this project has to survive, costs it nothing.
+_INK = "#333333"        # a missing value
+_PALE = "#e9e9e9"       # a recorded value
+_MID = "#b9b9b9"        # the second segment of a split bar
+_CELL_EDGE = "#8c8c8c"
+
+# Columns of the pattern table that are counts rather than variables.
+_PATTERN_META = ("n_patients", "n_gaps")
+
+# Figure width: 174 mm, the journal's two-column measure.
+_FIG_WIDTH_IN = 6.85
+
+
+def _gappy_columns(df: pd.DataFrame,
+                   columns: Sequence[str] | None = None) -> list[str]:
+    """Columns to draw: the ones with at least one blank, worst first.
+
+    Variables that are complete are left out rather than drawn as an empty
+    column, because a matrix of mostly-empty columns hides the few that matter.
+    """
+    if columns is not None:
+        cols = [c for c in columns if c in df.columns]
+    else:
+        cols = [c for c in df.columns if df[c].isna().any()]
+    counts = {c: int(df[c].isna().sum()) for c in cols}
+    return sorted(cols, key=lambda c: (-counts[c], list(df.columns).index(c)))
+
+
+def missingness_patterns(df: pd.DataFrame,
+                         columns: Sequence[str] | None = None) -> pd.DataFrame:
+    """One row per distinct combination of blanks, most common first.
+
+    The complete-case row is one of them: a pattern table that drops it cannot
+    be added up to the cohort, and the size of that row is the first thing a
+    reader wants. ``n_patients`` counts the patients sharing the pattern,
+    ``n_gaps`` the blanks in it, and one boolean column per variable says which.
+    """
+    cols = _gappy_columns(df, columns)
+    if not cols:
+        return pd.DataFrame(columns=[*_PATTERN_META])
+
+    miss = df[cols].isna()
+    counts = (miss.groupby(cols, dropna=False).size()
+              .rename("n_patients").reset_index())
+    counts["n_gaps"] = counts[cols].sum(axis=1).astype(int)
+    # Ties are broken on the pattern itself so a re-run cannot reorder the
+    # figure's rows without the data having changed.
+    counts = counts.sort_values(
+        ["n_patients", "n_gaps", *cols], ascending=[False, True, *([True] * len(cols))]
+    ).reset_index(drop=True)
+    return counts[[*_PATTERN_META, *cols]]
+
+
+def gap_sharing(df: pd.DataFrame,
+                columns: Sequence[str] | None = None) -> pd.DataFrame:
+    """Per variable: how many of its blanks are that patient's only blank.
+
+    The split is the co-missingness story told inside the bar chart. A gap that
+    is a patient's only gap is a lone lapse; a gap that arrives with others is
+    a patient whose work-up is partly absent, and the two are filled in by MICE
+    from very different amounts of surviving information.
+    """
+    cols = _gappy_columns(df, columns)
+    miss = df[cols].isna() if cols else pd.DataFrame(index=df.index)
+    per_row = miss.sum(axis=1) if cols else pd.Series(dtype=int)
+    rows = [{
+        "column": c,
+        "label": prettify_label(c),
+        "n_missing": int(miss[c].sum()),
+        "pct_missing": float(miss[c].mean() * 100),
+        "n_only_gap": int((per_row[miss[c]] == 1).sum()),
+        "n_shared": int((per_row[miss[c]] > 1).sum()),
+    } for c in cols]
+    return pd.DataFrame(
+        rows, columns=["column", "label", "n_missing", "pct_missing",
+                       "n_only_gap", "n_shared"])
+
+
+def _pattern_matrix_legend(patterns: pd.DataFrame, *, shown: int) -> dict[str, str]:
+    """The pattern figure's title and its two explanations, from its own rows.
+
+    Every count is computed here rather than typed into the manuscript, so the
+    words under the figure cannot drift from the picture when the cohort or the
+    variable list changes.
+    """
+    cols = [c for c in patterns.columns if c not in _PATTERN_META]
+    n_total = int(patterns["n_patients"].sum())
+    k = len(patterns)
+    complete = patterns.loc[patterns["n_gaps"] == 0, "n_patients"].sum()
+    pct_complete = 100 * complete / n_total if n_total else 0.0
+    cells = int(sum(patterns["n_patients"] * patterns["n_gaps"]))
+
+    hidden = patterns.iloc[shown:]
+    truncation = ""
+    if len(hidden):
+        truncation = (
+            f" The {shown} most common patterns are drawn; "
+            f"{len(hidden)} rarer patterns ({int(hidden['n_patients'].sum())} "
+            "patients) are not drawn and are listed in "
+            "missingness_patterns.csv."
+        )
+
+    title = f"Patterns of missing data in {n_total} patients"
+    plain = (
+        "Each row is one combination of blanks, and the number on the left is "
+        "how many patients share it. Dark cells are the values that were "
+        "missing; pale cells were recorded. The top row is the patients with "
+        "nothing missing."
+    )
+    note = (
+        f"Note:—The {k} patterns of missing values across {len(cols)} "
+        f"variables in {n_total} patients, before imputation. Rows are ordered "
+        "by the number of patients sharing the pattern; dark cells are missing "
+        "values, and the count at the right is how many variables that pattern "
+        f"lacks. {int(complete)} ({pct_complete:.1f}%) patients have no missing "
+        f"value at all, and {cells} values are missing in total. The number "
+        "above each column is that variable's missing values in the whole "
+        f"cohort, whether or not every pattern containing it is drawn."
+        f"{truncation} Blanks that are structural rather than unmeasured are "
+        "resolved by the missingness policy before imputation and are not "
+        "distinguished here."
+    )
+    return {"title": title, "plain": plain, "note": " ".join(note.split())}
+
+
+def pattern_matrix_figure(patterns: pd.DataFrame, *,
+                          max_patterns: int = 14) -> plt.Figure:
+    """The distinct missingness patterns as a matrix, largest pattern first.
+
+    Deliberately a picture of exact counts rather than of proportions: the
+    patient count sits on every row, the gap count on every row's right, and
+    the cohort total on every column, so the figure can be audited line by line
+    against ``missingness_patterns.csv``.
+    """
+    cols = [c for c in patterns.columns if c not in _PATTERN_META]
+    shown = patterns.head(max_patterns)
+    grid = shown[cols].to_numpy(dtype=float)
+    totals = [int(patterns.loc[patterns[c], "n_patients"].sum()) for c in cols]
+
+    height = 1.9 + 0.24 * len(shown)
+    fig, ax = plt.subplots(figsize=(_FIG_WIDTH_IN, height))
+    ax.imshow(grid, aspect="auto", vmin=0, vmax=1, interpolation="nearest",
+              cmap=ListedColormap([_PALE, _INK]))
+
+    ax.set_xticks(range(len(cols)), [prettify_label(c) for c in cols],
+                  rotation=40, ha="right")
+    ax.set_yticks(range(len(shown)), [str(int(n)) for n in shown["n_patients"]])
+    ax.set_ylabel("Patients")
+
+    gaps = ax.secondary_yaxis("right")
+    gaps.set_label("pattern-gaps")
+    gaps.set_yticks(range(len(shown)), [str(int(g)) for g in shown["n_gaps"]])
+    gaps.set_ylabel("Gaps")
+
+    top = ax.secondary_xaxis("top")
+    top.set_label("column-totals")
+    top.set_xticks(range(len(cols)), [str(t) for t in totals])
+
+    # White seams between cells instead of a frame: the cells are the data, and
+    # a box around them adds a line the reader has to look past.
+    ax.set_xticks(np.arange(-0.5, len(cols), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(shown), 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=1.4)
+    for target in (ax, gaps, top):
+        target.tick_params(length=0)
+        for spine in target.spines.values():
+            spine.set_visible(False)
+    ax.tick_params(which="minor", length=0)
+
+    set_figure_legend(fig, **_pattern_matrix_legend(patterns, shown=len(shown)))
+    return fig
+
+
+def _gap_overlap_legend(sharing: pd.DataFrame, *, n_patients: int) -> dict[str, str]:
+    """The split-bar figure's title and explanations, from its own rows."""
+    total = int(sharing["n_missing"].sum())
+    shared = int(sharing["n_shared"].sum())
+    worst = sharing.iloc[0] if len(sharing) else None
+
+    lead = ""
+    if worst is not None:
+        lead = (f" {worst['label']} is the most affected at "
+                f"{worst['pct_missing']:.1f}% ({int(worst['n_missing'])} "
+                "patients).")
+
+    title = f"Missing values per variable in {n_patients} patients"
+    plain = (
+        "Each bar is how often a variable was missing. The dark part of the "
+        "bar counts the patients who were also missing something else, the "
+        "pale part the patients for whom this was the only gap."
+    )
+    note = (
+        f"Note:—Missing values in each of {len(sharing)} variables, as a "
+        f"percentage of {n_patients} patients, before imputation. Bars are "
+        "split by whether the same patient was missing another value as well: "
+        f"{shared} of {total} missing values sit beside another gap in the "
+        "same patient, so the gaps are concentrated in a minority of "
+        "incomplete work-ups rather than scattered independently across the "
+        f"cohort.{lead} Variables with no missing value are not shown."
+    )
+    return {"title": title, "plain": plain, "note": " ".join(note.split())}
+
+
+def gap_overlap_figure(sharing: pd.DataFrame, *, n_patients: int) -> plt.Figure:
+    """Missing values per variable, split into lone gaps and shared ones.
+
+    The bar chart the section has always had, with the co-missingness folded
+    into it: one panel says both how much is missing and whether the blanks
+    arrive together, which is what the separate overlap heatmap was for.
+    """
+    rows = sharing.reset_index(drop=True)
+    y = np.arange(len(rows))
+    shared_pct = rows["n_shared"] / n_patients * 100
+    alone_pct = rows["n_only_gap"] / n_patients * 100
+
+    height = 1.4 + 0.36 * len(rows)
+    fig, ax = plt.subplots(figsize=(_FIG_WIDTH_IN, height))
+    ax.barh(y, shared_pct, height=0.62, color=_INK,
+            label="Shares a gap with another variable")
+    ax.barh(y, alone_pct, height=0.62, left=shared_pct, color=_MID,
+            edgecolor=_CELL_EDGE, linewidth=0.4,
+            label="Only gap for that patient")
+
+    for i, row in rows.iterrows():
+        ax.text(row["pct_missing"] + 0.25, i,
+                f"{row['pct_missing']:.1f}% (n = {int(row['n_missing'])})",
+                va="center", ha="left", fontsize=7)
+
+    ax.set_yticks(y, list(rows["label"]))
+    ax.invert_yaxis()
+    ax.set_xlabel("Patients with the value missing (%)")
+    ax.margins(x=0.18)
+    ax.set_xlim(left=0)
+    ax.legend(loc="lower right", fontsize=7)
+    ax.spines["left"].set_visible(False)
+    ax.tick_params(axis="y", length=0)
+
+    set_figure_legend(fig, **_gap_overlap_legend(rows, n_patients=n_patients))
+    return fig
+
+
 def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output") -> pd.DataFrame:
     """Map where the blanks are — before deciding how to fill them.
 
-    Produces two things and saves them under ``output/missingness/``:
+    Saves three things under ``output/missingness/``:
 
       • a per-column table: how many / what % of values are missing
-      • a co-missingness heatmap: which fields tend to be blank *together*
-        (e.g. ADC missing whenever DWI wasn't done)
+      • the pattern matrix: every distinct combination of blanks, with the
+        patients sharing it
+      • the split bar chart: how much each variable is missing, and how often
+        the blank was that patient's only one
 
     Returns the per-column table.
+
+    The old percent-missing bar chart and the Jaccard co-missingness heatmap
+    were retired once the two pattern figures landed: the bars said what the
+    split bar chart says without the sharing, and the heatmap said pairwise
+    what the pattern matrix says jointly. Their pairwise overlaps are still
+    recoverable from ``missingness_patterns.csv``.
     """
     figs, tabs = _ensure_dirs(Path(output_root))
 
@@ -91,49 +341,22 @@ def analyze_missingness(df: pd.DataFrame, *, output_root: Path | str = "output")
         "n_missing": miss.sum().values,
         "pct_missing": (miss.mean() * 100).round(2).values,
     }).sort_values("pct_missing", ascending=False).reset_index(drop=True)
+    # Kept although no figure is drawn from it: the report reads this table for
+    # its "Top missing" block and for the cohort's missing-cell count.
     per_col.to_csv(tabs / "missing_per_column.csv", index=False)
 
-    # Bar chart
-    if (per_col["pct_missing"] > 0).any():
-        plot_df = per_col[per_col["pct_missing"] > 0].copy()
-        plot_df["label"] = plot_df["column"].map(prettify_label)
-        fig, ax = plt.subplots(figsize=(8, max(3, 0.45 * len(plot_df) + 0.8)))
-        sns.barplot(x="pct_missing", y="label", data=plot_df, ax=ax,
-                    color=PALETTE["accent"])
-        set_figure_legend(fig, title="Missing values per column")
-        ax.set_xlabel("% missing"); ax.set_ylabel("")
-        ax.bar_label(ax.containers[0], fmt="%.1f%%", fontsize=8.5, padding=3)
-        ax.margins(x=0.12)
-        save_figure(fig, figs / "missing_per_column")
+    # Pattern figures: which blanks travel together, and how often a blank is
+    # a patient's only one. Both are written with their legends beside them.
+    patterns = missingness_patterns(df)
+    if not patterns.empty and len(patterns.columns) > len(_PATTERN_META):
+        patterns.to_csv(tabs / "missingness_patterns.csv", index=False)
+        save_figure(pattern_matrix_figure(patterns),
+                    figs / "missingness_patterns")
 
-    # Co-missingness heatmap (Jaccard over missing rows)
-    cols_with_miss = per_col[per_col["pct_missing"] > 0]["column"].tolist()
-    if len(cols_with_miss) >= 2:
-        m = miss[cols_with_miss].astype(int)
-        inter = m.T @ m
-        union = (m.values[:, :, None] | m.values[:, None, :]).sum(axis=0)
-        jacc = pd.DataFrame(
-            np.where(union > 0, inter.values / np.where(union == 0, 1, union), 0),
-            index=cols_with_miss, columns=cols_with_miss,
-        )
-        jacc.to_csv(tabs / "co_missingness_jaccard.csv")
-        pretty = [prettify_label(c) for c in cols_with_miss]
-        jacc_disp = jacc.copy()
-        jacc_disp.index = pretty
-        jacc_disp.columns = pretty
-        nlab = len(cols_with_miss)
-        fig, ax = plt.subplots(figsize=(0.75 * nlab + 3, 0.75 * nlab + 3))
-        # Lower triangle only — hide upper mirror and diagonal (self = always 1.00).
-        tri_mask = np.triu(np.ones_like(jacc_disp.values, dtype=bool), k=0)
-        annot_fs = 8 if nlab <= 12 else 6.5
-        sns.heatmap(jacc_disp, annot=True, fmt=".2f", cmap="Reds", ax=ax, cbar=True,
-                    mask=tri_mask, annot_kws={"fontsize": annot_fs},
-                    linewidths=0.5, linecolor="white",
-                    cbar_kws={"label": "Jaccard overlap", "shrink": 0.6})
-        set_figure_legend(fig, title="Co-missingness overlap (Jaccard)")
-        plt.setp(ax.get_xticklabels(), rotation=40, ha="right")
-        plt.setp(ax.get_yticklabels(), rotation=0)
-        save_figure(fig, figs / "co_missingness_heatmap")
+        sharing = gap_sharing(df)
+        sharing.to_csv(tabs / "gap_sharing.csv", index=False)
+        save_figure(gap_overlap_figure(sharing, n_patients=len(df)),
+                    figs / "gap_sharing")
 
     return per_col
 

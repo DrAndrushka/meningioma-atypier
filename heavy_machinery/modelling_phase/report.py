@@ -2238,9 +2238,11 @@ def render_missingness(cfg: ReportConfig, art: Artifacts) -> str:
 
     if art.missingness_figures:
         body.append("<h3>Patterns</h3>")
-        body.append(svg_grid(art.missingness_figures, plain=(
-            "How much is missing from each column, and which columns tend "
-            "to be empty together.")))
+        # No shared intro line. Both pattern figures carry their own
+        # plain-words reading in a legend sidecar, and a sentence above the
+        # grid would either repeat them or, as the retired one did, go on
+        # describing figures that are no longer drawn.
+        body.append(svg_grid(art.missingness_figures))
 
     return section_block("🕳️ Missingness story", "".join(body))
 
