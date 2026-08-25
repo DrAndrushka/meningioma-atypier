@@ -311,6 +311,37 @@ def test_lr_table_greys_a_row_whose_printed_interval_touches_the_null():
     plt.close(fig)
 
 
+def test_lr_table_writes_its_own_legend_from_its_rows():
+    """The count in the words has to be the count in the picture."""
+    import plot_style as ps
+
+    fig = mp.lr_table_figure(_two_sign_panel())
+    legend = ps.figure_legend(fig)
+    assert "2 findings" in legend["title"]
+    assert legend["note"].startswith("Note:\u2014")
+    assert "LR+ indicates positive likelihood ratio" in legend["note"]
+    assert legend["plain"] == mp.LR_TABLE_LEGEND
+    plt.close(fig)
+
+
+def test_lr_table_legend_says_cut_point_for_the_derived_family():
+    """A threshold is met, not seen; and it must say why it stands apart."""
+    import plot_style as ps
+
+    panel = _two_sign_panel().assign(origin=mp.DERIVED)
+    legend = ps.figure_legend(mp.lr_table_figure(panel))
+    assert "cut point" in legend["title"]
+    assert "meeting the cut point" in legend["note"]
+    assert "multiplicity correction" in legend["note"]
+    assert legend["plain"] == mp.LR_TABLE_LEGEND_DERIVED
+
+
+def test_count_span_collapses_a_single_denominator():
+    assert mp._count_span([352, 352, 352]) == "352"
+    assert mp._count_span([348, 352, 350]) == "348\u2013352"
+    assert mp._count_span([]) == ""
+
+
 def test_lr_ticks_thin_outward_from_the_null():
     """A thinned ladder that dropped 1 would leave the dashed line unlabelled."""
     ticks = mp._lr_ticks(0.02, 50.0)

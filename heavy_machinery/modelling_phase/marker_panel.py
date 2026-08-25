@@ -497,6 +497,87 @@ def _text_width(fig: plt.Figure, text: str, size: float) -> float:
         return 0.55 * size / 72.0 * len(text)
 
 
+def _count_span(values) -> str:
+    """``352`` when every row shares a denominator, ``309–352`` when they do not.
+
+    Printed as a span rather than as one number because the panel scores each
+    finding on the patients in whom it was actually assessed, so a single N
+    under this figure would be a number no row uses.
+    """
+    seen = sorted({int(v) for v in values if pd.notna(v)})
+    if not seen:
+        return ""
+    return str(seen[0]) if seen[0] == seen[-1] else f"{seen[0]}\u2013{seen[-1]}"
+
+
+def _lr_table_legend(rows: pd.DataFrame, *, derived: bool) -> dict[str, str]:
+    """The figure's title and its two explanations, written from its own rows.
+
+    Generated here rather than typed into the manuscript so that the words
+    under the figure and the figure itself cannot disagree about how many
+    findings there are, how they are ordered, or what the marks mean.
+    """
+    k = len(rows)
+    finding = "cut point" if derived else "finding"
+    plural = f"{finding}s" if k != 1 else finding
+
+    # "Present" is the column heading either way, but a cut point is met
+    # rather than seen, and a legend that says a threshold was "present" reads
+    # as though the threshold were a sign.
+    seen, unseen = (("meeting the cut point", "when it is not met") if derived
+                    else ("the finding\u2019s presence", "when it is absent"))
+    marks = (
+        f"Each row is read twice: LR+, the factor by which {seen} "
+        "multiplies the odds of high grade (filled "
+        f"squares, left), and LR\u2212, the factor {unseen} (hollow "
+        "squares, right). Bars indicate 95% CIs; the dashed line, a likelihood "
+        "ratio of 1, at which that reading carries no information; and grey, "
+        "an interval that includes 1 at the precision shown. Rows are ordered "
+        "by LR+, descending, and the 2 halves are scaled independently, so a "
+        "distance in one is not a distance in the other."
+    )
+    corrected = " ".join(
+        f"{int(rows[col].sum())} estimate(s) in this figure carry a continuity "
+        "correction, applied because a cell of the 2\u00d72 table was empty."
+        for col in ("continuity_corrected", "lr_neg_corrected")
+        if col in rows.columns and bool(rows[col].any())
+    )
+    abbrev = ("LR+ indicates positive likelihood ratio; LR\u2212, negative "
+              "likelihood ratio.")
+
+    if derived:
+        title = f"Likelihood ratios for {k} derived {plural}"
+        note = (
+            f"Note:\u2014Likelihood ratios for the {k} {plural} dichotomised "
+            "from a continuous measurement. Each restates a measurement that "
+            "is itself in the marker table, so they are reported apart from "
+            "the recorded findings, take no part in that figure\u2019s "
+            "multiplicity correction, and cannot be ranked against it. "
+            f"{marks} {corrected} {abbrev}"
+        )
+    else:
+        n_span = _count_span(rows.get("n_used", []))
+        hg_span = _count_span(rows.get("n_high_grade", []))
+        cohort = ""
+        if n_span:
+            cohort = f" in {n_span} meningiomas"
+            if hg_span:
+                cohort += f", {hg_span} of them high grade"
+            cohort += ("; N varies because each finding is scored on the "
+                       "patients in whom it was assessed")
+        title = f"Likelihood ratios for {k} {plural}, present and absent"
+        note = (
+            f"Note:\u2014Likelihood ratios for {k} {plural}{cohort}. {marks} "
+            "Cut points dichotomised from a continuous measurement are "
+            "reported separately: each restates a measurement listed here and "
+            "takes no part in the multiplicity correction applied to these "
+            f"findings. {corrected} {abbrev}"
+        )
+    plain = LR_TABLE_LEGEND_DERIVED if derived else LR_TABLE_LEGEND
+    return {"title": title, "plain": plain,
+            "note": " ".join(note.split())}
+
+
 def lr_table_figure(panel: pd.DataFrame) -> plt.Figure:
     """Both likelihood ratios for every finding, as one table with two forests.
 
@@ -681,6 +762,13 @@ def lr_table_figure(panel: pd.DataFrame) -> plt.Figure:
                bbox_transform=fig.transFigure, ncol=3, frameon=False,
                fontsize=small, handletextpad=0.5, columnspacing=1.8,
                borderaxespad=0.0, borderpad=0.0)
+
+    # The legend is written here, from the rows the figure was given, so the
+    # report and the manuscript cannot drift from the picture or from each
+    # other.
+    derived = ("origin" in rows.columns
+               and bool((rows["origin"] == DERIVED).all()))
+    ps.set_figure_legend(fig, **_lr_table_legend(rows, derived=derived))
     return fig
 
 
@@ -1086,7 +1174,6 @@ def run_marker_panel(
     # One table per family, and no combined one. The two families are corrected
     # separately, so a figure holding both invites the reader to rank a derived
     # cut-point against a native sign as though one q had ordered them.
-    legends = {NATIVE: LR_TABLE_LEGEND, DERIVED: LR_TABLE_LEGEND_DERIVED}
     for origin in (NATIVE, DERIVED):
         part = panel[panel["origin"] == origin] if "origin" in panel else panel
         if part.empty:
@@ -1099,7 +1186,6 @@ def run_marker_panel(
             raise ValueError(
                 f"The {origin} table was handed rows from the other family.")
         _fig = lr_table_figure(part.reset_index(drop=True))
-        ps.set_figure_legend(_fig, plain=legends[origin])
         ps.save_figure(_fig, fig_dir / f"lr_table_{origin}",
                        tight_layout=False, kind="halftone")
     prevalence = (
