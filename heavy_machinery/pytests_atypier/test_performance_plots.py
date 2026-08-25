@@ -170,3 +170,128 @@ def test_write_model_comparison_figure(tmp_path):
 @pytest.mark.parametrize("metric", ["AUC", "Brier score", "Calibration slope"])
 def test_comparison_covers_discrimination_error_and_calibration(metric):
     assert metric in {m[0] for m in pp._COMPARISON_METRICS}
+
+
+# ---------------------------------------------------------------------------
+# Overview figure — citation labels and the two comparators
+# ---------------------------------------------------------------------------
+
+def _overview(auc_app, auc_corr, ref, own):
+    return {"auc_apparent": auc_app, "auc_corrected": auc_corr,
+            "ref": ref, "own": own}
+
+
+@pytest.mark.parametrize("citation, expected", [
+    ("Radeesri K, Lekhavat V. The role of pre-operative MRI.", "Radeesri and Lekhavat"),
+    ("Peng S, Cheng Z, Guo Z. Diagnostic nomogram model.", "Peng et al"),
+    ("Spille DC, Adeli A, Sporns PB, et al. Predicting the risk.", "Spille et al"),
+    ("Funari A, De la Garza Ramos R, Cezayirli P, et al. Imaging score.",
+     "Funari et al"),
+    ("Kawahara Y. Solo work.", "Kawahara"),
+])
+def test_author_short_follows_ama(citation, expected):
+    """One name, two joined by "and", three or more as "et al" — never a year.
+
+    AJNR cites by superscript reference number, so an author-year label like
+    "Funari 2023" is the wrong style *and* invites a year that disagrees with
+    the reference list.
+    """
+    assert pp._author_short(citation) == expected
+
+
+def test_citation_label_carries_the_reference_number():
+    published = {"x_2020": {"citation": "Zhang S, Chiang GC, Knapp JM, et al. T.",
+                            "reference_number": 9}}
+    assert pp._citation_label("x_2020", published) == "Zhang et al$^{9}$"
+
+
+def test_citation_label_without_a_number_is_still_named():
+    published = {"x_2020": {"citation": "Zhang S, Chiang GC, Knapp JM, et al. T."}}
+    assert pp._citation_label("x_2020", published) == "Zhang et al"
+    assert pp._citation_label("absent", published) is None
+
+
+def test_overview_labels_published_models_by_citation(monkeypatch):
+    """The row is named the way the running text names it, not by model id."""
+    monkeypatch.setattr(pp, "_published_models", lambda: {
+        "lin_2014": {"citation": "Lin BJ, Chou KN, Kao HW, et al. Correlation.",
+                     "reference_number": 12}})
+    entries = [{"model_id": "lin_2014", "label": "Lin et al. 2014 | x",
+                "n_predictors": 4},
+               {"model_id": "top_6_variables", "label": "Top 6 variables",
+                "n_predictors": 6}]
+    overview = {"lin_2014": _overview(0.644, 0.628, (0.01, -0.02, 0.04),
+                                      (0.02, -0.01, 0.05)),
+                "top_6_variables": _overview(0.760, 0.725, (0.046, -0.005, 0.097),
+                                             (0.046, -0.005, 0.097))}
+    fig = pp.model_performance_overview_figure(
+        entries, target="high_grade", overview=overview, reference_auc=0.679,
+        reference_label="tumor volume")
+    assert fig is not None
+    drawn = {t.get_text() for t in fig.axes[0].texts}
+    assert "Lin et al$^{12}$" in drawn
+    assert "Top 6 variables" in drawn
+    assert not any(t.startswith("Lin 2014") for t in drawn)
+    plt.close(fig)
+
+
+def test_overview_draws_one_delta_when_both_comparators_agree():
+    """A model whose own strongest predictor IS the comparator has one delta.
+
+    Drawing the identical number twice — once filled, once hollow — reads as a
+    duplicated row, which is exactly how it looked before.
+    """
+    same = _overview(0.760, 0.725, (0.046, -0.005, 0.097), (0.046, -0.005, 0.097))
+    differ = _overview(0.702, 0.662, (-0.017, -0.089, 0.056), (0.071, 0.017, 0.122))
+    entries = [{"model_id": "a", "label": "A", "n_predictors": 6},
+               {"model_id": "b", "label": "B", "n_predictors": 10}]
+    fig = pp.model_performance_overview_figure(
+        entries, target="high_grade", overview={"a": same, "b": differ},
+        reference_auc=0.679, reference_label="tumor volume")
+    assert fig is not None
+    printed = [t.get_text() for t in fig.axes[0].texts]
+    assert printed.count("0.046 (−0.005 to 0.097)") == 1
+    assert "−0.017 (−0.089 to 0.056)" in printed
+    assert "0.071 (0.017 to 0.122)" in printed
+    plt.close(fig)
+
+
+def test_overview_prints_a_real_minus_sign_not_a_hyphen():
+    """A hyphen is a word-break; at 7 pt it does not read as a sign at all."""
+    entries = [{"model_id": "a", "label": "A", "n_predictors": 2},
+               {"model_id": "b", "label": "B", "n_predictors": 3}]
+    overview = {"a": _overview(0.66, 0.65, (-0.03, -0.09, 0.03), (0.02, -0.01, 0.06)),
+                "b": _overview(0.70, 0.69, (0.02, -0.06, 0.09), (0.07, 0.01, 0.13))}
+    fig = pp.model_performance_overview_figure(
+        entries, target="high_grade", overview=overview, reference_auc=0.679,
+        reference_label="tumor volume")
+    joined = "".join(t.get_text() for t in fig.axes[0].texts)
+    joined += "".join(t.get_text() for t in fig.axes[1].get_xticklabels())
+    assert "−" in joined and "-0." not in joined
+    plt.close(fig)
+
+
+def test_overview_needs_two_models():
+    one = {"a": _overview(0.7, 0.68, (None, None, None), (None, None, None))}
+    assert pp.model_performance_overview_figure(
+        [{"model_id": "a", "label": "A"}], overview=one) is None
+    assert pp.model_performance_overview_figure([{"model_id": "a"}], overview={}) is None
+
+
+def test_write_model_performance_overview_figure(tmp_path):
+    entries = [{"model_id": "a", "label": "A", "n_predictors": 2},
+               {"model_id": "b", "label": "B", "n_predictors": 3}]
+    csv_path = tmp_path / "model_overview.csv"
+    csv_path.write_text(
+        "model_id,n_predictors,auc_apparent,auc_corrected,reference,"
+        "reference_auc_corrected,delta_ref_corrected,delta_ref_ci_lo_corrected,"
+        "delta_ref_ci_hi_corrected,delta_own_corrected,delta_own_ci_lo_corrected,"
+        "delta_own_ci_hi_corrected\n"
+        "a,2,0.66,0.65,tumor_volume,0.679,-0.03,-0.09,0.03,0.02,-0.01,0.06\n"
+        "b,3,0.70,0.69,tumor_volume,0.679,0.02,-0.06,0.09,0.07,0.01,0.13\n",
+        encoding="utf-8")
+    path = pp.write_model_performance_overview_figure(
+        entries, tmp_path, target="high_grade", overview_csv=csv_path)
+    assert path is not None
+    assert path.name == "high_grade__model_performance_overview.png"
+    assert path.exists()

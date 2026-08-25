@@ -15,8 +15,15 @@ always one-to-one.
 """
 from __future__ import annotations
 
+# ``reference_number`` is the paper's position in the *manuscript's* reference
+# list, which is what AJNR figures and tables cite — the journal numbers
+# references in order of first appearance and prints the number as a superscript
+# rather than an author-year. It lives here because nothing the pipeline
+# computes can know it, and it must be re-checked whenever the reference list is
+# renumbered. Verified against the manuscript on 2026-08-25.
 PUBLISHED_MODELS: dict[str, dict] = {
     "radeesri_2023": {
+        "reference_number": 8,
         "citation": (
             "Radeesri K, Lekhavat V. The Role of Pre-Operative MRI for Prediction "
             "of High-Grade Intracranial Meningioma: A Retrospective Study. "
@@ -72,6 +79,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
     # weight rather than an OR, or a bound the paper never published), the
     # field is left empty rather than estimated.
     "spille_2020": {
+        "reference_number": 7,
         "citation": (
             "Spille DC, Adeli A, Sporns PB, et al. Predicting the risk of "
             "postoperative recurrence and high-grade histology in patients with "
@@ -114,6 +122,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ],
     },
     "zhang_2020": {
+        "reference_number": 9,
         "citation": (
             "Zhang S, Chiang GC, Knapp JM, et al. Grading meningiomas utilizing "
             "multiparametric MRI with inclusion of susceptibility weighted "
@@ -184,6 +193,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ],
     },
     "funari_2023": {
+        "reference_number": 10,
         "citation": (
             "Funari A, De la Garza Ramos R, Cezayirli P, et al. Imaging score "
             "for differentiation of meningioma grade. "
@@ -228,6 +238,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ],
     },
     "kawahara_2012": {
+        "reference_number": 11,
         "cross_reference": (
             "Capsular enhancement points the OPPOSITE way in Lin et al. 2014, "
             "also refit here. These authors scored its ABSENCE as the high-grade "
@@ -297,6 +308,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ),
     },
     "lin_2014": {
+        "reference_number": 12,
         "cross_reference": (
             "Capsular enhancement points the OPPOSITE way in Kawahara et al. "
             "2012, also refit here. Lin scores its PRESENCE at 3 of 12 points "
@@ -362,6 +374,7 @@ PUBLISHED_MODELS: dict[str, dict] = {
         ),
     },
     "peng_2021": {
+        "reference_number": 13,
         "citation": (
             "Peng S, Cheng Z, Guo Z. Diagnostic nomogram model for predicting "
             "preoperative pathological grade of meningioma. "

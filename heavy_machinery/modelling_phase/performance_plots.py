@@ -28,7 +28,8 @@ import textwrap
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+from matplotlib.patches import Rectangle
+from matplotlib.ticker import FixedLocator, FormatStrFormatter, MaxNLocator
 
 from plot_style import (
     CATEGORICAL_COLORS,
@@ -53,9 +54,21 @@ apply_plot_style()
 # from the OR forest and the cut-point figures a reader sees a page earlier.
 try:
     import ajnr_style as aj
+    import ajnr_format as afmt
 except ModuleNotFoundError:  # cutpoint_phase is not on sys.path yet
     from heavy_machinery.config import load as _load_config  # noqa: F401
     import ajnr_style as aj
+    import ajnr_format as afmt
+
+# The published models' citations and their manuscript reference numbers. Read
+# lazily and tolerantly: the overview figure is the only caller, and a checkout
+# without the config must still draw it (with plainer row labels).
+def _published_models() -> dict[str, dict]:
+    try:
+        from heavy_machinery.config import load as _load
+        return dict(_load("published_models").PUBLISHED_MODELS)
+    except Exception:  # pragma: no cover - config absent or unreadable
+        return {}
 
 # Apparent (in-sample) vs optimism-corrected, used consistently everywhere.
 # Nothing here is distinguished by hue: filled/hollow and shade carry the
@@ -281,9 +294,16 @@ def _cohort_note(entries, plural: str = "events", definition: str = "") -> str:
 
 
 def _resamples(entries) -> int | None:
+    """How many resamples every entry agrees on, or None.
+
+    An entry with no validation block contributes nothing rather than raising:
+    the overview figure is drawn from ``model_overview.csv`` and only reaches
+    for the entries to name the cohort, so a caller that passes bare rows must
+    get a legend with the sentence dropped, not a traceback.
+    """
     counts = {
-        int(e["validation"].get("bootstrap_resamples")
-            or e["validation"].get("successful_bootstraps") or 0)
+        int((e.get("validation") or {}).get("bootstrap_resamples")
+            or (e.get("validation") or {}).get("successful_bootstraps") or 0)
         for e in entries
     }
     counts.discard(0)
@@ -449,9 +469,13 @@ def _short_label(label: str) -> str:
     """``Funari et al. 2023 | imaging score components`` -> ``Funari 2023``.
 
     The descriptor after the pipe is useful in a table and fatal in a figure:
-    eleven of them set the width of the whole panel. Citations collapse to the
-    first author and the year, the form the caption and the reference list use
-    anyway; "et al.", co-authors and the trailing qualifier all go.
+    eleven of them set the width of the whole panel.
+
+    This is the fallback, and author-year is not the journal's citation style —
+    the overview figure prefers :func:`_citation_label`, which names a paper the
+    way AJNR's running text does and carries its reference number. What is left
+    here is the across-variant comparison figure, whose rows are our own model
+    variants rather than published papers.
     """
     text = str(label).split("|")[0].strip() or str(label)
     text = re.sub(r"\s+by discrimination", "", text)
@@ -459,6 +483,87 @@ def _short_label(label: str) -> str:
     if match:
         return f"{match.group(1)} {match.group(2)}"
     return text[:1].upper() + text[1:]
+
+
+def _surname(person: str) -> str:
+    """``De la Garza Ramos R`` -> ``De la Garza Ramos``: drop trailing initials."""
+    return re.sub(r"\s+[A-Z]{1,3}$", "", str(person).strip())
+
+
+def _author_short(citation: str) -> str | None:
+    """How AJNR's running text names a paper: ``Spille et al``.
+
+    AMA — which AJNR follows — names one author, two joined by "and", and three
+    or more as the first plus "et al" with no comma before it. There is no year:
+    the superscript reference number is the citation. Derived from the stored
+    citation rather than stored a second time, so correcting a citation cannot
+    leave a stale label behind it.
+    """
+    head = str(citation or "").split(". ")[0].strip()
+    if not head:
+        return None
+    if "et al" in head:
+        return f"{_surname(head.split(',')[0])} et al"
+    names = [_surname(part) for part in head.split(",") if part.strip()]
+    if not names:
+        return None
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return f"{names[0]} et al"
+
+
+def _citation_label(model_id: str, published: dict[str, dict]) -> str | None:
+    """``Spille et al$^{7}$`` — the name, then the reference number in superscript.
+
+    Mathtext rather than the Unicode superscript characters: Arial carries only
+    U+00B9/B2/B3, so "et al\u2077" prints a tofu box where the 7 should be.
+    :mod:`plot_style` points mathtext at the body font, so the digits come out
+    in the same face as the name beside them.
+    """
+    entry = published.get(str(model_id))
+    if not entry:
+        return None
+    name = _author_short(entry.get("citation", ""))
+    if not name:
+        return None
+    number = entry.get("reference_number")
+    if number is None:
+        return name
+    return f"{name}$^{{{int(number)}}}$"
+
+
+def _published_roll_call(rows, published: dict[str, dict]) -> str:
+    """``Published models are those of Spille et al,7 ... refit in this cohort.``
+
+    Plain digits, not superscript characters: this string is the legend the
+    manuscript prints, and the superscript is applied there. Ordered by
+    reference number, which is the order AJNR numbers references in anyway.
+
+    The number follows the comma — ``Spille et al,7`` — so the items are joined
+    by a space rather than by ", ", and the one before "and" drops its comma.
+    """
+    named = []
+    for mid, _, _ in rows:
+        entry = published.get(str(mid))
+        if not entry:
+            continue
+        name = _author_short(entry.get("citation", ""))
+        number = entry.get("reference_number")
+        if name and number is not None:
+            named.append((int(number), name))
+    if not named:
+        return ""
+    named.sort()
+    items = [f"{name},{number}" for number, name in named]
+    if len(items) > 1:
+        number, name = named[-2]
+        items[-2] = f"{name}{number}"
+        listing = " ".join(items[:-1]) + f" and {items[-1]}"
+    else:
+        listing = items[0]
+    return f"Published models are those of {listing} refit in this cohort. "
 
 
 def _overview_rows(
@@ -498,6 +603,10 @@ def _overview_rows(
                 ref_auc = _f(row, "reference_auc_corrected")
                 ref_name = (row.get("reference") or "").strip() or None
             out[row["model_id"]] = {
+                # Read here rather than taken off the entry: the count belongs
+                # to the fitted model the CSV describes, and an entry assembled
+                # for the report does not always carry it.
+                "n_predictors": _f(row, "n_predictors"),
                 "auc_apparent": _f(row, "auc_apparent"),
                 "auc_corrected": _f(row, "auc_corrected"),
                 # Blank by design in two places: the reference model's own
@@ -524,39 +633,46 @@ def model_performance_overview_figure(
     groups: dict[str, str] | None = None,
     group_order: Sequence[str] | None = None,
 ) -> plt.Figure | None:
-    """Where every candidate model lands, and what it bought (A and B).
+    """Every candidate model as one table whose plot columns are forests.
 
-    A answers "how well does it discriminate": each model's AUC as an
-    optimism-corrected value beside the apparent one it was shrunk from, so the
-    gap between the two squares *is* that model's overfitting. The dashed line
-    is the single prespecified predictor, which several multivariable models do
-    not clear.
+    The figure answers two questions per row and prints the answer to both.
+    *Discrimination* is where the model lands: the optimism-corrected AUC beside
+    the apparent one it was shrunk from, so the gap between the squares is that
+    model's overfitting, against a dashed line at the single prespecified
+    predictor. *Gain over a comparator* is whether the combination was worth it,
+    against two comparators at once because they disagree and the disagreement
+    is the finding — the model's own strongest single ingredient (filled, upper),
+    which is the comparison the source papers published, and the shared
+    prespecified predictor (hollow, lower), which is the one that matters
+    clinically. A model can sit either side of zero on one and not the other.
 
-    B answers "was the combination worth it", against both baselines at once
-    because they disagree and the disagreement is the finding. Filled squares
-    compare with the shared reference — is this model worth more than the best
-    one variable in the cohort at all. Hollow squares compare with the strongest
-    single variable the model itself contains — did combining *those* predictors
-    help, which is the comparison the source papers published. A model can sit
-    left of zero on one and right of zero on the other.
-
-    Rows are grouped into our models and the literature refits, each block
-    ordered by optimism-corrected AUC, so a reader is never comparing a model we
-    built with one we merely refit without being told which is which.
+    Laid out as a table rather than as two panels because a reader who has to
+    measure a value off an axis will misread it, and because the numeric columns
+    let this one exhibit replace a figure and a table. Rows are grouped into our
+    models and the literature refits, each block ordered by optimism-corrected
+    AUC, so nobody compares a model we built with one we merely refit without
+    being told which is which.
     """
     stats = dict(overview or {})
     if not stats:
         return None
+    published = _published_models()
     labels = {str(e.get("model_id", "")): _short_label(e.get("label", ""))
               for e in entries}
-    rows = [(mid, labels.get(mid) or _pretty_variable(mid).capitalize(), st)
+    rows = [(mid,
+             _citation_label(mid, published)
+             or labels.get(mid)
+             or _pretty_variable(mid).capitalize(),
+             st)
             for mid, st in stats.items()
             if st.get("auc_corrected") is not None]
     if len(rows) < 2:
         return None
 
-    # Rows run bottom-to-top, so a block is laid out in reverse and the block
-    # listed first in ``group_order`` ends up at the top — where the eye lands.
+    n_pred = {str(e.get("model_id", "")): e.get("n_predictors") for e in entries}
+    n_pred.update({mid: st["n_predictors"] for mid, st in stats.items()
+                   if st.get("n_predictors") is not None})
+
     gmap = dict(groups or {})
     if gmap:
         order = list(group_order or ())
@@ -570,159 +686,244 @@ def model_performance_overview_figure(
     blocks = [(g, sorted(rs, key=lambda r: r[2]["auc_corrected"], reverse=True))
               for g, rs in blocks if rs]
 
-    y_of: dict[str, float] = {}
+    # --- geometry, in inches from the top-left ------------------------------
+    # Column edges rather than widths: every one of them is a place a reader's
+    # eye stops, and stating them absolutely is what keeps the numeric columns
+    # from drifting into the forests when a label grows.
+    W = FIG_WIDTH_DOUBLE
+    X_NAME = 0.10
+    AX_A = (1.42, 2.98)
+    X_AUC_R = 3.38
+    AX_B = (3.65, 5.44)
+    X_D_R = W - 0.10
+    ROW_H, HEAD_H, BLOCK_GAP = 0.323, 0.208, 0.104
+    TOP_PAD, HDR_H = 0.104, 0.205
+    AXIS_H, LEGEND_H = 0.27, 0.66
+
+    y = TOP_PAD + HDR_H
+    top_in = y
+    placed: list[tuple[str, list[tuple[float, tuple]]]] = []
     banded: list[float] = []
-    headers: list[tuple[float, str]] = []
-    cursor = 0.0
-    for g, rs in reversed(blocks):
-        # Banding restarts inside each block: carrying the alternation across
-        # the gap makes the first row of a block look shifted.
-        for rank, (mid, _, _) in enumerate(reversed(rs)):
-            y_of[mid] = cursor
-            if rank % 2:
-                banded.append(cursor)
-            cursor += 1.0
-        if g:
-            headers.append((cursor - 0.40, "\n".join(textwrap.wrap(g, 22))))
-            cursor += 1.05
-    rows.sort(key=lambda r: y_of[r[0]])
-    ys = [y_of[r[0]] for r in rows]
+    for gi, (gname, rs) in enumerate(blocks):
+        head_y = y
+        y += HEAD_H
+        laid = []
+        for i, row in enumerate(rs):
+            if i % 2 == 0:
+                banded.append(y)
+            laid.append((y + ROW_H / 2, row))
+            y += ROW_H
+        placed.append((gname, laid))
+        if gi < len(blocks) - 1:
+            y += BLOCK_GAP
+        blocks[gi] = (gname, rs, head_y)
+    bot_in = y
+    height = bot_in + AXIS_H + LEGEND_H
 
-    ref_short = (reference_label or "the single predictor").strip()
-    width = FIG_WIDTH_DOUBLE
-    singular, plural, definition = _outcome(target, entries)
-    cohort = _cohort_note(entries, plural, definition) or "the development sample"
-    ref_txt = "" if reference_auc is None else f" ({reference_auc:.2f})"
-    note = (
-        f"Note:—A, Area under the receiver operating characteristic curve for "
-        f"each of the {len(rows)} candidate models in {cohort}. Hollow squares "
-        "indicate apparent (in-sample) values; filled squares, optimism-corrected "
-        "values, and the connecting line is the optimism removed; dashed line, "
-        f"{ref_short.lower()} alone{ref_txt}. "
-        f"B, Difference in optimism-corrected AUC against {ref_short.lower()} "
-        "alone (filled) and against the strongest single predictor each model "
-        "itself contains (hollow); bars, 95% CIs. Values to the right of the "
-        "dashed line favor the multivariable model."
-    )
+    fig = plt.figure(figsize=(W, height))
+    fig.patch.set_facecolor("white")
 
-    heading = f"Discrimination of {len(rows)} candidate models for predicting {singular}"
-    # The heading and the note go to the report as text, so the canvas reserves
-    # only the strip the panel letters sit in.
-    title_in = 0.24
-    rows_in = max(0.315 * cursor, 3.0)
-    xlabel_in, legend_in = 0.46, 0.78
-    height = rows_in + title_in + xlabel_in + legend_in
+    def _rect(x0, y0, x1, y1):
+        return (x0 / W, 1 - y1 / height, (x1 - x0) / W, (y1 - y0) / height)
 
-    fig, axes = plt.subplots(
-        1, 2, squeeze=True, figsize=(width, height),
-        gridspec_kw={"width_ratios": (1.0, 1.0), "wspace": 0.82},
-    )
-    fig.subplots_adjust(
-        left=0.135, right=0.985,
-        top=1 - title_in / height,
-        bottom=(xlabel_in + legend_in) / height,
-    )
-    top_y = cursor - 1.05 if headers else max(ys) + 0.5
-    for ax in axes:
-        for yi in banded:
-            ax.axhspan(yi - 0.5, yi + 0.5, facecolor=aj.ROW_BAND,
-                       alpha=aj.ROW_BAND_ALPHA, linewidth=0, zorder=0)
-        ax.set_ylim(-0.5, top_y + 0.55)
-        ax.tick_params(axis="y", length=0)
+    ax_a = fig.add_axes(_rect(AX_A[0], top_in, AX_A[1], bot_in))
+    ax_b = fig.add_axes(_rect(AX_B[0], top_in, AX_B[1], bot_in))
+    for ax in (ax_a, ax_b):
+        # y is inches from the top of the figure, inverted, so a row's position
+        # is the same number in the axes and in the text columns beside them.
+        ax.set_ylim(bot_in, top_in)
+        ax.set_yticks([])
+        ax.set_facecolor("none")
         ax.grid(False)
+        for side in ("top", "right", "left"):
+            ax.spines[side].set_visible(False)
+        ax.tick_params(axis="y", length=0)
 
-    # --- A: where each model lands ----------------------------------------
-    ax = axes[0]
+    aucs = [r[2]["auc_corrected"] for r in rows]
+    aucs += [r[2]["auc_apparent"] for r in rows if r[2]["auc_apparent"] is not None]
     if reference_auc is not None:
-        ax.axvline(reference_auc, zorder=1, **aj.NULL_LINE)
-    for mid, _, st in rows:
-        a, c = st["auc_apparent"], st["auc_corrected"]
-        if a is not None and c is not None:
-            ax.plot([c, a], [y_of[mid]] * 2, color=aj.REFERENCE,
-                    linewidth=0.9, zorder=2)
-    ax.scatter([r[2]["auc_corrected"] for r in rows], ys,
-               s=18, marker=aj.MARKER, color=aj.INK, zorder=3)
-    app = [(r[2]["auc_apparent"], y) for r, y in zip(rows, ys)
-           if r[2]["auc_apparent"] is not None]
-    if app:
-        ax.scatter([v for v, _ in app], [y for _, y in app], s=18,
-                   marker=aj.MARKER, facecolors="none", edgecolors=aj.INK,
-                   linewidths=0.9, zorder=3)
-    ax.set_yticks(ys)
-    ax.set_yticklabels([r[1] for r in rows])
-    # The whole panel spans about 0.15 AUC, so two decimals would print three
-    # ticks and hide how tightly the middle of the field is packed.
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=9, steps=[1, 2.5, 5]))
-    ax.xaxis.set_major_formatter(FormatStrFormatter("%.3f"))
-    ax.set_xlabel("AUC")
-    ax.set_title("A", loc="left", fontweight="bold")
-    ax.margins(x=0.12)
+        aucs.append(reference_auc)
+    pad_a = max(0.006, 0.08 * (max(aucs) - min(aucs)))
+    ax_a.set_xlim(min(aucs) - pad_a, max(aucs) + pad_a)
 
-    # --- B: what the combination bought ------------------------------------
-    ax = axes[1]
-    ax.axvline(0.0, zorder=1, **aj.NULL_LINE)
-    offset = 0.19
-    for mid, _, st in rows:
-        for key, dy, filled in (("ref", offset, True), ("own", -offset, False)):
-            d, lo, hi = st[key]
-            if d is None:
+    deltas = [v for r in rows for key in ("ref", "own") for v in r[2][key]
+              if v is not None]
+    pad_b = max(0.004, 0.06 * (max(deltas) - min(deltas))) if deltas else 0.05
+    lo_b, hi_b = min(deltas + [0.0]) - pad_b, max(deltas + [0.0]) + pad_b
+    ax_b.set_xlim(lo_b, hi_b)
+
+    sep = afmt.interval_separator(deltas)
+
+    # --- row shading, drawn across the whole sheet --------------------------
+    for y0 in banded:
+        fig.add_artist(Rectangle(
+            (X_NAME / W, 1 - (y0 + ROW_H) / height),
+            (X_D_R - X_NAME) / W, ROW_H / height,
+            transform=fig.transFigure, facecolor=aj.ROW_BAND,
+            alpha=aj.ROW_BAND_ALPHA, linewidth=0, zorder=0))
+
+    small = plt.rcParams["xtick.labelsize"]
+    body = plt.rcParams["ytick.labelsize"]
+
+    def _fx(x_in: float) -> float:
+        """An inch position on the sheet, as a fraction of panel A's width."""
+        return (x_in - AX_A[0]) / (AX_A[1] - AX_A[0])
+
+    def _text(x_in, y_in, s, *, ha="left", size=None, weight="normal",
+              style="normal", color=aj.INK):
+        return ax_a.text(_fx(x_in), y_in, s, transform=ax_a.get_yaxis_transform(),
+                         ha=ha, va="center", fontsize=size or small,
+                         fontweight=weight, fontstyle=style, color=color,
+                         clip_on=False, zorder=4)
+
+    # --- header row ---------------------------------------------------------
+    hdr_y = TOP_PAD + HDR_H * 0.42
+    for x_in, text, ha in (
+            (X_NAME, "Model (No. of predictors)", "left"),
+            ((AX_A[0] + AX_A[1]) / 2, "Discrimination", "center"),
+            (X_AUC_R, "AUC", "right"),
+            ((AX_B[0] + AX_B[1]) / 2, "Gain over a comparator", "center"),
+            (X_D_R, "Δ AUC (95% CI)", "right")):
+        _text(x_in, hdr_y, text, ha=ha, weight="bold")
+    fig.add_artist(plt.Line2D(
+        [X_NAME / W, X_D_R / W], [1 - (TOP_PAD + HDR_H - 0.055) / height] * 2,
+        transform=fig.transFigure, color=aj.INK, linewidth=1.0, zorder=3))
+
+    # --- the rows -----------------------------------------------------------
+    for (gname, laid), (_, _, head_y) in zip(placed, blocks):
+        if gname:
+            _text(X_NAME, head_y + HEAD_H * 0.5, gname,
+                  size=body, weight="bold", style="italic")
+        for cy, (mid, label, st) in laid:
+            npred = n_pred.get(mid)
+            _text(X_NAME, cy - 0.055, label, size=body)
+            if npred is not None:
+                _text(X_NAME, cy + 0.062,
+                      f"{int(npred)} predictor" + ("s" if int(npred) != 1 else ""),
+                      size=small, color="#5A5A5A")
+
+            app, cor = st["auc_apparent"], st["auc_corrected"]
+            if app is not None:
+                ax_a.plot([cor, app], [cy, cy], color=aj.REFERENCE,
+                          linewidth=0.9, zorder=2)
+                ax_a.plot([app], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
+                          markerfacecolor="white", markeredgecolor=aj.INK,
+                          markeredgewidth=0.9, linestyle="none", zorder=3)
+            ax_a.plot([cor], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
+                      color=aj.INK, linestyle="none", zorder=3)
+            _text(X_AUC_R, cy, afmt.fmt_est(cor, 3), ha="right", size=body)
+
+            if st["ref"][0] is None and st["own"][0] is None:
+                _text(AX_B[0] + 0.10, cy, "the comparator itself",
+                      size=small, color=aj.REFERENCE)
+                _text(X_D_R, cy, afmt.BLANK, ha="right", size=small)
                 continue
-            yy = y_of[mid] + dy
-            if lo is not None and hi is not None:
-                ax.plot([lo, hi], [yy, yy], color=aj.REFERENCE,
-                        linewidth=0.9, zorder=2)
-                for x_end in (lo, hi):
-                    ax.plot([x_end, x_end], [yy - 0.11, yy + 0.11],
-                            color=aj.REFERENCE, linewidth=0.9, zorder=2)
-            face = aj.INK if filled else "none"
-            ax.scatter([d], [yy], s=16, marker=aj.MARKER, facecolors=face,
-                       edgecolors=aj.INK, linewidths=0.9, zorder=3)
-    ax.set_yticks([])
-    ax.xaxis.set_major_locator(MaxNLocator(nbins=8, steps=[1, 2.5, 5]))
-    ax.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
-    ax.set_xlabel("Δ AUC (optimism-corrected)")
-    ax.set_title("B", loc="left", fontweight="bold")
-    ax.margins(x=0.10)
+            # One square, not two, when a model's own strongest ingredient IS
+            # the shared comparator: the two deltas are then the same number and
+            # drawing both reads as a duplicated row.
+            same = (st["ref"][0] is not None and st["own"][0] is not None
+                    and abs(st["ref"][0] - st["own"][0]) < 5e-4)
+            drawn = (("own", 0.0, True),) if same else (
+                ("own", -0.066, True), ("ref", 0.066, False))
+            for key, dy, filled in drawn:
+                d, lo, hi = st[key]
+                if d is None:
+                    continue
+                yy = cy + dy
+                if lo is not None and hi is not None:
+                    ax_b.plot([lo, hi], [yy, yy], color=aj.REFERENCE,
+                              linewidth=1.0, zorder=2)
+                    for x_end in (lo, hi):
+                        ax_b.plot([x_end, x_end], [yy - 0.033, yy + 0.033],
+                                  color=aj.REFERENCE, linewidth=1.0, zorder=2)
+                ax_b.plot([d], [yy], marker=aj.MARKER,
+                          markersize=aj.MARKER_SIZE if same else aj.MARKER_SIZE * 0.92,
+                          markerfacecolor=aj.INK if filled else "white",
+                          markeredgecolor=aj.INK, markeredgewidth=0.9,
+                          linestyle="none", zorder=3)
+                _text(X_D_R, yy, afmt.fmt_signed_ci(d, lo, hi, 3, separator=sep),
+                      ha="right", size=small)
 
-    # The block headings sit in the gutter between the panels: outside on the
-    # right they push the saved figure past the journal's 7.5-inch limit.
-    # Centred in that gutter rather than hung off panel B's left edge, because
-    # the heading names a block of rows that runs across both panels.
-    box_a, box_b = axes[0].get_position(), axes[1].get_position()
-    gutter_mid = -((box_b.x0 - box_a.x1) / 2) / box_b.width
-    for y_head, text in headers:
-        axes[1].text(gutter_mid, y_head, text,
-                     transform=axes[1].get_yaxis_transform(),
-                     ha="center", va="center", multialignment="center",
-                     style="italic", fontweight="bold",
-                     fontsize=plt.rcParams["ytick.labelsize"] * 0.95)
+    # --- reference lines and the two x axes ---------------------------------
+    if reference_auc is not None:
+        ax_a.axvline(reference_auc, zorder=1, **aj.NULL_LINE)
+    ax_b.axvline(0.0, zorder=1, **aj.NULL_LINE)
+    for ax in (ax_a, ax_b):
+        ax.spines["bottom"].set_position(("outward", 4))
+        ax.tick_params(axis="x", labelsize=small, length=3.2, pad=2)
+    ax_a.xaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 4, 5]))
+    ax_a.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
+    # Every other gridline unlabelled: six labels do not fit this column, and
+    # dropping them entirely would leave the eye nothing to interpolate from.
+    step = 0.05
+    majors = np.arange(np.ceil(lo_b / (2 * step)) * 2 * step, hi_b, 2 * step)
+    ax_b.xaxis.set_major_locator(FixedLocator(majors))
+    ax_b.xaxis.set_minor_locator(
+        FixedLocator([t for t in np.arange(np.ceil(lo_b / step) * step, hi_b, step)
+                      if not np.any(np.isclose(t, majors))]))
+    ax_b.tick_params(axis="x", which="minor", length=1.9)
+    ax_b.set_xticklabels([afmt.fmt_signed(t, 2) for t in majors])
+
+    # --- the rule that closes the table, then the legends -------------------
+    rule_y = bot_in + AXIS_H - 0.03
+    fig.add_artist(plt.Line2D(
+        [X_NAME / W, X_D_R / W], [1 - rule_y / height] * 2,
+        transform=fig.transFigure, color=aj.INK, linewidth=1.0, zorder=3))
 
     def _mark(filled: bool) -> Line2D:
         return Line2D([], [], linestyle="none", marker=aj.MARKER,
-                      markerfacecolor=aj.INK if filled else "none",
+                      markerfacecolor=aj.INK if filled else "white",
                       markeredgecolor=aj.INK, markeredgewidth=0.9,
                       markersize=aj.MARKER_SIZE)
 
-    legends = (
-        (axes[0], [_mark(True), _mark(False), Line2D([], [], **aj.NULL_LINE)],
-         ["Optimism-corrected", "Apparent", f"{ref_short} alone"]),
-        (axes[1], [_mark(True), _mark(False), Line2D([], [], **aj.NULL_LINE)],
-         [f"vs {ref_short.lower()}", "vs its strongest single predictor",
-          "No difference"]),
+    ref_short = (reference_label or "the single predictor").strip()
+    ref_txt = "" if reference_auc is None else f" ({afmt.fmt_est(reference_auc, 3)})"
+    legend_y = 1 - (rule_y + 0.11) / height
+    for x_in, handles, texts, ncol in (
+            (AX_A[0], [_mark(True), _mark(False), Line2D([], [], **aj.NULL_LINE)],
+             ["Optimism-corrected", "Apparent",
+              f"{ref_short.capitalize()} alone{ref_txt}"], 1),
+            (AX_B[0], [_mark(True), _mark(False)],
+             ["vs its own strongest single predictor",
+              f"vs {ref_short.lower()} alone"], 1)):
+        fig.legend(handles, texts, loc="upper left",
+                   bbox_to_anchor=(x_in / W, legend_y),
+                   bbox_transform=fig.transFigure, ncol=ncol, frameon=False,
+                   fontsize=small, handletextpad=0.5, columnspacing=1.4,
+                   labelspacing=0.35, borderaxespad=0.0, borderpad=0.0)
+
+    # The legend is written once, here, in the form the manuscript prints it —
+    # the report shows the same words under the figure, so the two cannot drift.
+    singular, plural, definition = _outcome(target, entries)
+    cohort = _cohort_note(entries, plural) or "the development sample"
+    resamples = _resamples(entries)
+    grade = f" ({definition})" if definition else ""
+    draws = f"{resamples} bootstrap resamples" if resamples else "bootstrap resampling"
+    roll = _published_roll_call(rows, published)
+    note = (
+        f"Note:—Bootstrap-corrected discrimination of {len(rows)} candidate "
+        f"models for {singular}{grade} in {cohort}. Discrimination: apparent "
+        "and optimism-corrected AUC for each model, ordered by the corrected "
+        "value. Hollow squares indicate apparent estimates; filled squares, "
+        f"optimism-corrected estimates from {draws}; connecting lines, the "
+        f"optimism removed; and the dashed line, {ref_short.lower()} alone "
+        f"(optimism-corrected AUC, {afmt.fmt_est(reference_auc, 3)}). Gain over "
+        "a comparator: difference in optimism-corrected AUC between each model "
+        "and 2 comparators — the strongest single predictor the model itself "
+        "contains (filled squares, upper) and the prespecified single "
+        f"predictor, {ref_short.lower()} (hollow squares, lower); where these "
+        "coincide, 1 square is drawn. Bars indicate 95% CIs; the dashed line, "
+        "no difference. Values to the right favor the multivariable model. "
+        f"{roll}AUC indicates area under the receiver operating characteristic "
+        "curve."
     )
-    for ax, handles, texts in legends:
-        box = ax.get_position()
-        fig.legend(
-            handles, texts, loc="upper center",
-            bbox_to_anchor=(box.x0 + box.width / 2, legend_in / height),
-            bbox_transform=fig.transFigure, ncol=1, frameon=False,
-            handletextpad=0.6, borderaxespad=0.0,
-        )
     plain = (
-        f"One row per model. Left: how well it does, further right is better — "
+        "One row per model. Left: how well it does, further right is better — "
         f"the dashed line is {ref_short.lower()} alone. Right: it beat a single "
         "measurement if the square is past the dashed line."
     )
+    heading = (f"Bootstrap-corrected discrimination of {len(rows)} candidate "
+               f"models for {singular}")
     set_figure_legend(fig, title=heading, plain=plain, note=note)
     return fig
 

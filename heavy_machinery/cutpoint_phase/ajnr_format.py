@@ -15,7 +15,12 @@ decimals; above, two.
 **Estimates keep their leading zero** — ``0.72``, not ``.72``. Only P values
 drop it, and applying the P-value rule to an odds ratio is a common slip.
 
-**Intervals use an en dash**, not a hyphen, and no spaces around it.
+**Intervals use an en dash**, not a hyphen, and no spaces around it — except
+where a bound can be negative. ``-0.089-0.056`` reads as one range with a stray
+sign, so a signed quantity uses a true minus sign and the word "to"
+(:func:`fmt_signed`, :func:`fmt_signed_ci`). These are separate functions rather
+than a flag on :func:`fmt_est`, because every existing caller prints a quantity
+that cannot go below zero and must keep printing exactly what it prints today.
 
 A blank cell is written as an em dash, never as ``nan`` or an empty string: a
 reader needs to see that the cell was considered and has no value, not wonder
@@ -27,6 +32,7 @@ import math
 
 BLANK = "—"        # em dash: considered, no value
 EN_DASH = "–"
+MINUS = "\u2212"   # not the ASCII hyphen: that is a word-break, not a sign
 
 
 def _missing(value) -> bool:
@@ -117,3 +123,44 @@ def join_names(names) -> str:
 def yes_no(flag) -> str:
     """A graded verdict, or a blank where the rule could not be applied."""
     return BLANK if flag is None else ("Yes" if bool(flag) else "No")
+
+
+def fmt_signed(value, decimals: int = 2) -> str:
+    """A quantity that can be negative, with a true minus sign.
+
+    ``-0.05`` set with a hyphen is a typographic error the eye reads as a dash;
+    at 7 pt in a figure it is also barely visible. U+2212 is the character the
+    glyph was designed for and is present in every font this project uses.
+    """
+    if _missing(value):
+        return BLANK
+    text = f"{abs(float(value)):.{decimals}f}"
+    return f"{MINUS}{text}" if float(value) < 0 else text
+
+
+def fmt_signed_ci(value, lo, hi, decimals: int = 2, *, separator: str | None = None) -> str:
+    """A signed estimate with its interval: ``0.06 (0.01 to 0.10)``.
+
+    ``separator`` overrides the choice of "to" versus an en dash. Pass one when
+    formatting a whole column, so that a column holding any negative bound reads
+    the same way in every row rather than switching form partway down.
+    """
+    if _missing(value):
+        return BLANK
+    if _missing(lo) or _missing(hi):
+        return fmt_signed(value, decimals)
+    if separator is None:
+        separator = " to " if min(float(lo), float(hi)) < 0 else EN_DASH
+    return (f"{fmt_signed(value, decimals)} ("
+            f"{fmt_signed(lo, decimals)}{separator}{fmt_signed(hi, decimals)})")
+
+
+def interval_separator(values) -> str:
+    """The separator a whole column should use, given every bound in it."""
+    for v in values:
+        try:
+            if float(v) < 0:
+                return " to "
+        except (TypeError, ValueError):
+            continue
+    return EN_DASH

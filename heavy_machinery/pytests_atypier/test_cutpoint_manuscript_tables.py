@@ -339,3 +339,31 @@ def test_a_card_renders_its_thumbnail_inline_when_it_has_one():
     card = rh._card(entry)
     assert 'class="spark"' in card and "data:image/png;base64,ZmFrZQ==" in card
     assert 'class="spark"' not in rh._card(_verdicts()[0])
+
+
+def test_fmt_signed_uses_a_minus_sign_not_a_hyphen():
+    """U+2212 is the sign; the ASCII hyphen is a word-break that reads as a dash."""
+    assert fm.fmt_signed(-0.051, 3) == "−0.051"
+    assert fm.fmt_signed(0.057, 3) == "0.057"
+    assert fm.fmt_signed(None) == fm.BLANK
+
+
+def test_fmt_signed_ci_switches_to_to_when_a_bound_is_negative():
+    """``−0.089–0.056`` reads as one range with a stray sign, so "to" is used."""
+    assert fm.fmt_signed_ci(-0.017, -0.089, 0.056, 3) == \
+        "−0.017 (−0.089 to 0.056)"
+    assert fm.fmt_signed_ci(0.057, 0.009, 0.103, 3) == "0.057 (0.009–0.103)"
+
+
+def test_interval_separator_is_decided_for_a_whole_column():
+    """One column, one form: switching partway down looks like a typo."""
+    assert fm.interval_separator([0.01, 0.10, -0.12]) == " to "
+    assert fm.interval_separator([0.01, 0.10]) == fm.EN_DASH
+    assert fm.fmt_signed_ci(0.057, 0.009, 0.103, 3, separator=" to ") == \
+        "0.057 (0.009 to 0.103)"
+
+
+def test_fmt_est_still_prints_exactly_what_it_used_to():
+    """The signed helpers are additive: no existing table changes."""
+    assert fm.fmt_est(0.72) == "0.72"
+    assert fm.fmt_est_ci(0.68, 0.61, 0.74) == "0.68 (0.61–0.74)"

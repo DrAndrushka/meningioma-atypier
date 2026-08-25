@@ -901,7 +901,16 @@ def raincloud(
 _BASE = {
     "font.family": "sans-serif",
     "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "mathtext.fontset": "dejavusans",
+    # Mathtext in the body font, not DejaVu. Superscripts are the reason: Arial
+    # has no U+2070-U+2079 block, so a Unicode "et al\u2077" prints a tofu box,
+    # while "$^{7}$" under a custom fontset sets the digit in the same face as
+    # the name beside it. "regular" also stops exponents coming out italic,
+    # which is what an upright unit like cm$^3$ wants anyway.
+    "mathtext.fontset": "custom",
+    "mathtext.default": "regular",
+    "mathtext.rm": "Arial",
+    "mathtext.it": "Arial:italic",
+    "mathtext.bf": "Arial:bold",
     "axes.spines.top": False,
     "axes.spines.right": False,
     "axes.linewidth": 0.8,
