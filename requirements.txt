@@ -128,3 +128,11 @@ ipython>=8.0
 
 ipykernel>=6.0
 # Jupyter kernel for Cursor / VS Code.
+
+nbstripout>=0.9
+# Keeps notebook outputs out of every commit. Install the git filter once per
+# clone — .gitattributes names it, but the filter itself lives in .git/config,
+# which git does not carry:
+#     nbstripout --install --keep-id
+# --keep-id matters: some cells carry deliberate ids ("figure-profile-code")
+# that plain nbstripout renumbers to "4".

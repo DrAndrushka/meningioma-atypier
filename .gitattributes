@@ -1,0 +1,20 @@
+# Notebook outputs never enter a commit: every pipeline run rewrites them, so
+# the three notebooks showed up modified after each run and their diffs were
+# pages of printed counts and base64 figures. The results belong in
+# output/report/report.html and output/cutpoints/cutpoint_report.html.
+#
+# Enable on a fresh clone — the filter itself lives in .git/config, which git
+# does not carry, and --keep-id matters because some cells here have
+# deliberate ids ("figure-profile-code") that nbstripout would otherwise
+# renumber to "4":
+#
+#   pip install nbstripout
+#   nbstripout --install --keep-id
+#
+*.ipynb filter=nbstripout
+*.ipynb diff=ipynb
+
+# Exception. This notebook's outputs ARE the artifact — it renders the
+# manuscript's tables and a figure preview, and stripping them would leave a
+# file that shows nothing until someone re-runs it.
+meningioma-manuscript.ipynb filter= diff=
