@@ -170,7 +170,11 @@ def fit_single_predictors(
         model_pred = np.asarray(fit.predict(X), dtype=float)
         val = bootstrap_internal_validation(
             model_df, target, design_cols, coefs,
-            n_bootstrap=n_bootstrap, return_resample_aucs=True)
+            n_bootstrap=n_bootstrap, return_resample_aucs=True,
+            # Only the two AUCs and the resample vector are read below. The
+            # calibration slope and intercept cost four more logistic fits per
+            # resample and no caller of this yardstick ever looks at them.
+            calibration=False)
         auc_row = next(m for m in val["metrics"] if m["metric"] == "AUC")
         out[pred] = {
             "auc_apparent": float(auc_row["apparent"]),
@@ -209,7 +213,7 @@ def bootstrap_auc_vector(
     A resample containing only one outcome class has no defined AUC; it is
     dropped rather than recorded as 0.5.
     """
-    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import auc as _sk_auc, roc_curve as _sk_roc_curve
 
     from heavy_machinery.config import load
     from model_validation import _resample_indices
@@ -234,7 +238,12 @@ def bootstrap_auc_vector(
         # is checked against roc_auc_score at rel=1e-9 for pairing (see the
         # tests), a tolerance six-decimal rounding would fail on any AUC that
         # isn't a round number.
-        out.append(float(roc_auc_score(yy, p_arr[idx])))
+        # roc_auc_score's own binary path is exactly these two calls. Going
+        # straight to them skips the per-call validate_params/type_of_target
+        # pass, which runs np.unique over both arrays a thousand times per
+        # model, and returns the same float bit for bit.
+        fpr, tpr, _ = _sk_roc_curve(yy, p_arr[idx])
+        out.append(float(_sk_auc(fpr, tpr)))
     return out
 
 

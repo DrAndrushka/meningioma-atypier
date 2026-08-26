@@ -25,6 +25,23 @@ import pytest
 from schema_infer import ColSpec
 
 
+@pytest.fixture(autouse=True)
+def _clear_validation_memo():
+    """Empty ``model_validation._VALIDATION_CACHE`` around every test.
+
+    The memo is process-global on purpose — it is what stops one pipeline run
+    bootstrapping the same model twice. Inside pytest that means one test can
+    be served an answer another test computed, which hides exactly the calls a
+    test like ``test_two_models_actually_call_resample_indices_with_the_same_arguments``
+    exists to observe. Cleared before and after, so no test can lean on it.
+    """
+    import model_validation as mv
+
+    mv.clear_validation_cache()
+    yield
+    mv.clear_validation_cache()
+
+
 @pytest.fixture
 def tiny_df() -> pd.DataFrame:
     return pd.DataFrame({

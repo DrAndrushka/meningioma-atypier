@@ -36,7 +36,7 @@ from typing import NamedTuple, Sequence
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import auc as _sk_auc, roc_curve as _sk_roc_curve
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
 from accuracy import flag
@@ -139,7 +139,12 @@ def vif_table(X: pd.DataFrame) -> pd.DataFrame:
 def _auc(y: np.ndarray, p: np.ndarray) -> float:
     if len(np.unique(y)) < 2:
         return float("nan")
-    return float(roc_auc_score(y, p))
+    # roc_auc_score's binary path is exactly these two calls. Going straight
+    # to them skips its per-call validate_params/type_of_target pass, which
+    # runs np.unique over both arrays on every one of the thousand resamples,
+    # and returns the same float bit for bit.
+    fpr, tpr, _ = _sk_roc_curve(y, p)
+    return float(_sk_auc(fpr, tpr))
 
 
 def optimism_corrected_auc(X: pd.DataFrame, y: np.ndarray, *,

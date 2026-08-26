@@ -37,7 +37,20 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import auc as _sk_auc, roc_curve as _sk_roc_curve
+
+
+def _roc_auc(y_true, y_score) -> float:
+    """``sklearn.metrics.roc_auc_score`` without its input validation.
+
+    roc_auc_score spends most of its time in ``validate_params`` and
+    ``type_of_target``, which run ``np.unique`` over both arrays on every
+    call. Inside a bootstrap that validation costs more than the metric. These
+    are the same two functions roc_auc_score itself calls for the binary case,
+    in the same order, so the float is bit-for-bit the one it returned before.
+    """
+    fpr, tpr, _ = _sk_roc_curve(y_true, y_score)
+    return float(_sk_auc(fpr, tpr))
 
 
 class _NotNumeric(Exception):
@@ -73,6 +86,21 @@ def _column_vector(df: pd.DataFrame, col: str) -> np.ndarray:
     return x
 
 
+def _fewer_than_two_distinct(x: np.ndarray) -> bool:
+    """``np.unique(x).size < 2`` without building the unique array.
+
+    np.unique sorts the whole column; inside a bootstrap this ran once per
+    candidate per resample and cost more than the AUC it guards. NaN is
+    treated the way np.unique treats it — every NaN collapses to one value.
+    """
+    if x.size < 2:
+        return True
+    first = x[0]
+    if first != first:                      # NaN
+        return bool(np.isnan(x).all())
+    return bool((x == first).all())
+
+
 def rank_candidates(
     df: pd.DataFrame,
     y: Sequence[int],
@@ -80,6 +108,10 @@ def rank_candidates(
 ) -> list[tuple[str, float]]:
     """``(column, raw_auc)`` sorted by discrimination, best first."""
     y_arr = np.asarray(y, dtype=int)
+    # Loop-invariant: the outcome is the same for every candidate, so the
+    # single-class check belongs outside the loop, not once per column.
+    if np.unique(y_arr).size < 2:
+        return []
     scored: list[tuple[str, float]] = []
     for col in candidates:
         if col not in df.columns:
@@ -91,9 +123,9 @@ def rank_candidates(
             # select_variables; here they are simply left out of the ranking,
             # the same way an absent or constant column already is.
             continue
-        if np.unique(x).size < 2 or np.unique(y_arr).size < 2:
+        if _fewer_than_two_distinct(x):
             continue
-        scored.append((col, float(roc_auc_score(y_arr, x))))
+        scored.append((col, float(_roc_auc(y_arr, x))))
     return sorted(scored, key=lambda t: -discrimination(t[1]))
 
 

@@ -7,6 +7,8 @@ Optimism-corrected AUC/Brier, calibration slope, and shrunken coefficients merge
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import os
 import warnings
 from typing import Any, Mapping, Sequence
@@ -89,7 +91,11 @@ def _quiet_logit_fit(y, X, **kwargs):
     """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
-        return sm.Logit(y, X, **kwargs).fit(disp=False)
+        # check_rank=False skips the QR-based rank check statsmodels runs in
+        # every model constructor. At the ~200k fits a pipeline run makes, that
+        # check cost more than the Newton iterations it guards, and the fitted
+        # params are bit-for-bit the same with it off.
+        return sm.Logit(y, X, check_rank=False, **kwargs).fit(disp=False)
 
 
 def _calibration_slope(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -232,6 +238,51 @@ def _validation_interpretation(
     )
 
 
+# One run asks for the same model's bootstrap more than once: the calculator
+# export (``enrich_streamlit_artifact``) and the combined-vs-single comparison
+# (``model_comparison.run_comparison_stage``) validate the same 11 models, from
+# the same frame, on the same pre-drawn resample indices. The second answer is
+# the first answer recomputed a thousand logistic fits at a time.
+#
+# Keyed on everything the result depends on — outcome, design columns, the
+# bytes of the frame those columns are read from, the resample count, the
+# selector, and whether calibration was asked for — so a hit is the object the
+# recomputation would have produced. ``coefficients`` is deliberately not in
+# the key: it is an unused parameter (the function refits the apparent model
+# from the data), and keying on it would miss every legitimate hit.
+_VALIDATION_CACHE: dict[Any, dict[str, Any]] = {}
+
+
+def clear_validation_cache() -> None:
+    """Empty the memo. For tests, and for a caller that mutates a frame in place."""
+    _VALIDATION_CACHE.clear()
+
+
+def _validation_key(
+    model_df: pd.DataFrame,
+    target: str,
+    design_cols: Sequence[str],
+    *,
+    n_bootstrap: int,
+    select,
+    calibration: bool,
+):
+    # With a selector the resamples re-pick from the WHOLE frame, so the whole
+    # frame is what the answer depends on; without one, only the model columns.
+    frame = model_df if select is not None else model_df[[target, *design_cols]]
+    digest = hashlib.sha256(
+        pd.util.hash_pandas_object(frame, index=True).values.tobytes()
+    ).hexdigest()
+    sel = None
+    if select is not None:
+        fn = getattr(select, "func", select)
+        sel = (getattr(fn, "__qualname__", repr(fn)),
+               repr(getattr(select, "args", ())),
+               repr(sorted(getattr(select, "keywords", {}).items())))
+    return (target, tuple(design_cols), int(n_bootstrap), digest, sel,
+            bool(calibration))
+
+
 def bootstrap_internal_validation(
     model_df: pd.DataFrame,
     target: str,
@@ -241,8 +292,27 @@ def bootstrap_internal_validation(
     n_bootstrap: int = analysis.BOOTSTRAP_RESAMPLES,
     return_resample_aucs: bool = False,
     select=None,
+    calibration: bool = True,
 ) -> dict[str, Any]:
-    """Apparent + optimism-corrected metrics and ROC points for the development sample."""
+    """Apparent + optimism-corrected metrics and ROC points for the development sample.
+
+    ``calibration=False`` drops the calibration slope and intercept and their
+    optimism, leaving both ``nan``. They cost four extra logistic fits in every
+    resample — most of the loop — and the single-predictor yardstick in
+    ``model_comparison.fit_single_predictors`` reads neither.
+
+    Results are memoised (see ``_VALIDATION_CACHE``): asking twice for the same
+    model on the same frame returns the first answer rather than recomputing it.
+    """
+    key = _validation_key(model_df, target, design_cols,
+                          n_bootstrap=n_bootstrap, select=select,
+                          calibration=calibration)
+    hit = _VALIDATION_CACHE.get(key)
+    if hit is not None and (not return_resample_aucs or "resample_aucs" in hit):
+        cached = copy.deepcopy(hit)
+        if not return_resample_aucs:
+            cached.pop("resample_aucs", None)
+        return cached
     y_arr = model_df[target].astype(int).to_numpy()
     n_rows = y_arr.size
     # Design matrix built once as float64 with the constant prepended, matching
@@ -261,7 +331,8 @@ def bootstrap_internal_validation(
     # calibration-in-the-large ≈ 0 by construction. Both are measured rather than
     # asserted for the intercept, because a near-separable fit can drift off zero.
     slope_app = 1.0
-    intercept_app = _calibration_intercept(y_arr, y_pred_apparent)
+    intercept_app = (_calibration_intercept(y_arr, y_pred_apparent)
+                     if calibration else float("nan"))
 
     auc_optimisms: list[float] = []
     brier_optimisms: list[float] = []
@@ -327,27 +398,32 @@ def bootstrap_internal_validation(
             pred_boot = np.asarray(boot_result.predict(X_boot), dtype=float)
             pred_orig = np.asarray(boot_result.predict(X_score), dtype=float)
 
-            if return_resample_aucs:
-                resample_aucs.append(_round_metric(_auc(y_arr, pred_orig), 6))
+            # Computed once, used twice: the optimism needs this AUC and so
+            # does the resample vector. Collected unconditionally so a cached
+            # validation can also serve a later caller that wants the vector.
+            auc_orig = _auc(y_arr, pred_orig)
+            resample_aucs.append(_round_metric(auc_orig, 6))
 
             auc_optimisms.append(
-                _auc(y_boot, pred_boot) - _auc(y_arr, pred_orig)
+                _auc(y_boot, pred_boot) - auc_orig
             )
             brier_optimisms.append(
                 _brier(y_arr, pred_orig) - _brier(y_boot, pred_boot)
             )
-            slope_optimisms.append(
-                _calibration_slope(y_boot, pred_boot)
-                - _calibration_slope(y_arr, pred_orig)
-            )
+            if calibration:
+                slope_optimisms.append(
+                    _calibration_slope(y_boot, pred_boot)
+                    - _calibration_slope(y_arr, pred_orig)
+                )
             # Calibration-in-the-large drifts under resampling for the same
             # reason the slope does, and a model can be well-calibrated in
             # slope while systematically over- or under-predicting. Correcting
             # only the slope reports half the calibration.
-            intercept_optimisms.append(
-                _calibration_intercept(y_boot, pred_boot)
-                - _calibration_intercept(y_arr, pred_orig)
-            )
+            if calibration:
+                intercept_optimisms.append(
+                    _calibration_intercept(y_boot, pred_boot)
+                    - _calibration_intercept(y_arr, pred_orig)
+                )
         except Exception:
             continue
 
@@ -356,7 +432,8 @@ def bootstrap_internal_validation(
 
     auc_corr = auc_app - float(np.mean(auc_optimisms))
     brier_corr = brier_app + float(np.mean(brier_optimisms))
-    slope_corr = slope_app - float(np.mean(slope_optimisms))
+    slope_corr = (slope_app - float(np.mean(slope_optimisms))
+                  if slope_optimisms else float("nan"))
     intercept_corr = (intercept_app - float(np.mean(intercept_optimisms))
                       if intercept_optimisms else float("nan"))
 
@@ -423,7 +500,7 @@ def bootstrap_internal_validation(
             ],
         },
         "calibration": {
-            **_calibration_data(y_arr, y_pred_apparent),
+            **(_calibration_data(y_arr, y_pred_apparent) if calibration else {}),
             "slope_apparent": _round_metric(slope_app),
             "slope_corrected": _round_metric(slope_corr),
             "intercept_apparent": _round_metric(intercept_app),
@@ -432,10 +509,11 @@ def bootstrap_internal_validation(
         "decision_curve": _net_benefit_data(y_arr, y_pred_apparent),
         "corrected_calibration_slope": slope_corr,
     }
-    if return_resample_aucs:
-        # 6 decimals, not the usual 3 — these get differenced against another
-        # model's resample_aucs, and 3 decimals would quantise the difference.
-        result["resample_aucs"] = resample_aucs
+    # 6 decimals, not the usual 3 — these get differenced against another
+    # model's resample_aucs, and 3 decimals would quantise the difference.
+    # Always attached to the cached copy; stripped below from the returned dict
+    # when the caller did not ask, so what the caller sees is unchanged.
+    result["resample_aucs"] = resample_aucs
     if select is not None:
         # How many resamples *attempted* each variable — see the tally site
         # above for why a resample whose fit later fails is still counted.
@@ -459,6 +537,9 @@ def bootstrap_internal_validation(
             "metrics for this model as unreliable if the share is large.",
             stacklevel=2,
         )
+    _VALIDATION_CACHE[key] = copy.deepcopy(result)
+    if not return_resample_aucs:
+        result.pop("resample_aucs", None)
     return result
 
 
@@ -752,6 +833,19 @@ def _enrich_or_keep(
         return artifact
 
 
+def _enrich_and_return_cache(*args, **kwargs) -> tuple[dict[str, Any], dict]:
+    """``_enrich_or_keep`` plus the memo entries it filled, for a worker process.
+
+    ``_VALIDATION_CACHE`` is per-process, so a validation computed inside a
+    joblib worker is invisible to the parent — and the comparison stage back in
+    the parent would then recompute all eleven of them. The worker hands its
+    entries back with the artifact and the parent merges them, so the memo
+    works the same whether the batch ran on one process or four.
+    """
+    out = _enrich_or_keep(*args, **kwargs)
+    return out, dict(_VALIDATION_CACHE)
+
+
 def enrich_streamlit_artifacts(
     jobs: Sequence[
         tuple[dict[str, Any], pd.DataFrame, list[str]]
@@ -799,9 +893,9 @@ def enrich_streamlit_artifacts(
     # inner_max_num_threads=1: each worker's BLAS must not also fan out, or
     # n_workers x BLAS threads oversubscribes the machine and runs slower hot.
     with parallel_config(backend="loky", inner_max_num_threads=1):
-        return list(
+        returned = list(
             Parallel(n_jobs=n_workers)(
-                delayed(_enrich_or_keep)(
+                delayed(_enrich_and_return_cache)(
                     a, m, d,
                     n_bootstrap=n_bootstrap,
                     missing_data_policy=missing_data_policy,
@@ -810,3 +904,6 @@ def enrich_streamlit_artifacts(
                 for a, m, d, s in normalized
             )
         )
+    for _, worker_cache in returned:
+        _VALIDATION_CACHE.update(worker_cache)
+    return [artifact for artifact, _ in returned]

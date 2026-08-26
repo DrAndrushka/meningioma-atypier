@@ -99,13 +99,18 @@ def bootstrap_cutpoint(y: np.ndarray, x: np.ndarray, direction: str, *,
         return blank
 
     rng = np.random.default_rng(seed)
-    all_idx = np.arange(n)
     draws, gaps = [], []
     skipped = 0
     for _ in range(int(n_boot)):
         idx = rng.integers(0, n, n)
         y_in, x_in = y[idx], x[idx]
-        held = np.setdiff1d(all_idx, np.unique(idx), assume_unique=False)
+        # Out-of-bag mask instead of setdiff1d(arange, unique(idx)): the drawn
+        # indices are 0..n-1, so membership is a boolean array and the two
+        # sorts np.unique/np.setdiff1d run per resample are not needed. Same
+        # values, same ascending order.
+        in_bag = np.zeros(n, dtype=bool)
+        in_bag[idx] = True
+        held = np.flatnonzero(~in_bag)
         if (held.size < MIN_HELD_OUT or y_in.sum() < MIN_PER_ARM
                 or (n - y_in.sum()) < MIN_PER_ARM
                 or y[held].sum() < 1 or y[held].size - y[held].sum() < 1):
