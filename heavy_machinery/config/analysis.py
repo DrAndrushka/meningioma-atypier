@@ -41,6 +41,17 @@ CUTPOINT_PARENT: dict[str, str] = {
 REFERENCE_VARIABLE: str = "tumor_volume"
 REFERENCE_VARIABLE_DISCRIMINATION: float = 0.679
 
+# Variance inflation above which a candidate is dropped from the selection
+# pool before anything is ranked. Declared here, beside the reference it can
+# move: the pairwise rho guard inside select_variables only fires after a pick,
+# so at k=1 it never fires at all and two measurements of the same thing
+# compete head to head — tumor_volume and max_diameter_cm (Spearman 0.87, AUC
+# 0.679 against 0.675) split the k=1 vote 511/295 out of 1000 before this
+# existed, and 766/pruned after. Raising this number puts the twins back in
+# the pool and moves which variable REFERENCE_VARIABLE has to match, which is
+# why the threshold is versioned here rather than left as a default argument.
+SELECTION_VIF_MAX: float = 5.0
+
 
 def _load_hidden_parent_columns(output_root: Path | str | None) -> frozenset[str]:
     """Load ``cleaning/hidden_parent_columns.csv``; empty if missing."""

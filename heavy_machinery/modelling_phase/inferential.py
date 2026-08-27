@@ -735,17 +735,16 @@ def _write_model_overview_figures(
     written: list[Path] = []
     for target, entries in by_target.items():
         try:
-            path = write_model_performance_overview_figure(
+            paths = write_model_performance_overview_figure(
                 entries, figs_dir, target=target, overview_csv=overview_csv,
             )
         except Exception as exc:
             warnings.warn(
-                f"Model overview figure skipped for {target}: {exc}",
+                f"Model overview figures skipped for {target}: {exc}",
                 stacklevel=2,
             )
             continue
-        if path is not None:
-            written.append(path)
+        written.extend(p for p in paths if p is not None)
     return written
 
 

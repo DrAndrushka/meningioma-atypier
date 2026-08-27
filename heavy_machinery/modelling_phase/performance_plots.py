@@ -29,7 +29,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
-from matplotlib.ticker import FixedLocator, FormatStrFormatter, MaxNLocator
+from matplotlib.ticker import (
+    FixedLocator,
+    FormatStrFormatter,
+    FuncFormatter,
+    MaxNLocator,
+)
 
 from plot_style import (
     CATEGORICAL_COLORS,
@@ -612,6 +617,19 @@ def _overview_rows(
                 # Blank by design in two places: the reference model's own
                 # ``delta_ref``, and a one-predictor model's ``delta_own`` —
                 # a single variable has no combination to test against itself.
+                # Drawn under each model's name in the gain figure, so the
+                # reader can see WHICH ingredient the left panel measured it
+                # against rather than being told one exists.
+                "best_own_single": (row.get("best_own_single") or "").strip()
+                                   or None,
+                # Carried alongside the name because the two panels do not
+                # score the same variable the same way: the left comparator is
+                # taken as the model specifies it (fitting charged, search not),
+                # the right one is the winner of a search (both charged). Two
+                # rows can name "tumor volume" on the left and still sit at
+                # different distances from it on the right, and without the
+                # number beside the name that looks like an error.
+                "best_own_auc_corrected": _f(row, "best_own_auc_corrected"),
                 "ref": (_f(row, "delta_ref_corrected"),
                         _f(row, "delta_ref_ci_lo_corrected"),
                         _f(row, "delta_ref_ci_hi_corrected")),
@@ -623,42 +641,18 @@ def _overview_rows(
     return out, ref_auc, label
 
 
-def model_performance_overview_figure(
-    entries: Sequence[dict[str, Any]],
-    *,
-    target: str = "",
-    overview: dict[str, dict[str, Any]] | None = None,
-    reference_auc: float | None = None,
-    reference_label: str | None = None,
-    groups: dict[str, str] | None = None,
-    group_order: Sequence[str] | None = None,
-) -> plt.Figure | None:
-    """Every candidate model as one table whose plot columns are forests.
-
-    The figure answers two questions per row and prints the answer to both.
-    *Discrimination* is where the model lands: the optimism-corrected AUC beside
-    the apparent one it was shrunk from, so the gap between the squares is that
-    model's overfitting, against a dashed line at the single prespecified
-    predictor. *Gain over a comparator* is whether the combination was worth it,
-    against two comparators at once because they disagree and the disagreement
-    is the finding — the model's own strongest single ingredient (filled, upper),
-    which is the comparison the source papers published, and the shared
-    prespecified predictor (hollow, lower), which is the one that matters
-    clinically. A model can sit either side of zero on one and not the other.
-
-    Laid out as a table rather than as two panels because a reader who has to
-    measure a value off an axis will misread it, and because the numeric columns
-    let this one exhibit replace a figure and a table. Rows are grouped into our
-    models and the literature refits, each block ordered by optimism-corrected
-    AUC, so nobody compares a model we built with one we merely refit without
-    being told which is which.
-    """
+def _rows_and_blocks(entries, overview, groups, group_order):
+    """Shared row list: ``(model_id, label, stats)`` grouped and ranked."""
     stats = dict(overview or {})
     if not stats:
-        return None
+        return None, None
     published = _published_models()
     labels = {str(e.get("model_id", "")): _short_label(e.get("label", ""))
               for e in entries}
+    # "Top 1 variable" is the pipeline's name for a procedure, not something a
+    # reader can act on. What the row IS, is the single predictor the search
+    # kept — and the grey line beneath says it was selected here.
+    labels[SELECTED_SINGLE_MODEL_ID] = "Best single variable, selected"
     rows = [(mid,
              _citation_label(mid, published)
              or labels.get(mid)
@@ -667,12 +661,7 @@ def model_performance_overview_figure(
             for mid, st in stats.items()
             if st.get("auc_corrected") is not None]
     if len(rows) < 2:
-        return None
-
-    n_pred = {str(e.get("model_id", "")): e.get("n_predictors") for e in entries}
-    n_pred.update({mid: st["n_predictors"] for mid, st in stats.items()
-                   if st.get("n_predictors") is not None})
-
+        return None, None
     gmap = dict(groups or {})
     if gmap:
         order = list(group_order or ())
@@ -685,245 +674,407 @@ def model_performance_overview_figure(
         blocks = [("", list(rows))]
     blocks = [(g, sorted(rs, key=lambda r: r[2]["auc_corrected"], reverse=True))
               for g, rs in blocks if rs]
+    return rows, blocks
 
-    # --- geometry, in inches from the top-left ------------------------------
-    # Column edges rather than widths: every one of them is a place a reader's
-    # eye stops, and stating them absolutely is what keeps the numeric columns
-    # from drifting into the forests when a label grows.
-    W = FIG_WIDTH_DOUBLE
-    X_NAME = 0.10
-    AX_A = (1.42, 2.98)
-    X_AUC_R = 3.38
-    AX_B = (3.65, 5.44)
-    X_D_R = W - 0.10
-    ROW_H, HEAD_H, BLOCK_GAP = 0.323, 0.208, 0.104
-    TOP_PAD, HDR_H = 0.104, 0.205
-    AXIS_H, LEGEND_H = 0.27, 0.66
 
-    y = TOP_PAD + HDR_H
-    top_in = y
-    placed: list[tuple[str, list[tuple[float, tuple]]]] = []
-    banded: list[float] = []
+def _stack(blocks, *, top_in, row_h=0.323, head_h=0.208, block_gap=0.104):
+    """Lay blocks out downward; return ``(placed, banded, bottom_in)``."""
+    y = top_in
+    placed, banded = [], []
     for gi, (gname, rs) in enumerate(blocks):
         head_y = y
-        y += HEAD_H
+        y += head_h
         laid = []
         for i, row in enumerate(rs):
             if i % 2 == 0:
                 banded.append(y)
-            laid.append((y + ROW_H / 2, row))
-            y += ROW_H
-        placed.append((gname, laid))
+            laid.append((y + row_h / 2, row))
+            y += row_h
+        placed.append((gname, head_y, laid))
         if gi < len(blocks) - 1:
-            y += BLOCK_GAP
-        blocks[gi] = (gname, rs, head_y)
-    bot_in = y
+            y += block_gap
+    return placed, banded, y
+
+
+def _band_rows(fig, banded, x0, x1, width, height, row_h=0.323):
+    for y0 in banded:
+        fig.add_artist(Rectangle(
+            (x0 / width, 1 - (y0 + row_h) / height),
+            (x1 - x0) / width, row_h / height,
+            transform=fig.transFigure, facecolor=aj.ROW_BAND,
+            alpha=aj.ROW_BAND_ALPHA, linewidth=0, zorder=0))
+
+
+def _rule(fig, x0, x1, y_in, width, height, lw=1.0):
+    fig.add_artist(plt.Line2D(
+        [x0 / width, x1 / width], [1 - y_in / height] * 2,
+        transform=fig.transFigure, color=aj.INK, linewidth=lw, zorder=3))
+
+
+def _n_pred_map(entries, stats):
+    n_pred = {str(e.get("model_id", "")): e.get("n_predictors") for e in entries}
+    n_pred.update({mid: st["n_predictors"] for mid, st in stats.items()
+                   if st.get("n_predictors") is not None})
+    return n_pred
+
+
+def _sub_line(mid, npred):
+    """The grey line under a model's name in the discrimination figure."""
+    if mid == SELECTED_SINGLE_MODEL_ID:
+        return "1 predictor, selected in these data"
+    if npred is None:
+        return ""
+    npred = int(npred)
+    return f"{npred} predictor" + ("" if npred == 1 else "s")
+
+
+SELECTED_SINGLE_MODEL_ID = "top_1_variable"
+
+# 174 mm — the journal's double-column measure, and the width the figures
+# reworked for submission are drawn at. Deliberately local to these two plates
+# rather than pushed into ``plot_style.FIG_WIDTH_DOUBLE`` (7.2 in = 183 mm),
+# which every already-exported figure is built on: moving that constant would
+# silently redraw all of them.
+OVERVIEW_WIDTH_IN = 174.0 / 25.4
+
+# The discrimination plate is narrower on purpose. It carries three columns —
+# name, one plot, one number — and at the full double-column measure the space
+# between the longest model name and the start of the plot was dead gutter,
+# with the marks themselves crowded into the right half. The gain plate keeps
+# 174 mm: two side-by-side panels genuinely need it.
+DISCRIMINATION_WIDTH_IN = 150.0 / 25.4
+
+
+def model_discrimination_figure(
+    entries: Sequence[dict[str, Any]],
+    *,
+    target: str = "",
+    overview: dict[str, dict[str, Any]] | None = None,
+    groups: dict[str, str] | None = None,
+    group_order: Sequence[str] | None = None,
+) -> plt.Figure | None:
+    """How well each candidate model separates the two grades — and no more.
+
+    One question per figure. The old single plate answered two on every row —
+    where a model lands, and whether it beat a comparator — with two markers
+    and two number columns per row, and the radiologists it was written for
+    could not read it. The comparator question is now :func:`model_gain_figure`.
+
+    Each model is drawn twice: a hollow square at the apparent AUC, a filled
+    one at the optimism-corrected AUC, and an arrow between them pointing at
+    what the correction took away. That arrow is the whole of "bootstrap-
+    corrected" made visible, which is what the word alone never managed.
+
+    No reference line. Tumour volume is not a benchmark drawn here: it is the
+    winner of a search, it has its own row like any other candidate, and every
+    comparison against it belongs in the gain figure.
+    """
+    stats = dict(overview or {})
+    rows, blocks = _rows_and_blocks(entries, stats, groups, group_order)
+    if not blocks:
+        return None
+    n_pred = _n_pred_map(entries, stats)
+
+    W = DISCRIMINATION_WIDTH_IN
+    X_NAME, AX = 0.10, (1.60, 5.30)
+    X_AUC_R = W - 0.10
+    ROW_H = 0.323
+    TOP_PAD, HDR_H, AXIS_H, LEGEND_H = 0.104, 0.205, 0.46, 0.34
+
+    top_in = TOP_PAD + HDR_H
+    placed, banded, bot_in = _stack(blocks, top_in=top_in, row_h=ROW_H)
     height = bot_in + AXIS_H + LEGEND_H
 
     fig = plt.figure(figsize=(W, height))
     fig.patch.set_facecolor("white")
-
-    def _rect(x0, y0, x1, y1):
-        return (x0 / W, 1 - y1 / height, (x1 - x0) / W, (y1 - y0) / height)
-
-    ax_a = fig.add_axes(_rect(AX_A[0], top_in, AX_A[1], bot_in))
-    ax_b = fig.add_axes(_rect(AX_B[0], top_in, AX_B[1], bot_in))
-    for ax in (ax_a, ax_b):
-        # y is inches from the top of the figure, inverted, so a row's position
-        # is the same number in the axes and in the text columns beside them.
-        ax.set_ylim(bot_in, top_in)
-        ax.set_yticks([])
-        ax.set_facecolor("none")
-        ax.grid(False)
-        for side in ("top", "right", "left"):
-            ax.spines[side].set_visible(False)
-        ax.tick_params(axis="y", length=0)
+    ax = fig.add_axes((AX[0] / W, 1 - bot_in / height,
+                       (AX[1] - AX[0]) / W, (bot_in - top_in) / height))
+    ax.set_ylim(bot_in, top_in)
+    ax.set_yticks([])
+    ax.set_facecolor("none")
+    ax.grid(False)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.tick_params(axis="y", length=0)
 
     aucs = [r[2]["auc_corrected"] for r in rows]
     aucs += [r[2]["auc_apparent"] for r in rows if r[2]["auc_apparent"] is not None]
-    if reference_auc is not None:
-        aucs.append(reference_auc)
-    pad_a = max(0.006, 0.08 * (max(aucs) - min(aucs)))
-    ax_a.set_xlim(min(aucs) - pad_a, max(aucs) + pad_a)
+    pad = max(0.006, 0.08 * (max(aucs) - min(aucs)))
+    lo_x, hi_x = min(aucs) - pad, max(aucs) + pad
+    ax.set_xlim(lo_x, hi_x)
 
-    deltas = [v for r in rows for key in ("ref", "own") for v in r[2][key]
-              if v is not None]
-    pad_b = max(0.004, 0.06 * (max(deltas) - min(deltas))) if deltas else 0.05
-    lo_b, hi_b = min(deltas + [0.0]) - pad_b, max(deltas + [0.0]) + pad_b
-    ax_b.set_xlim(lo_b, hi_b)
-
-    sep = afmt.interval_separator(deltas)
-
-    # --- row shading, drawn across the whole sheet --------------------------
-    for y0 in banded:
-        fig.add_artist(Rectangle(
-            (X_NAME / W, 1 - (y0 + ROW_H) / height),
-            (X_D_R - X_NAME) / W, ROW_H / height,
-            transform=fig.transFigure, facecolor=aj.ROW_BAND,
-            alpha=aj.ROW_BAND_ALPHA, linewidth=0, zorder=0))
+    _band_rows(fig, banded, X_NAME, X_AUC_R, W, height, ROW_H)
 
     small = plt.rcParams["xtick.labelsize"]
     body = plt.rcParams["ytick.labelsize"]
 
-    def _fx(x_in: float) -> float:
-        """An inch position on the sheet, as a fraction of panel A's width."""
-        return (x_in - AX_A[0]) / (AX_A[1] - AX_A[0])
+    def _fx(x_in):
+        return (x_in - AX[0]) / (AX[1] - AX[0])
 
     def _text(x_in, y_in, s, *, ha="left", size=None, weight="normal",
               style="normal", color=aj.INK):
-        return ax_a.text(_fx(x_in), y_in, s, transform=ax_a.get_yaxis_transform(),
-                         ha=ha, va="center", fontsize=size or small,
-                         fontweight=weight, fontstyle=style, color=color,
-                         clip_on=False, zorder=4)
+        return ax.text(_fx(x_in), y_in, s, transform=ax.get_yaxis_transform(),
+                       ha=ha, va="center", fontsize=size or small,
+                       fontweight=weight, fontstyle=style, color=color,
+                       clip_on=False, zorder=4)
 
-    # --- header row ---------------------------------------------------------
     hdr_y = TOP_PAD + HDR_H * 0.42
-    for x_in, text, ha in (
-            (X_NAME, "Model (No. of predictors)", "left"),
-            ((AX_A[0] + AX_A[1]) / 2, "Discrimination", "center"),
-            (X_AUC_R, "AUC", "right"),
-            ((AX_B[0] + AX_B[1]) / 2, "Gain over a comparator", "center"),
-            (X_D_R, "Δ AUC (95% CI)", "right")):
-        _text(x_in, hdr_y, text, ha=ha, weight="bold")
-    fig.add_artist(plt.Line2D(
-        [X_NAME / W, X_D_R / W], [1 - (TOP_PAD + HDR_H - 0.055) / height] * 2,
-        transform=fig.transFigure, color=aj.INK, linewidth=1.0, zorder=3))
+    _text(X_NAME, hdr_y, "Model (No. of predictors)", weight="bold")
+    _text(X_AUC_R, hdr_y, "AUC", ha="right", weight="bold")
+    _rule(fig, X_NAME, X_AUC_R, TOP_PAD + HDR_H - 0.055, W, height)
 
-    # --- the rows -----------------------------------------------------------
-    for (gname, laid), (_, _, head_y) in zip(placed, blocks):
+    for gname, head_y, laid in placed:
         if gname:
-            _text(X_NAME, head_y + HEAD_H * 0.5, gname,
-                  size=body, weight="bold", style="italic")
+            _text(X_NAME, head_y + 0.104, gname, size=body, weight="bold",
+                  style="italic")
         for cy, (mid, label, st) in laid:
-            npred = n_pred.get(mid)
             _text(X_NAME, cy - 0.055, label, size=body)
-            if npred is not None:
-                _text(X_NAME, cy + 0.062,
-                      f"{int(npred)} predictor" + ("s" if int(npred) != 1 else ""),
-                      size=small, color="#5A5A5A")
+            sub = _sub_line(mid, n_pred.get(mid))
+            if sub:
+                _text(X_NAME, cy + 0.062, sub, size=small, color="#5A5A5A")
 
             app, cor = st["auc_apparent"], st["auc_corrected"]
             if app is not None:
-                ax_a.plot([cor, app], [cy, cy], color=aj.REFERENCE,
-                          linewidth=0.9, zorder=2)
-                ax_a.plot([app], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
-                          markerfacecolor="white", markeredgecolor=aj.INK,
-                          markeredgewidth=0.9, linestyle="none", zorder=3)
-            ax_a.plot([cor], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
-                      color=aj.INK, linestyle="none", zorder=3)
+                span = (app - cor) / (hi_x - lo_x)
+                ax.plot([cor, app], [cy, cy], color=aj.REFERENCE,
+                        linewidth=0.9, zorder=2)
+                # Only where the two markers are far enough apart for a head to
+                # read as a head rather than as ink on the square.
+                if span > 0.035:
+                    ax.annotate(
+                        "", xy=(cor + 0.14 * (app - cor), cy),
+                        xytext=(cor + 0.42 * (app - cor), cy),
+                        arrowprops=dict(arrowstyle="-|>", color=aj.REFERENCE,
+                                        linewidth=0.9, shrinkA=0, shrinkB=0),
+                        annotation_clip=False, zorder=2)
+                ax.plot([app], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
+                        markerfacecolor="white", markeredgecolor=aj.INK,
+                        markeredgewidth=0.9, linestyle="none", zorder=3)
+            ax.plot([cor], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
+                    color=aj.INK, linestyle="none", zorder=3)
             _text(X_AUC_R, cy, afmt.fmt_est(cor, 3), ha="right", size=body)
 
-            if st["ref"][0] is None and st["own"][0] is None:
-                _text(AX_B[0] + 0.10, cy, "the comparator itself",
-                      size=small, color=aj.REFERENCE)
-                _text(X_D_R, cy, afmt.BLANK, ha="right", size=small)
-                continue
-            # One square, not two, when a model's own strongest ingredient IS
-            # the shared comparator: the two deltas are then the same number and
-            # drawing both reads as a duplicated row.
-            same = (st["ref"][0] is not None and st["own"][0] is not None
-                    and abs(st["ref"][0] - st["own"][0]) < 5e-4)
-            drawn = (("own", 0.0, True),) if same else (
-                ("own", -0.066, True), ("ref", 0.066, False))
-            for key, dy, filled in drawn:
-                d, lo, hi = st[key]
-                if d is None:
-                    continue
-                yy = cy + dy
-                if lo is not None and hi is not None:
-                    ax_b.plot([lo, hi], [yy, yy], color=aj.REFERENCE,
-                              linewidth=1.0, zorder=2)
-                    for x_end in (lo, hi):
-                        ax_b.plot([x_end, x_end], [yy - 0.033, yy + 0.033],
-                                  color=aj.REFERENCE, linewidth=1.0, zorder=2)
-                ax_b.plot([d], [yy], marker=aj.MARKER,
-                          markersize=aj.MARKER_SIZE if same else aj.MARKER_SIZE * 0.92,
-                          markerfacecolor=aj.INK if filled else "white",
-                          markeredgecolor=aj.INK, markeredgewidth=0.9,
-                          linestyle="none", zorder=3)
-                _text(X_D_R, yy, afmt.fmt_signed_ci(d, lo, hi, 3, separator=sep),
-                      ha="right", size=small)
+    ax.spines["bottom"].set_position(("outward", 4))
+    ax.tick_params(axis="x", labelsize=small, length=3.2, pad=2)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 4, 5]))
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
 
-    # --- reference lines and the two x axes ---------------------------------
-    if reference_auc is not None:
-        ax_a.axvline(reference_auc, zorder=1, **aj.NULL_LINE)
-    ax_b.axvline(0.0, zorder=1, **aj.NULL_LINE)
-    for ax in (ax_a, ax_b):
-        ax.spines["bottom"].set_position(("outward", 4))
-        ax.tick_params(axis="x", labelsize=small, length=3.2, pad=2)
-    ax_a.xaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 4, 5]))
-    ax_a.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
-    # Every other gridline unlabelled: six labels do not fit this column, and
-    # dropping them entirely would leave the eye nothing to interpolate from.
-    step = 0.05
-    majors = np.arange(np.ceil(lo_b / (2 * step)) * 2 * step, hi_b, 2 * step)
-    ax_b.xaxis.set_major_locator(FixedLocator(majors))
-    ax_b.xaxis.set_minor_locator(
-        FixedLocator([t for t in np.arange(np.ceil(lo_b / step) * step, hi_b, step)
-                      if not np.any(np.isclose(t, majors))]))
-    ax_b.tick_params(axis="x", which="minor", length=1.9)
-    ax_b.set_xticklabels([afmt.fmt_signed(t, 2) for t in majors])
-
-    # --- the rule that closes the table, then the legends -------------------
     rule_y = bot_in + AXIS_H - 0.03
-    fig.add_artist(plt.Line2D(
-        [X_NAME / W, X_D_R / W], [1 - rule_y / height] * 2,
-        transform=fig.transFigure, color=aj.INK, linewidth=1.0, zorder=3))
+    _rule(fig, X_NAME, X_AUC_R, rule_y, W, height)
+    fig.text((AX[0] + AX[1]) / 2 / W, 1 - (bot_in + 0.32) / height,
+             "Area under the ROC curve — further right, better separation →",
+             ha="center", va="center", fontsize=small, color=aj.INK)
 
-    def _mark(filled: bool) -> Line2D:
+    def _mark(filled):
         return Line2D([], [], linestyle="none", marker=aj.MARKER,
                       markerfacecolor=aj.INK if filled else "white",
                       markeredgecolor=aj.INK, markeredgewidth=0.9,
                       markersize=aj.MARKER_SIZE)
 
-    ref_short = (reference_label or "the single predictor").strip()
-    ref_txt = "" if reference_auc is None else f" ({afmt.fmt_est(reference_auc, 3)})"
-    legend_y = 1 - (rule_y + 0.11) / height
-    for x_in, handles, texts, ncol in (
-            (AX_A[0], [_mark(True), _mark(False), Line2D([], [], **aj.NULL_LINE)],
-             ["Optimism-corrected", "Apparent",
-              f"{ref_short.capitalize()} alone{ref_txt}"], 1),
-            (AX_B[0], [_mark(True), _mark(False)],
-             ["vs its own strongest single predictor",
-              f"vs {ref_short.lower()} alone"], 1)):
-        fig.legend(handles, texts, loc="upper left",
-                   bbox_to_anchor=(x_in / W, legend_y),
-                   bbox_transform=fig.transFigure, ncol=ncol, frameon=False,
-                   fontsize=small, handletextpad=0.5, columnspacing=1.4,
-                   labelspacing=0.35, borderaxespad=0.0, borderpad=0.0)
+    fig.legend(
+        [_mark(True), _mark(False),
+         Line2D([], [], color=aj.REFERENCE, linewidth=0.9, marker="4",
+                markersize=6)],
+        ["Optimism-corrected AUC", "Apparent AUC", "Optimism removed"],
+        loc="upper left", bbox_to_anchor=(X_NAME / W, 1 - (rule_y + 0.11) / height),
+        bbox_transform=fig.transFigure, ncol=3, frameon=False, fontsize=small,
+        handletextpad=0.4, columnspacing=1.0, borderaxespad=0.0, borderpad=0.0)
 
-    # The legend is written once, here, in the form the manuscript prints it —
-    # the report shows the same words under the figure, so the two cannot drift.
     singular, plural, definition = _outcome(target, entries)
     cohort = _cohort_note(entries, plural) or "the development sample"
-    resamples = _resamples(entries)
+    resamples = _resamples(entries) or 1000
     grade = f" ({definition})" if definition else ""
-    draws = f"{resamples} bootstrap resamples" if resamples else "bootstrap resampling"
-    roll = _published_roll_call(rows, published)
+    roll = _published_roll_call(rows, _published_models())
     note = (
-        f"Note:—Bootstrap-corrected discrimination of {len(rows)} candidate "
-        f"models for {singular}{grade} in {cohort}. Discrimination: apparent "
-        "and optimism-corrected AUC for each model, ordered by the corrected "
-        "value. Hollow squares indicate apparent estimates; filled squares, "
-        f"optimism-corrected estimates from {draws}; connecting lines, the "
-        f"optimism removed; and the dashed line, {ref_short.lower()} alone "
-        f"(optimism-corrected AUC, {afmt.fmt_est(reference_auc, 3)}). Gain over "
-        "a comparator: difference in optimism-corrected AUC between each model "
-        "and 2 comparators — the strongest single predictor the model itself "
-        "contains (filled squares, upper) and the prespecified single "
-        f"predictor, {ref_short.lower()} (hollow squares, lower); where these "
-        "coincide, 1 square is drawn. Bars indicate 95% CIs; the dashed line, "
-        "no difference. Values to the right favor the multivariable model. "
-        f"{roll}AUC indicates area under the receiver operating characteristic "
-        "curve."
+        f"Note:—Discrimination of {len(rows)} candidate models for {singular}"
+        f"{grade} in {cohort}. Open squares indicate apparent area under the "
+        "receiver operating characteristic curve (AUC); filled squares, "
+        f"optimism-corrected AUC over {resamples} bootstrap resamples; the "
+        "arrow, the optimism removed. For the single-variable model the "
+        f"correction also covers selection. {roll}"
     )
-    plain = (
-        "One row per model. Left: how well it does, further right is better — "
-        f"the dashed line is {ref_short.lower()} alone. Right: it beat a single "
-        "measurement if the square is past the dashed line."
-    )
+    plain = ("One row per model, ordered by the honest score. The hollow square "
+             "is what the model claims on the data that built it; the arrow is "
+             "what the check takes back.")
     heading = (f"Bootstrap-corrected discrimination of {len(rows)} candidate "
                f"models for {singular}")
+    set_figure_legend(fig, title=heading, plain=plain, note=note)
+    return fig
+
+
+def _searched_cue(reference_auc: float | None) -> str:
+    """Column-level cue for the shared comparator, which every row shares.
+
+    Safe to state once here precisely because this comparator does not vary by
+    row — unlike the left panel's, which is named and scored per row.
+    """
+    if reference_auc is None:
+        return "selected by search, not in advance"
+    return f"selected by search (AUC {afmt.fmt_est(reference_auc, 3)})"
+
+
+def model_gain_figure(
+    entries: Sequence[dict[str, Any]],
+    *,
+    target: str = "",
+    overview: dict[str, dict[str, Any]] | None = None,
+    reference_label: str | None = None,
+    reference_auc: float | None = None,
+    groups: dict[str, str] | None = None,
+    group_order: Sequence[str] | None = None,
+) -> plt.Figure | None:
+    """Was combining predictors worth it? Two yardsticks, one marker each.
+
+    The two comparators disagree and the disagreement is the finding, so both
+    are drawn — but in their own panels, one marker to a row, rather than
+    stacked two-deep on a single line with two number columns beside them.
+
+    They are not the same kind of thing, which is why only one of them is
+    charged for having been searched for. The model's own strongest predictor
+    is handed over by the model; nothing was chosen. The shared comparator is
+    the winner of a selection across the candidate pool, so its correction —
+    and the vectors behind its interval — carry the cost of that choosing.
+    """
+    stats = dict(overview or {})
+    rows, blocks = _rows_and_blocks(entries, stats, groups, group_order)
+    if not blocks:
+        return None
+    # A model with nothing to compare has no row here: the selected single
+    # predictor IS the shared comparator, and a model that contains only one
+    # variable has no combination to test against its own ingredient.
+    blocks = [(g, [r for r in rs
+                   if r[2]["ref"][0] is not None or r[2]["own"][0] is not None])
+              for g, rs in blocks]
+    blocks = [(g, rs) for g, rs in blocks if rs]
+    if not blocks:
+        return None
+    drawn = [r for _, rs in blocks for r in rs]
+
+    W = OVERVIEW_WIDTH_IN
+    X_NAME = 0.10
+    AX_L, AX_R = (2.20, 4.45), (4.85, W - 0.10)
+    ROW_H = 0.323
+    # HDR_H carries three stacked lines over each panel — two bold, one
+    # grey cue — and the rule sits 0.055 above the first row. Too small
+    # and the cue's descenders land on the rule.
+    TOP_PAD, HDR_H, AXIS_H, LEGEND_H = 0.104, 0.54, 0.50, 0.10
+
+    top_in = TOP_PAD + HDR_H
+    placed, banded, bot_in = _stack(blocks, top_in=top_in, row_h=ROW_H)
+    height = bot_in + AXIS_H + LEGEND_H
+
+    fig = plt.figure(figsize=(W, height))
+    fig.patch.set_facecolor("white")
+
+    def _panel(span):
+        a = fig.add_axes((span[0] / W, 1 - bot_in / height,
+                          (span[1] - span[0]) / W, (bot_in - top_in) / height))
+        a.set_ylim(bot_in, top_in)
+        a.set_yticks([])
+        a.set_facecolor("none")
+        a.grid(False)
+        for side in ("top", "right", "left"):
+            a.spines[side].set_visible(False)
+        a.tick_params(axis="y", length=0)
+        return a
+
+    ax_l, ax_r = _panel(AX_L), _panel(AX_R)
+
+    deltas = [v for _, _, st in drawn for key in ("ref", "own")
+              for v in st[key] if v is not None]
+    pad = max(0.004, 0.06 * (max(deltas) - min(deltas))) if deltas else 0.05
+    lo_b, hi_b = min(deltas + [0.0]) - pad, max(deltas + [0.0]) + pad
+    for a in (ax_l, ax_r):
+        a.set_xlim(lo_b, hi_b)
+
+    _band_rows(fig, banded, X_NAME, W - 0.10, W, height, ROW_H)
+
+    small = plt.rcParams["xtick.labelsize"]
+    body = plt.rcParams["ytick.labelsize"]
+    ref_short = (reference_label or "the single predictor").strip().lower()
+
+    def _fig_text(x_in, y_in, s, *, ha="center", size=None, weight="normal",
+                  color=aj.INK):
+        fig.text(x_in / W, 1 - y_in / height, s, ha=ha, va="center",
+                 fontsize=size or small, fontweight=weight, color=color)
+
+    for span, l1, l2, cue in (
+            (AX_L, "Does it beat its own", "best single predictor?",
+             "as the model specifies it, not searched for"),
+            (AX_R, "Does it beat our dataset's",
+             f"best predictor ({ref_short})?",
+             _searched_cue(reference_auc))):
+        cx = (span[0] + span[1]) / 2
+        _fig_text(cx, TOP_PAD + 0.09, l1, weight="bold")
+        _fig_text(cx, TOP_PAD + 0.22, l2, weight="bold")
+        _fig_text(cx, TOP_PAD + 0.34, cue, color="#5A5A5A")
+    _fig_text(X_NAME, TOP_PAD + 0.34, "Model", ha="left", weight="bold")
+    _rule(fig, X_NAME, W - 0.10, top_in - 0.055, W, height)
+
+    for gname, head_y, laid in placed:
+        if gname:
+            fig.text(X_NAME / W, 1 - (head_y + 0.104) / height, gname,
+                     ha="left", va="center", fontsize=body, fontweight="bold",
+                     fontstyle="italic", color=aj.INK)
+        for cy, (mid, label, st) in laid:
+            fig.text(X_NAME / W, 1 - (cy - 0.055) / height, label, ha="left",
+                     va="center", fontsize=body, color=aj.INK)
+            own_name = st.get("best_own_single")
+            if own_name:
+                # The score belongs on the row, not over the column: the left
+                # comparator changes with the model, so a single AUC in the
+                # heading would be true of one row and wrong for the rest.
+                own_auc = st.get("best_own_auc_corrected")
+                sub = f"vs {_pretty_variable(own_name)}"
+                if own_auc is not None:
+                    sub += f" ({afmt.fmt_est(own_auc, 3)})"
+                fig.text(X_NAME / W, 1 - (cy + 0.062) / height, sub, ha="left",
+                         va="center", fontsize=small, color="#5A5A5A")
+            for a, key in ((ax_l, "own"), (ax_r, "ref")):
+                d, lo, hi = st[key]
+                if d is None:
+                    continue
+                if lo is not None and hi is not None:
+                    a.plot([lo, hi], [cy, cy], color=aj.REFERENCE,
+                           linewidth=1.0, zorder=2)
+                    for x_end in (lo, hi):
+                        a.plot([x_end, x_end], [cy - 0.033, cy + 0.033],
+                               color=aj.REFERENCE, linewidth=1.0, zorder=2)
+                a.plot([d], [cy], marker=aj.MARKER, markersize=aj.MARKER_SIZE,
+                       color=aj.INK, linestyle="none", zorder=3)
+
+    step = 0.05
+    majors = np.arange(np.ceil(lo_b / (2 * step)) * 2 * step, hi_b, 2 * step)
+    for a, span in ((ax_l, AX_L), (ax_r, AX_R)):
+        a.axvline(0.0, zorder=1, **aj.NULL_LINE)
+        a.spines["bottom"].set_position(("outward", 4))
+        a.tick_params(axis="x", labelsize=small, length=3.2, pad=2)
+        a.xaxis.set_major_locator(FixedLocator(majors))
+        a.xaxis.set_minor_locator(FixedLocator(
+            [t for t in np.arange(np.ceil(lo_b / step) * step, hi_b, step)
+             if not np.any(np.isclose(t, majors))]))
+        a.tick_params(axis="x", which="minor", length=1.9)
+        a.xaxis.set_major_formatter(
+            FuncFormatter(lambda t, _pos: afmt.fmt_signed(t, 2)))
+        _fig_text((span[0] + span[1]) / 2, bot_in + 0.36,
+                  "Δ AUC (95% CI)")
+
+    _rule(fig, X_NAME, W - 0.10, bot_in + AXIS_H - 0.03, W, height)
+
+    singular, plural, definition = _outcome(target, entries)
+    ref_auc_txt = ("" if reference_auc is None
+                   else f" (corrected AUC, {afmt.fmt_est(reference_auc, 3)})")
+    note = (
+        "Note:—Δ optimism-corrected AUC between each model and 2 "
+        "comparators: the strongest single predictor the model itself contains "
+        f"(named beneath each model) and {ref_short} alone, selected in this "
+        f"same sample as the strongest single predictor{ref_auc_txt}. Squares "
+        "indicate point estimates; bars, 95% CIs; the dashed line, no "
+        "difference. Values right of it favor the model."
+    )
+    plain = ("One row per model. Right of the dashed line the model is ahead; "
+             "a bar that touches the line means the difference could be chance.")
+    heading = f"Gain over a single predictor for {singular}"
     set_figure_legend(fig, title=heading, plain=plain, note=note)
     return fig
 
@@ -1005,21 +1156,37 @@ def write_model_performance_overview_figure(
     target: str,
     overview_csv: Path | None = None,
     group_rows: bool = True,
-) -> Path | None:
-    """Write the two-panel model overview SVG/PNG for one target."""
+) -> list[Path]:
+    """Write the two model-overview plates for one target.
+
+    Two files, not one. The single plate this replaced answered "how well does
+    it do?" and "did it beat a comparator?" on the same row, and the
+    radiologists it was written for could not read it; each question now has a
+    figure to itself. Both are drawn from ``model_overview.csv`` — never
+    recomputed — so neither can disagree with the table.
+    """
     overview, ref_auc, ref_label = _overview_rows(overview_csv)
     groups = _study_groups(entries) if group_rows else None
-    fig = model_performance_overview_figure(
-        entries, target=target, overview=overview,
-        reference_auc=ref_auc, reference_label=ref_label,
-        groups=groups, group_order=_GROUP_ORDER if groups else None,
-    )
-    if fig is None:
-        return None
-    return save_figure(
-        fig, Path(figs_dir) / f"{target}__model_performance_overview",
-        tight_layout=False,
-    )
+    order = _GROUP_ORDER if groups else None
+    written: list[Path] = []
+    for suffix, fig in (
+            ("model_discrimination",
+             model_discrimination_figure(
+                 entries, target=target, overview=overview,
+                 groups=groups, group_order=order)),
+            ("model_gain",
+             model_gain_figure(
+                 entries, target=target, overview=overview,
+                 reference_label=ref_label, reference_auc=ref_auc,
+                 groups=groups, group_order=order)),
+    ):
+        if fig is None:
+            continue
+        written.append(save_figure(
+            fig, Path(figs_dir) / f"{target}__{suffix}", tight_layout=False,
+            # Exported as drawn, so the plate really is 174 mm across.
+            bbox_inches="figure"))
+    return written
 
 
 def write_model_comparison_figure(

@@ -129,6 +129,89 @@ def rank_candidates(
     return sorted(scored, key=lambda t: -discrimination(t[1]))
 
 
+def prune_collinear(
+    df: pd.DataFrame,
+    candidates: Sequence[str],
+    *,
+    vif_max: float = 5.0,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Thin the candidate pool to variables that do not move together.
+
+    The pairwise ``rho_max`` guard in :func:`select_variables` only fires
+    *after* a pick — it asks "is this candidate redundant given what I already
+    kept?". At ``k=1`` there is nothing kept yet, so it never fires, and two
+    measurements of the same thing compete head to head. Tumour volume and
+    maximum diameter (Spearman 0.87, AUC 0.679 against 0.675) then split the
+    vote: whichever got lucky in a draw wins it, and the selection looks
+    unstable when the underlying choice is not.
+
+    So the pool is thinned first, by variance inflation factor across the
+    whole pool rather than pairwise: a variable can be a near-combination of
+    two others while correlating strongly with neither. The highest VIF above
+    ``vif_max`` is dropped, the VIFs are recomputed, and it repeats until
+    every survivor is under the threshold. Ties break on the name so the
+    result does not depend on the column order.
+
+    Deliberately blind to the outcome. Nothing here reads ``y``: this asks
+    only which candidates carry the same information as each other, which is a
+    property of the design matrix. That is what makes it safe to run inside
+    every bootstrap resample without adding a second outcome-driven search on
+    top of the one being corrected for.
+    """
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+    usable: list[str] = []
+    for col in candidates:
+        if col not in df.columns:
+            continue
+        try:
+            _column_vector(df, col)
+        except _NotNumeric:
+            continue
+        usable.append(col)
+
+    audit: list[dict[str, Any]] = []
+    kept = list(usable)
+    while len(kept) > 1:
+        X = np.column_stack([np.ones(len(df))]
+                            + [np.asarray(_column_vector(df, c), dtype=float)
+                               for c in kept])
+        vifs = []
+        for i, col in enumerate(kept, start=1):
+            try:
+                v = float(variance_inflation_factor(X, i))
+            except Exception:
+                v = float("nan")
+            vifs.append((v if np.isfinite(v) else float("inf"), col))
+        worst_vif, worst_col = max(vifs, key=lambda t: (t[0], t[1]))
+        if worst_vif <= vif_max:
+            break
+        kept.remove(worst_col)
+        # Name what it duplicates, not just that it duplicates something. A
+        # VIF is computed against the whole pool, so it says a variable is
+        # redundant without saying redundant *with what* — and that is the one
+        # thing a reader (or a Methods paragraph) needs in order to judge the
+        # drop. The strongest surviving correlate is the honest stand-in.
+        partner, rho = "", 0.0
+        dropped_vec = pd.Series(_column_vector(df, worst_col))
+        for other in kept:
+            try:
+                r = abs(float(dropped_vec.corr(
+                    pd.Series(_column_vector(df, other)), method="spearman")))
+            except Exception:
+                continue
+            if np.isfinite(r) and r > rho:
+                partner, rho = other, r
+        detail = (f", strongest correlate {partner} (rho={rho:.2f})"
+                  if partner else "")
+        audit.append({"variable": worst_col, "vif": worst_vif,
+                      "partner": partner or None, "rho": rho if partner else None,
+                      "kept": False,
+                      "reason": f"VIF={worst_vif:.1f}{detail}"})
+    return kept, audit
+
+
+
 def select_variables(
     df: pd.DataFrame,
     y: Sequence[int],
@@ -137,6 +220,7 @@ def select_variables(
     k: int,
     rho_max: float = 0.8,
     cutpoint_parent: dict[str, str] | None = None,
+    vif_max: float | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Pick ``k`` variables by discrimination, applying both guards.
 
@@ -148,8 +232,28 @@ def select_variables(
     lost.
     """
     cutpoint_parent = cutpoint_parent or {}
-    ranked = rank_candidates(df, y, candidates)
-    candidate_set = {c for c, _ in ranked}
+    # Thin the pool before anything is ranked, so the competition is between
+    # variables that carry different information. See prune_collinear.
+    if vif_max is None:
+        # Declared in config beside REFERENCE_VARIABLE, which it can move.
+        from heavy_machinery.config import load
+        vif_max = load("analysis").SELECTION_VIF_MAX
+    # A cut-point child is a deterministic function of its parent, so it is
+    # collinear with it by construction. Letting one into the VIF pool measures
+    # a redundancy the pipeline already knows about and has already decided
+    # about — guard 1 below drops the child whenever the parent is a candidate
+    # — and worse, it distorts every other variable's VIF and can win the
+    # "strongest correlate" slot in the audit, so a Methods sentence ends up
+    # explaining a real variable by reference to a derived threshold. The
+    # children are held back from the pool and still ranked afterwards, so they
+    # keep their audit row and their AUC.
+    present = {c for c in candidates if c in df.columns}
+    children = {c for c in candidates if cutpoint_parent.get(c) in present}
+    pool, vif_audit = prune_collinear(
+        df, [c for c in candidates if c not in children], vif_max=vif_max)
+    ranked = rank_candidates(
+        df, y, [c for c in candidates if c in set(pool) or c in children])
+    candidate_set = present
     vectors = {c: _column_vector(df, c) for c, _ in ranked}
 
     picked: list[str] = []
@@ -179,6 +283,16 @@ def select_variables(
         audit.append({"variable": col, "auc": auc,
                       "discrimination": discrimination(auc),
                       "kept": True, "reason": ""})
+
+    for row in vif_audit:
+        # vif/partner/rho ride along so the audit table — and the Methods
+        # paragraph the report builds from it — can say WHY without recomputing
+        # anything. Blank on every other row, which is honest: nothing else was
+        # judged on collinearity across the pool.
+        audit.append({"variable": row["variable"], "auc": float("nan"),
+                      "discrimination": float("nan"), "kept": False,
+                      "vif": row.get("vif"), "partner": row.get("partner"),
+                      "rho": row.get("rho"), "reason": row["reason"]})
 
     for col in candidates:
         if col not in df.columns:

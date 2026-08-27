@@ -51,6 +51,64 @@ def paired_delta_auc(
     }
 
 
+# The model id whose bootstrap re-runs the k=1 selection, and so carries the
+# cost of having searched for the best single predictor. Declared here rather
+# than passed in: the overview's shared comparator and this id are the same
+# decision, and splitting them across a parameter is how they drift apart.
+SELECTED_REFERENCE_MODEL_ID = "top_1_variable"
+
+
+def selected_reference_ci(
+    mat: dict[str, Any],
+    ref_model: dict[str, Any],
+    *,
+    alpha: float = 0.05,
+) -> tuple[float, float, int]:
+    """Percentile CI for a model's gain over the SELECTED single predictor.
+
+    Both arms are refit inside every resample and scored on the full sample,
+    and the comparator arm re-runs its selection there too, so the spread of
+    the difference carries the sampling error *and* the "which variable won
+    this draw" error. That is the one thing ``corrected_scale_ci`` cannot do:
+    it slides an uncorrected interval by a constant, which is exact only while
+    the two models' optimism difference IS constant — true for a fixed
+    comparator, false for a searched one.
+
+    Aligned on the resample id, never on list position. Either arm may skip a
+    draw (an empty selection, a fit that raises), and a skip in one arm alone
+    shifts every later element of that arm while leaving both lists a length
+    that ``paired_delta_auc`` would accept.
+
+    Returns ``(ci_lo, ci_hi, n_paired)``. The interval is recentred on
+    ``auc_corrected`` difference so that the bounds bracket the point estimate
+    printed beside them: the two are different estimators of the same quantity
+    and differ by a little under a thousandth here, but a reader checking the
+    arithmetic should not have to discover that.
+    """
+    a_ids = list(mat.get("resample_ids") or [])
+    b_ids = list(ref_model.get("resample_ids") or [])
+    a_auc = list(mat.get("resample_aucs") or [])
+    b_auc = list(ref_model.get("resample_aucs") or [])
+    if len(a_ids) != len(a_auc) or len(b_ids) != len(b_auc):
+        raise RuntimeError(
+            "resample_aucs and resample_ids are different lengths; the two "
+            "are appended together and cannot disagree unless one was "
+            "filtered without the other."
+        )
+    b_by_id = dict(zip(b_ids, b_auc))
+    diff = [a - b_by_id[i] for i, a in zip(a_ids, a_auc) if i in b_by_id]
+    if not diff:
+        raise RuntimeError(
+            "No resample was completed by both the model and the selected "
+            "reference, so their gain has no paired distribution."
+        )
+    arr = np.asarray(diff, dtype=float)
+    lo, hi = np.percentile(arr, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    shift = ((float(mat["auc_corrected"]) - float(ref_model["auc_corrected"]))
+             - float(np.mean(arr)))
+    return float(lo + shift), float(hi + shift), int(arr.size)
+
+
 def corrected_scale_ci(
     ci_lo: float,
     ci_hi: float,
@@ -440,6 +498,13 @@ def run_comparison_stage(
             "auc_apparent": float(auc_model_apparent),
             "auc_corrected": float(combined_auc),
             "boot": boot_combined,
+            # Per-resample AUC of the model refit on that draw and scored on
+            # the full sample, plus the draw each one came from. The shared
+            # comparator below is a SELECTED variable, so its interval has to
+            # be built from vectors where the choosing happened inside the
+            # draw; these are those vectors.
+            "resample_aucs": list(val.get("resample_aucs") or []),
+            "resample_ids": list(val.get("resample_ids") or []),
         }
         if len(preds) == 1:
             # A one-predictor model IS its own only single, so the comparison
@@ -502,7 +567,23 @@ def run_comparison_stage(
     # the overview carries both deltas side by side. The shared comparator is
     # the declared reference (``analysis.REFERENCE_VARIABLE``), the same one
     # every delta elsewhere is measured against.
+    # The shared comparator is the single predictor as it was actually
+    # arrived at: by searching the candidate pool and keeping the winner.
+    # ``fitted[REFERENCE_VARIABLE]`` is the same variable scored as though it
+    # had been named in advance — its correction covers the fitting and not
+    # the search, so it reads ~0.02 AUC high and every delta measured against
+    # it is correspondingly conservative. ``assert_reference`` pins
+    # REFERENCE_VARIABLE to the top of the data-driven ranking, which is
+    # exactly what makes the prespecified reading untenable.
+    #
+    # ``SELECTED_REFERENCE_MODEL_ID`` re-runs that search inside every
+    # resample, so both its point estimate and the vectors behind its interval
+    # carry the cost of choosing. The model's own strongest predictor (the
+    # other comparator, above) is NOT selected — the model hands it over — so
+    # that half is left exactly as it was. One rule: charge the search where a
+    # search happened.
     reference = analysis.REFERENCE_VARIABLE
+    ref_model = overview_material.get(SELECTED_REFERENCE_MODEL_ID)
     ref_fit = fitted.get(reference)
     ov_rows = []
     for mid, mat in overview_material.items():
@@ -543,31 +624,20 @@ def run_comparison_stage(
         # A one-predictor model has no combination to test, so the own-single
         # half is genuinely empty rather than zero — see the skip above.
         # --- against the shared reference single ---
-        is_reference_model = (
-            len(mat["preds"]) == 1 and mat["preds"][0] == reference
-        )
-        if ref_fit is not None and not is_reference_model:
-            d = paired_delta_auc(
-                mat["boot"],
-                bootstrap_auc_vector(
-                    ref_fit["y"], ref_fit["pred"], n_bootstrap=n_bootstrap))
-            lo_c, hi_c = corrected_scale_ci(
-                d["ci_lo"], d["ci_hi"],
-                apparent_combined=mat["auc_apparent"],
-                corrected_combined=mat["auc_corrected"],
-                apparent_single=ref_fit["auc_apparent"],
-                corrected_single=ref_fit["auc_corrected"])
+        is_reference_model = mid == SELECTED_REFERENCE_MODEL_ID
+        if ref_model is not None and not is_reference_model:
+            lo_c, hi_c, n_paired = selected_reference_ci(mat, ref_model)
             row.update({
                 "reference": reference,
-                "reference_auc_corrected": round(ref_fit["auc_corrected"], 3),
+                "reference_selection": "selected",
+                "reference_auc_corrected": round(ref_model["auc_corrected"], 3),
                 "delta_ref_corrected": round(
-                    mat["auc_corrected"] - ref_fit["auc_corrected"], 3),
+                    mat["auc_corrected"] - ref_model["auc_corrected"], 3),
                 "delta_ref_ci_lo_corrected": round(lo_c, 3),
                 "delta_ref_ci_hi_corrected": round(hi_c, 3),
                 "delta_ref_apparent": round(
-                    mat["auc_apparent"] - ref_fit["auc_apparent"], 3),
-                "delta_ref_ci_lo": round(d["ci_lo"], 3),
-                "delta_ref_ci_hi": round(d["ci_hi"], 3),
+                    mat["auc_apparent"] - ref_model["auc_apparent"], 3),
+                "delta_ref_n_paired": n_paired,
             })
         ov_rows.append(row)
     ov_tbl = pd.DataFrame(ov_rows).sort_values(

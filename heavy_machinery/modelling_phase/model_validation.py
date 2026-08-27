@@ -312,6 +312,7 @@ def bootstrap_internal_validation(
         cached = copy.deepcopy(hit)
         if not return_resample_aucs:
             cached.pop("resample_aucs", None)
+            cached.pop("resample_ids", None)
         return cached
     y_arr = model_df[target].astype(int).to_numpy()
     n_rows = y_arr.size
@@ -339,6 +340,13 @@ def bootstrap_internal_validation(
     slope_optimisms: list[float] = []
     intercept_optimisms: list[float] = []
     resample_aucs: list[float] = []
+    # Which resample each entry of `resample_aucs` came from. Appended in
+    # lockstep with it, so a caller differencing two models' vectors can
+    # align on the draw rather than on list position. Position alone is not
+    # enough: a resample that selects nothing or whose fit raises is skipped
+    # here, and one arm skipping a draw the other kept shifts everything
+    # after it while leaving both lists a plausible length.
+    resample_ids: list[int] = []
     selection_counts: dict[str, int] = {}
     # Denominator for `selection_counts`, sourced from THIS loop and no other:
     # how many resamples the selector actually ran on and returned a non-empty
@@ -403,6 +411,7 @@ def bootstrap_internal_validation(
             # validation can also serve a later caller that wants the vector.
             auc_orig = _auc(y_arr, pred_orig)
             resample_aucs.append(_round_metric(auc_orig, 6))
+            resample_ids.append(i)
 
             auc_optimisms.append(
                 _auc(y_boot, pred_boot) - auc_orig
@@ -514,6 +523,7 @@ def bootstrap_internal_validation(
     # Always attached to the cached copy; stripped below from the returned dict
     # when the caller did not ask, so what the caller sees is unchanged.
     result["resample_aucs"] = resample_aucs
+    result["resample_ids"] = resample_ids
     if select is not None:
         # How many resamples *attempted* each variable — see the tally site
         # above for why a resample whose fit later fails is still counted.
@@ -540,6 +550,7 @@ def bootstrap_internal_validation(
     _VALIDATION_CACHE[key] = copy.deepcopy(result)
     if not return_resample_aucs:
         result.pop("resample_aucs", None)
+        result.pop("resample_ids", None)
     return result
 
 

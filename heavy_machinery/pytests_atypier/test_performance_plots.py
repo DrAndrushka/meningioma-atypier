@@ -211,7 +211,7 @@ def test_citation_label_without_a_number_is_still_named():
     assert pp._citation_label("absent", published) is None
 
 
-def test_overview_labels_published_models_by_citation(monkeypatch):
+def test_discrimination_labels_published_models_by_citation(monkeypatch):
     """The row is named the way the running text names it, not by model id."""
     monkeypatch.setattr(pp, "_published_models", lambda: {
         "lin_2014": {"citation": "Lin BJ, Chou KN, Kao HW, et al. Correlation.",
@@ -224,9 +224,8 @@ def test_overview_labels_published_models_by_citation(monkeypatch):
                                       (0.02, -0.01, 0.05)),
                 "top_6_variables": _overview(0.760, 0.725, (0.046, -0.005, 0.097),
                                              (0.046, -0.005, 0.097))}
-    fig = pp.model_performance_overview_figure(
-        entries, target="high_grade", overview=overview, reference_auc=0.679,
-        reference_label="tumor volume")
+    fig = pp.model_discrimination_figure(
+        entries, target="high_grade", overview=overview)
     assert fig is not None
     drawn = {t.get_text() for t in fig.axes[0].texts}
     assert "Lin et al$^{12}$" in drawn
@@ -235,63 +234,99 @@ def test_overview_labels_published_models_by_citation(monkeypatch):
     plt.close(fig)
 
 
-def test_overview_draws_one_delta_when_both_comparators_agree():
-    """A model whose own strongest predictor IS the comparator has one delta.
+def test_discrimination_draws_no_reference_line():
+    """Tumour volume is a searched-for winner, not a benchmark to rule a line at.
 
-    Drawing the identical number twice — once filled, once hollow — reads as a
-    duplicated row, which is exactly how it looked before.
+    Every comparison against it lives in the gain figure. A dashed rule here
+    invited the reader to make that comparison by eye, on a scale where the
+    comparator's own selection cost is not charged.
+    """
+    entries = [{"model_id": "a", "label": "A", "n_predictors": 6},
+               {"model_id": "b", "label": "B", "n_predictors": 10}]
+    overview = {"a": _overview(0.760, 0.725, (0.046, -0.005, 0.097),
+                               (0.046, -0.005, 0.097)),
+                "b": _overview(0.702, 0.662, (-0.017, -0.089, 0.056),
+                               (0.071, 0.017, 0.122))}
+    fig = pp.model_discrimination_figure(
+        entries, target="high_grade", overview=overview)
+    assert fig is not None
+    dashed = [ln for ln in fig.axes[0].lines
+              if ln.get_linestyle() in {"--", (0, (6.4, 1.6))}]
+    assert dashed == []
+    plt.close(fig)
+
+
+def test_gain_draws_both_comparators_in_separate_panels():
+    """Two yardsticks, one marker to a row in each — never stacked on one line.
+
+    Stacking them, with two numeric columns beside, is what made the old plate
+    unreadable. A model whose own strongest predictor happens to be the shared
+    comparator now simply shows the same position in both panels.
     """
     same = _overview(0.760, 0.725, (0.046, -0.005, 0.097), (0.046, -0.005, 0.097))
     differ = _overview(0.702, 0.662, (-0.017, -0.089, 0.056), (0.071, 0.017, 0.122))
     entries = [{"model_id": "a", "label": "A", "n_predictors": 6},
                {"model_id": "b", "label": "B", "n_predictors": 10}]
-    fig = pp.model_performance_overview_figure(
+    fig = pp.model_gain_figure(
         entries, target="high_grade", overview={"a": same, "b": differ},
-        reference_auc=0.679, reference_label="tumor volume")
+        reference_auc=0.661, reference_label="tumor volume")
     assert fig is not None
-    printed = [t.get_text() for t in fig.axes[0].texts]
-    assert printed.count("0.046 (−0.005 to 0.097)") == 1
-    assert "−0.017 (−0.089 to 0.056)" in printed
-    assert "0.071 (0.017 to 0.122)" in printed
+    assert len(fig.axes) == 2
+    for ax in fig.axes:
+        # matplotlib normalises linestyle="none" to the string "None".
+        markers = [ln for ln in ax.lines
+                   if str(ln.get_linestyle()).lower() == "none"
+                   and ln.get_marker() not in (None, "None", "")]
+        assert len(markers) == 2
     plt.close(fig)
 
 
-def test_overview_prints_a_real_minus_sign_not_a_hyphen():
+def test_gain_scores_the_own_comparator_per_row_not_per_column():
+    """The left comparator changes with the model, so its AUC cannot be a heading.
+
+    Both rows here name tumor volume, but one is scored as the model specifies
+    it (0.679) and the other as the winner of a search (0.661). A single AUC
+    over the column would be true of one row and wrong for the other; only the
+    right panel's comparator is shared by every row, so only it gets a heading
+    number.
+    """
+    a = _overview(0.760, 0.736, (0.075, 0.044, 0.128), (0.057, 0.010, 0.104))
+    a |= {"best_own_single": "tumor_volume", "best_own_auc_corrected": 0.679}
+    b = _overview(0.702, 0.662, (0.001, -0.039, 0.056), (0.071, 0.017, 0.122))
+    b |= {"best_own_single": "irregular_tumor_margin",
+          "best_own_auc_corrected": 0.625}
+    entries = [{"model_id": "a", "label": "A", "n_predictors": 6},
+               {"model_id": "b", "label": "B", "n_predictors": 10}]
+    fig = pp.model_gain_figure(
+        entries, target="high_grade", overview={"a": a, "b": b},
+        reference_auc=0.661, reference_label="tumor volume")
+    texts = [t.get_text() for t in fig.texts]
+    assert "vs tumor volume (0.679)" in texts
+    assert "vs irregular tumor margin (0.625)" in texts
+    # The shared comparator's score is stated once, over its own panel only.
+    assert sum("0.661" in t for t in texts) == 1
+    plt.close(fig)
+
+
+def test_gain_prints_a_real_minus_sign_not_a_hyphen():
     """A hyphen is a word-break; at 7 pt it does not read as a sign at all."""
     entries = [{"model_id": "a", "label": "A", "n_predictors": 2},
                {"model_id": "b", "label": "B", "n_predictors": 3}]
     overview = {"a": _overview(0.66, 0.65, (-0.03, -0.09, 0.03), (0.02, -0.01, 0.06)),
                 "b": _overview(0.70, 0.69, (0.02, -0.06, 0.09), (0.07, 0.01, 0.13))}
-    fig = pp.model_performance_overview_figure(
-        entries, target="high_grade", overview=overview, reference_auc=0.679,
-        reference_label="tumor volume")
-    joined = "".join(t.get_text() for t in fig.axes[0].texts)
-    joined += "".join(t.get_text() for t in fig.axes[1].get_xticklabels())
+    fig = pp.model_gain_figure(
+        entries, target="high_grade", overview=overview,
+        reference_auc=0.661, reference_label="tumor volume")
+    joined = "".join(t.get_text() for ax in fig.axes
+                     for t in ax.get_xticklabels())
     assert "−" in joined and "-0." not in joined
     plt.close(fig)
 
 
-def test_overview_needs_two_models():
+def test_both_overview_figures_need_two_models():
     one = {"a": _overview(0.7, 0.68, (None, None, None), (None, None, None))}
-    assert pp.model_performance_overview_figure(
-        [{"model_id": "a", "label": "A"}], overview=one) is None
-    assert pp.model_performance_overview_figure([{"model_id": "a"}], overview={}) is None
+    for build in (pp.model_discrimination_figure, pp.model_gain_figure):
+        assert build([{"model_id": "a", "label": "A"}], overview=one) is None
+        assert build([{"model_id": "a"}], overview={}) is None
 
 
-def test_write_model_performance_overview_figure(tmp_path):
-    entries = [{"model_id": "a", "label": "A", "n_predictors": 2},
-               {"model_id": "b", "label": "B", "n_predictors": 3}]
-    csv_path = tmp_path / "model_overview.csv"
-    csv_path.write_text(
-        "model_id,n_predictors,auc_apparent,auc_corrected,reference,"
-        "reference_auc_corrected,delta_ref_corrected,delta_ref_ci_lo_corrected,"
-        "delta_ref_ci_hi_corrected,delta_own_corrected,delta_own_ci_lo_corrected,"
-        "delta_own_ci_hi_corrected\n"
-        "a,2,0.66,0.65,tumor_volume,0.679,-0.03,-0.09,0.03,0.02,-0.01,0.06\n"
-        "b,3,0.70,0.69,tumor_volume,0.679,0.02,-0.06,0.09,0.07,0.01,0.13\n",
-        encoding="utf-8")
-    path = pp.write_model_performance_overview_figure(
-        entries, tmp_path, target="high_grade", overview_csv=csv_path)
-    assert path is not None
-    assert path.name == "high_grade__model_performance_overview.png"
-    assert path.exists()

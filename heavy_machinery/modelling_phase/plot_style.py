@@ -1209,11 +1209,18 @@ def prune_embedded_figures(
     return deleted, reclaimed, kept
 
 
+# Sentinel for "say nothing and let rcParams decide". ``None`` is a real,
+# different instruction to savefig — draw the whole canvas — so it cannot double
+# as the default.
+_BBOX_FROM_RCPARAMS = object()
+
+
 def save_figure(
     fig: plt.Figure,
     path: Path | str,
     *,
     close: bool = True,
+    bbox_inches=_BBOX_FROM_RCPARAMS,
     pad_inches: float | None = None,
     tight_layout: bool = True,
     kind: str = "line",
@@ -1240,6 +1247,21 @@ def save_figure(
     if formats is None:
         formats = figure_formats()
     extra: dict = {}
+    # ``savefig.bbox`` is "tight" for the whole project, which crops each export
+    # to its ink. That is right for most figures and wrong for one prepared at a
+    # declared physical width: a 174 mm canvas lands as 170 mm, and the figure
+    # is no longer the size the submission says it is. Pass ``bbox_inches=None``
+    # to export the canvas as drawn.
+    if bbox_inches is not _BBOX_FROM_RCPARAMS:
+        # ``bbox_inches=None`` does NOT mean "the whole canvas" — savefig reads
+        # None as "unset" and falls straight back to rcParams, which is "tight"
+        # here, so the crop happens anyway and the figure quietly loses 4 mm.
+        # The only way to say "as drawn" is to hand it the box.
+        if bbox_inches == "figure":
+            from matplotlib.transforms import Bbox
+            extra["bbox_inches"] = Bbox.from_bounds(0, 0, *fig.get_size_inches())
+        else:
+            extra["bbox_inches"] = bbox_inches
     if pad_inches is not None:
         extra["pad_inches"] = pad_inches
     # Only strip a *real* image extension. A cut-point in the name —

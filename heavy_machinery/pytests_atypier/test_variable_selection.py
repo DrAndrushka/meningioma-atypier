@@ -44,7 +44,11 @@ def test_collinear_candidate_is_dropped_and_the_next_one_taken(toy):
     assert picked == ["size", "edema"]
     dropped = {r["variable"]: r["reason"] for r in audit if not r["kept"]}
     assert "size_copy" in dropped
-    assert "rho=" in dropped["size_copy"] and "size" in dropped["size_copy"]
+    # An exact duplicate is now caught by the outcome-blind VIF prune that
+    # thins the pool BEFORE ranking, not by the pairwise rho guard that runs
+    # after a pick. The rho guard still exists for the "redundant given what
+    # was already kept" case; it just never sees a duplicate this blatant.
+    assert "VIF=" in dropped["size_copy"]
 
 
 def test_cutpoint_child_is_dropped_when_its_parent_is_a_candidate(toy):
@@ -62,8 +66,12 @@ def test_audit_records_every_candidate_considered(toy):
     picked, audit = vs.select_variables(df, y, list(df.columns), k=2, rho_max=0.8)
     assert len(picked) == 2
     assert {r["variable"] for r in audit} <= set(df.columns)
-    assert all(set(r) == {"variable", "auc", "discrimination", "kept", "reason"}
-               for r in audit)
+    # Every row carries the five common fields. A row dropped by the VIF prune
+    # carries three more — vif/partner/rho — because "redundant" is not a
+    # verdict a reader can check without knowing redundant with what.
+    common = {"variable", "auc", "discrimination", "kept", "reason"}
+    assert all(common <= set(r) for r in audit)
+    assert all(set(r) <= common | {"vif", "partner", "rho"} for r in audit)
     # A candidate ranked below the k-th pick is never reached by the walk, and
     # "not reached" must mean "not audited" — otherwise the audit trail claims
     # to have considered variables it never actually looked at.
