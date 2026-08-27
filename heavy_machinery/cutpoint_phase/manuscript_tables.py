@@ -38,7 +38,8 @@ import numpy as np
 import pandas as pd
 
 from ajnr_format import (BLANK, EN_DASH, fmt_est, fmt_est_ci, fmt_p, fmt_pct,
-                         fmt_ratio, fmt_span, fmt_value, join_names, yes_no)
+                         fmt_ratio, fmt_signed, fmt_span, fmt_value, join_names,
+                         yes_no)
 from measurements import MEASUREMENTS_BY_COL
 
 # The thresholds each graded column applies. Named here, printed in the
@@ -61,9 +62,92 @@ S4_TITLE = ("Table S4. Decision-curve analysis: clinical usefulness of each "
             "cut-point across plausible threshold probabilities")
 
 # Table 1 is nine columns wide. Left unspecified they would divide evenly and
-# the intervals would wrap to three lines each; the names and the intervals get
-# the room, the P values need very little.
-T1_WIDTHS = (1.00, 0.35, 1.10, 0.55, 0.55, 1.10, 0.50, 0.45, 0.80)
+# the intervals would wrap to three lines each; the names, the intervals and the
+# conclusion get the room, the P values need very little.
+T1_WIDTHS = (0.95, 0.30, 0.95, 0.50, 0.55, 0.95, 0.47, 0.43, 1.30)
+
+# The criteria Table 1 applies, in the order a reader meets them, each with the
+# name its failure carries. Ordered, not scored: a measurement is only asked the
+# next question if it passed this one, because every criterion after the first
+# is about the *shape* of an association the measurement may already have failed
+# to show. So the table reports where a measurement stopped, not how many boxes
+# it ticked, and one vocabulary serves the table and the report's cards alike.
+# Each failure is named for what the data *is*, not for which test object.
+# "Risk never bends" describes a test; "linear, no curve" describes the
+# measurement, and only the second tells a radiologist what they are looking at.
+CRITERIA: tuple[tuple[str, str], ...] = (
+    ("the odds ratio excludes 1", "no association with grade"),
+    ("risk bends", "linear, no curve"),
+    ("the bend survives a change of scale", "near-linear on the other scale"),
+    ("the breakpoint survives Davies' correction", "no definite break point"),
+    ("the break pays for the parameters it adds", "break no better than a line"),
+)
+CRITERIA_TOTAL = len(CRITERIA)
+
+# How a row that met everything opens, and how :func:`describe_t1` recognises
+# one: named once rather than matched by eye.
+MET_ALL = f"{CRITERIA_TOTAL}/{CRITERIA_TOTAL}"
+T1_CONCLUSION = "Conclusion"
+
+
+def _criteria_flags(dich_row, bend_row, segmented_row) -> list[bool] | None:
+    """Whether each criterion in :data:`CRITERIA` was met, in that order.
+
+    ``None`` when the measurement could not be assessed at all: a missing spline
+    or segmented fit leaves nothing to grade, and a list of ``False`` would claim
+    the tests were run and failed.
+    """
+    if bend_row is None or segmented_row is None:
+        return None
+    aic = segmented_row["delta_aic"]
+    return [
+        (_excludes_one(dich_row["or_per_sd_lo"], dich_row["or_per_sd_hi"])
+         if dich_row is not None else False),
+        bool(bend_row["bent_clinical"]),
+        bool(bend_row["scales_agree"]),
+        bool(segmented_row["breakpoint_supported"]),
+        bool(np.isfinite(aic) and aic < 0),
+    ]
+
+
+def _reached(flags) -> int:
+    """How many criteria in a row were met before the first that was not."""
+    if flags is None:
+        return -1
+    return next((i for i, met in enumerate(flags) if not met), CRITERIA_TOTAL)
+
+
+def _failure_phrase(index: int, bend_row) -> str:
+    """What a failed criterion means for the measurement.
+
+    Criterion 3 is the one that cannot be named in advance. ``scales_agree`` is
+    symmetric — it fires whenever the two scales disagree, in either direction —
+    so which scale is the flat one is read off the row rather than assumed.
+    """
+    # ``Series.get`` rather than indexing: an older nonlinearity table has no
+    # ``bent_log`` column, and the generic phrase is still true without it.
+    bent_log = None if bend_row is None else bend_row.get("bent_log")
+    if index == 2 and bent_log is not None:
+        return f"near-linear on {'log' if not bool(bent_log) else 'clinical'} scale"
+    return CRITERIA[index][1]
+
+
+def _conclusion(flags, measurement, segmented_row, bend_row) -> str:
+    """Where the evidence stopped, in the few words a reader will actually read.
+
+    The column this replaces held Yes or No, which told a reader nothing about
+    *which* of five quite different failures they were looking at, nor whether a
+    larger study would change it. It reads how many criteria were met, the one
+    that stopped the row, and what that failure means for the measurement.
+    """
+    if flags is None:
+        return BLANK
+    stopped = _reached(flags)
+    if stopped < CRITERIA_TOTAL:
+        return (f"{stopped}/{CRITERIA_TOTAL} \u2014 fails at {stopped + 1}: "
+                f"{_failure_phrase(stopped, bend_row)}")
+    breakpoint_ = fmt_value(segmented_row["breakpoint"], measurement.decimals)
+    return f"{MET_ALL} \u2014 threshold at {breakpoint_}"
 
 
 def _by_col(table: pd.DataFrame) -> dict:
@@ -81,8 +165,11 @@ def table_one(eligible: pd.DataFrame, *, dichotomy: pd.DataFrame,
               segmented: pd.DataFrame) -> pd.DataFrame:
     """Table 1: does a threshold exist at all, for each measurement.
 
-    Four independent things have to line up before a threshold claim is safe,
-    and the columns are ordered so a reader meets them in the order they matter:
+    Five things have to line up before a threshold claim is safe, and the
+    columns are numbered so a reader meets them in the order they matter. Each
+    is a gate rather than a box to tick: the next question is only asked of a
+    measurement that passed the last one, and the final column names the gate a
+    measurement stopped at.
 
     *Does the measurement do anything as a number* — the odds ratio per 1 SD.
     Placed first, and deliberately, because everything after it is about the
@@ -107,46 +194,43 @@ def table_one(eligible: pd.DataFrame, *, dichotomy: pd.DataFrame,
     # carries the log-scale repeat of the test, and the two scales have to be
     # shown side by side for the column to mean anything.
     dich, bnd, seg = _by_col(dichotomy), _by_col(nonlinearity), _by_col(segmented)
-    rows = []
+    rows, reached = [], []
     for _, row in eligible.iterrows():
         col = row["col"]
         m = MEASUREMENTS_BY_COL[col]
         d, b, s = dich.get(col), bnd.get(col), seg.get(col)
 
-        bends_clinical = bool(b["bent_clinical"]) if b is not None else False
-        scales_agree = bool(b["scales_agree"]) if b is not None else False
-        break_real = bool(s["breakpoint_supported"]) if s is not None else False
-        aic_favours = (np.isfinite(s["delta_aic"]) and s["delta_aic"] < 0
-                       if s is not None else False)
-        supported = (None if b is None or s is None else
-                     bool(bends_clinical and scales_agree and break_real
-                          and aic_favours))
+        flags = _criteria_flags(d, b, s)
 
         rows.append({
             "Measurement": m.label,
             "n": int(d["n"]) if d is not None else (int(s["n"]) if s is not None
                                                     else 0),
-            "OR per 1 SD (95% CI)": (
+            "1. Associated with grade? OR per 1 SD (95% CI)": (
                 fmt_est_ci(d["or_per_sd"], d["or_per_sd_lo"], d["or_per_sd_hi"])
                 if d is not None else BLANK),
-            "Spline P": fmt_p(b["lr_p"]) if b is not None else BLANK,
-            "Spline P, log scale": (fmt_p(b["lr_p_log"]) if b is not None
-                                    else BLANK),
-            "Breakpoint (95% CI)": (
+            "2. Bend on risk curve? Spline P": (fmt_p(b["lr_p"]) if b is not None
+                                        else BLANK),
+            "3. Survives log-scale? Spline P, log": (
+                fmt_p(b["lr_p_log"]) if b is not None else BLANK),
+            "Cutpoint location Breakpoint (95% CI)": (
                 f"{fmt_value(s['breakpoint'], m.decimals)} "
                 f"({fmt_span(s['ci_lo'], s['ci_hi'], m.decimals)})"
                 if s is not None and np.isfinite(s["breakpoint"]) else BLANK),
-            "Davies P": fmt_p(s["davies_p"]) if s is not None else BLANK,
-            "ΔAIC": fmt_est(s["delta_aic"], 1) if s is not None else BLANK,
-            "Threshold supported": yes_no(supported),
+            "4. Better than chance? Davies P": (fmt_p(s["davies_p"])
+                                               if s is not None else BLANK),
+            "5. Beats a straight line? ΔAIC < 0": (fmt_signed(s["delta_aic"], 1)
+                                              if s is not None else BLANK),
+            T1_CONCLUSION: _conclusion(flags, m, s, b),
         })
-    return pd.DataFrame(rows).set_index("Measurement")
-
-
-# The four conditions Table 1 grades: a bend, the bend surviving a change of
-# scale, a breakpoint that survives Davies' correction, and a break that pays
-# for the parameters it adds.
-CRITERIA_TOTAL = 4
+        # Ordered by how far each measurement got, so the numbered criteria in
+        # the last column descend down the page and a reader can see at a glance
+        # how many survived each one. Ties keep the alphabetical order the rest
+        # of the phase sorts by.
+        reached.append((-_reached(flags), m.label))
+    frame = pd.DataFrame(rows).set_index("Measurement")
+    return frame.iloc[[i for i, _ in sorted(enumerate(reached),
+                                            key=lambda pair: pair[1])]]
 
 
 def _excludes_one(lo, hi) -> bool:
@@ -210,7 +294,9 @@ def _verdict_detail(bend_row, segmented_row) -> str:
     if segmented_row is not None:
         parts.append(f"break P {fmt_p(segmented_row['davies_p'])}")
         if np.isfinite(segmented_row["delta_aic"]):
-            parts.append(f"ΔAIC {fmt_est(segmented_row['delta_aic'], 1)}")
+            # fmt_signed, as in the table: a hyphen here reads as a dash between
+            # the two numbers either side of it on the same line.
+            parts.append(f"ΔAIC {fmt_signed(segmented_row['delta_aic'], 1)}")
     return " · ".join(parts)
 
 
@@ -241,20 +327,16 @@ def threshold_verdicts(eligible: pd.DataFrame, *, dichotomy: pd.DataFrame,
         d, b, s, w = dich.get(col), bnd.get(col), seg.get(col), wob.get(col)
         pa = pres.get(col)
 
-        # Short names, ordered so the most fundamental failure leads: a
-        # measurement with no bend has nothing for the later tests to be about,
-        # and leading with the correction would misdescribe why it failed.
-        failures = []
-        if b is not None and not bool(b["bent_clinical"]):
-            failures.append("no bend")
-        elif b is not None and not bool(b["scales_agree"]):
-            failures.append("bend depends on the scale")
-        if s is not None and not bool(s["breakpoint_supported"]):
-            failures.append("break no better than chance")
-        if s is not None and np.isfinite(s["delta_aic"]) and s["delta_aic"] >= 0:
-            failures.append("break too small to matter")
+        # Named from the same :data:`CRITERIA` the table grades with, in the
+        # same order, so a card and its row cannot describe a failure
+        # differently. The most fundamental failure leads: a measurement with
+        # no association has nothing for the later tests to be about.
+        flags = _criteria_flags(d, b, s)
+        failures = ([] if flags is None else
+                    [_failure_phrase(i, b)
+                     for i, met in enumerate(flags) if not met])
 
-        supported = not failures and b is not None and s is not None
+        supported = flags is not None and not failures
         breakpoint_text = (
             f"{m.op} {fmt_value(s['breakpoint'], m.decimals)} {m.unit}".strip()
             if s is not None and np.isfinite(s["breakpoint"]) else BLANK)
@@ -280,7 +362,7 @@ def threshold_verdicts(eligible: pd.DataFrame, *, dichotomy: pd.DataFrame,
                                    f"{CRITERIA_TOTAL} criteria met"),
             "failures": failures,
             "reason": ("" if not failures else
-                       "Not met: " + "; ".join(failures) + "."),
+                       "Why: " + "; ".join(failures) + "."),
             "works": _works_line(d, pa),
             "detail": _verdict_detail(b, s),
         })
@@ -288,44 +370,37 @@ def threshold_verdicts(eligible: pd.DataFrame, *, dichotomy: pd.DataFrame,
 
 
 def t1_footnote() -> str:
-    """What every column is, and what earns a Yes in the last one."""
+    """What the columns are and what passes each of them, in under 100 words.
+
+    Every threshold is read from the constants the code grades with, so the note
+    cannot drift from the table above it. The definitions this note no longer
+    carries — Davies' correction, what ΔAIC charges for — belong in Methods; a
+    note long enough to hold them is a note nobody reads.
+    """
+    bend = f"{BEND_ALPHA:.2f}".lstrip("0")
+    brk = f"{BREAK_ALPHA:.2f}".lstrip("0")
     return (
-        "Note:—Odds ratios are per 1 SD increase from univariable logistic "
-        "regression; tumor volume, edema volume, and edema index were "
-        "log-transformed before standardization, so their odds ratios are per "
-        "1 SD on the log scale. Spline P is the likelihood-ratio test of a "
-        "restricted cubic spline with 3 knots against the linear model, fitted "
-        "in the measurement's own clinical units; the adjacent column repeats "
-        "that test after log transformation, because whether an association "
-        "appears bent depends on the scale it is plotted against. The "
-        "breakpoint is estimated by segmented logistic regression with a "
-        "profile-likelihood interval; unlike a spline, this model estimates the "
-        "join between two straight lines as a parameter. Davies P corrects the "
-        "test of that breakpoint for the fact that the breakpoint is not "
-        "identified when no break exists, which makes the uncorrected test "
-        "anti-conservative. ΔAIC compares the segmented model with the straight "
-        "line, charging for the two parameters it adds; negative values favour "
-        "a break. Threshold supported: Yes when the spline test is significant "
-        f"at P < {BEND_ALPHA:.2f} in clinical units, the clinical and log "
-        "scales agree, the breakpoint is significant after Davies' correction, "
-        "and ΔAIC is negative; No when any of the four fails. A Yes describes "
-        "the shape of the association only, and should be read together with "
-        "the odds ratio in the same row: a measurement that is null as a number "
-        "can still show a bend. Denominators differ between measurements "
-        "because of missing data.")
+        "Note:—The numbered columns are sequential criteria, each evaluated "
+        "only if the preceding one was met; the final column reports where "
+        f"evaluation stopped. Criteria in order: CI excludes 1; P < {bend}; "
+        f"P < {bend}; Davies P < {brk}; ΔAIC < 0. Spline P is the "
+        "likelihood-ratio test of a 3-knot restricted cubic spline against the "
+        "linear model, repeated after log transformation. Odds ratios are per "
+        "1 SD; tumor volume, edema volume and edema index were log-transformed."
+    )
 
 
 def describe_t1(table: pd.DataFrame) -> str:
     """One line: which measurements support a threshold, and which do not."""
     if table.empty:
         return "No measurement could be assessed."
-    supported = table[table["Threshold supported"] == "Yes"].index.tolist()
+    clears = table[T1_CONCLUSION].astype(str).str.startswith(MET_ALL)
+    supported = table[clears].index.tolist()
     if not supported:
-        return ("No measurement meets all four conditions for a threshold "
-                "effect.")
+        return (f"No measurement meets all {CRITERIA_TOTAL} criteria for a "
+                "threshold effect.")
     return (f"Threshold effect supported: {', '.join(supported)}. "
-            f"Not supported: "
-            f"{', '.join(table[table['Threshold supported'] == 'No'].index)}.")
+            f"Not supported: {', '.join(table[~clears].index)}.")
 
 
 def supplemental_s1(eligible: pd.DataFrame, *, agreement: pd.DataFrame,

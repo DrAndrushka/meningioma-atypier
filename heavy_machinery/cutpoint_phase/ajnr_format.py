@@ -42,6 +42,11 @@ def _missing(value) -> bool:
         return True
 
 
+# Alphas a table states as a rule and then prints P values against. A value
+# that rounds onto one of these is printed to three decimals — see :func:`fmt_p`.
+DECISION_ALPHAS: tuple[float, ...] = (0.05,)
+
+
 def fmt_p(p) -> str:
     """P value in the journal's style: no leading zero, ``<.001`` at the floor."""
     if _missing(p):
@@ -53,6 +58,12 @@ def fmt_p(p) -> str:
         return f"{p:.3f}".lstrip("0")
     if p > 0.99:
         return ">.99"
+    # A P that rounds onto a decision threshold hides which side of it the value
+    # fell on: .0463 and .0537 both print as .05, and a reader checking the
+    # table against a "P < .05" rule cannot tell whether the row passed. Those
+    # get a third decimal; every other P keeps the journal's two.
+    if any(round(p, 2) == alpha and p != alpha for alpha in DECISION_ALPHAS):
+        return f"{p:.3f}".lstrip("0")
     return f"{p:.2f}".lstrip("0")
 
 

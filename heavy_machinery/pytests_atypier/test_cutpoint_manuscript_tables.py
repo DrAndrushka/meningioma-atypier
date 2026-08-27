@@ -268,7 +268,8 @@ def test_a_card_that_meets_everything_says_so_and_sorts_first():
 
 def test_a_failing_card_counts_and_names_what_it_missed():
     """The most fundamental failure comes first: with no bend at all, the later
-    tests have nothing to be about."""
+    tests have nothing to be about. The odds ratio here excludes 1, so the row
+    clears the first criterion and stops at the second."""
     nonlin = pd.DataFrame([{"col": "adc_value", "stratum": "all",
                             "bent_clinical": False, "lr_p": 0.50,
                             "lr_p_log": 0.77, "scales_agree": True}])
@@ -277,15 +278,15 @@ def test_a_failing_card_counts_and_names_what_it_missed():
                          "davies_p": 0.30, "delta_aic": 1.2, "n": 352,
                          "breakpoint_supported": False}])
     entry = _verdicts(nonlinearity=nonlin, segmented=seg)[0]
-    assert entry["criteria_line"] == f"1 of {mt.CRITERIA_TOTAL} criteria met"
-    assert entry["failures"] == ["no bend", "break no better than chance",
-                                 "break too small to matter"]
-    assert entry["reason"].startswith("Not met: no bend;")
+    assert entry["criteria_line"] == f"2 of {mt.CRITERIA_TOTAL} criteria met"
+    assert entry["failures"] == ["linear, no curve", "no definite break point",
+                                 "break no better than a line"]
+    assert entry["reason"].startswith("Why: linear, no curve;")
 
     nonlin = pd.DataFrame([{"col": "adc_value", "stratum": "all",
                             "bent_clinical": False, "lr_p": 0.50,
                             "lr_p_log": 0.77, "scales_agree": False}])
-    assert _verdicts(nonlinearity=nonlin)[0]["failures"][0] == "no bend"
+    assert _verdicts(nonlinearity=nonlin)[0]["failures"][0] == "linear, no curve"
 
 
 def test_the_works_line_names_the_better_form():

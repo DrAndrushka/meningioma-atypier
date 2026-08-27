@@ -79,14 +79,17 @@ FIGURE2_CAPTION = (
     "measurement. Both panels are "
     "corrected for optimism over 1000 patient-level bootstrap resamples with "
     "the cut-point re-derived and the model refitted within each.")
+# Counted from the criteria themselves: this paragraph said "four conditions"
+# for a run that tested five, and no test caught it.
 DASHBOARD_LEAD = (
-    "Each measurement was tested for four conditions: a bend in risk, that bend "
+    f"Each measurement was tested against {mt.CRITERIA_TOTAL} criteria in "
+    "order — an association with grade at all, a bend in risk, that bend "
     "surviving a change of scale, a breakpoint that survives correction for "
     "having searched every candidate, and a break that pays for the parameters "
-    "it adds. A measurement meeting all four is shown with its estimated "
-    "breakpoint; one that does not is shown with its derived cut-point, the "
-    "conditions it failed, and the curves that show why — the same patients "
-    "plotted against the measurement and against its logarithm.")
+    f"it adds. A measurement meeting all {mt.CRITERIA_TOTAL} is shown with its "
+    "estimated breakpoint; one that does not is shown with its derived "
+    "cut-point, where it stopped, and the curves that show why — the same "
+    "patients plotted against the measurement and against its logarithm.")
 
 
 def build(df: pd.DataFrame, *, eligible: pd.DataFrame, cutpoints: dict,
