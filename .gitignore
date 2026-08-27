@@ -56,3 +56,12 @@ heavy_machinery/.git/
 
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
+
+# Manuscript drafts and design scratch under docs/. The plans and specs in
+# docs/superpowers/ stay tracked; these are working copies that change every
+# session — the live Statistics/Results markdown, its rewrite, the Word export
+# of that rewrite, and the design canvas for Table 1.
+docs/stats_results_live.md
+docs/stats_results_live_rewrite.md
+docs/*.docx
+docs/design/
