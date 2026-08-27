@@ -60,3 +60,6 @@ heavy_machinery/.git/
 # Everything under docs/ is working material — manuscript drafts, Word exports,
 # design scratch — that changes every session. Nothing here is tracked.
 docs/*
+
+# Claude Code guidance — local to this clone, not part of the project
+CLAUDE.md
