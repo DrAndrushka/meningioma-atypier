@@ -71,13 +71,12 @@ PUBLISHED_MODELS: dict[str, dict] = {
     },
     # ------------------------------------------------------------------
     # The six entries below are transcribed from the numbers Andris supplied
-    # in literature_model_refit_spec.md (Downloads, 2026-08-16) — the source
-    # document docs/superpowers/specs/2026-08-16-literature-model-refit-design.md
-    # cites as its origin. Every OR/CI/p/beta/cohort figure is quoted from that
-    # spec as printed; nothing here is rounded, derived, or backfilled from a
-    # related figure. Where the spec itself has no number for a field (a score
-    # weight rather than an OR, or a bound the paper never published), the
-    # field is left empty rather than estimated.
+    # in literature_model_refit_spec.md (Downloads, 2026-08-16), which is the
+    # origin of record for every figure here. Every OR/CI/p/beta/cohort figure
+    # is quoted from that spec as printed; nothing here is rounded, derived, or
+    # backfilled from a related figure. Where the spec itself has no number for
+    # a field (a score weight rather than an OR, or a bound the paper never
+    # published), the field is left empty rather than estimated.
     "spille_2020": {
         "reference_number": 7,
         "citation": (
