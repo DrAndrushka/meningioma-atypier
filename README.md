@@ -119,7 +119,7 @@ meningioma-atypier/
     │   ├── published_models.py     # Odds ratios transcribed from source papers — reference only
     │   └── report_settings.py
     ├── scripts/run_mice.R          # 🧬 R mice engine (subprocess from Python)
-    ├── pytests_atypier/            # 🧪 664 automated tests
+    ├── pytests_atypier/            # 🧪 667 automated tests
     └── pytest.ini                  # Optional: `cd heavy_machinery && python -m pytest`
 ```
 
@@ -545,7 +545,7 @@ disk but are not repeated in the report.
 pandas · numpy · scipy · statsmodels · scikit-learn for the analysis; **R `mice` 3.19** through an
 `Rscript` subprocess for the imputation; pandera for schema checks; matplotlib · seaborn ·
 SciencePlots behind `plot_style.py` for every figure; python-docx for the journal tables;
-Streamlit for the calculator; pytest for the 664 tests.
+Streamlit for the calculator; pytest for the 667 tests.
 
 Versions, and one line on why each dependency is there, live in `requirements.txt`.
 
@@ -563,7 +563,7 @@ Versions, and one line on why each dependency is there, live in `requirements.tx
 
 ## 🔮 Status
 
-🟢 **Stable research pipeline (v1)** — three-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-ready figures, HTML report, Streamlit calculator, and 664 pytest tests in `heavy_machinery/pytests_atypier/`.
+🟢 **Stable research pipeline (v1)** — three-notebook workflow at repo root, library under `heavy_machinery/`, formal mixed-type MICE (R `mice`), parquet dataset handoff, multi-variant inferential modelling, publication-ready figures, HTML report, Streamlit calculator, and 667 pytest tests in `heavy_machinery/pytests_atypier/`.
 
 After running modelling §04, Streamlit JSON artifacts live under `output/inferential/model_artifacts/`. `streamlit run app.py` loads the `experimental_model_1` artifact by default.
 
