@@ -51,9 +51,6 @@ Rplots.pdf
 .idea/
 Icon?
 
-# Nested git clone — use only this repo
-heavy_machinery/.git/
-
 # subagent-driven-development scratch (ledger, briefs, review packages)
 .superpowers/
 
